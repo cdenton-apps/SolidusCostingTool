@@ -61,15 +61,6 @@ how multi-up production is represented, minimum transport charges, machine and
 labour rates, and where print should sit in a multi-level BOM all need to be
 agreed before production use.
 
-## Deploy from GitHub
-
-1. Create a private GitHub repository and push this folder.
-2. In Streamlit Community Cloud, create an app from the repository and select
-   `app.py` as the entrypoint.
-3. Paste production secrets into the app's Advanced settings; never commit them.
-4. For company use, prefer Microsoft Entra OIDC and restrict access by email
-   domain or explicit addresses.
-
 ### Important persistence limitation
 
 GitHub stores the code, not live multi-user transactions. Streamlit Community
