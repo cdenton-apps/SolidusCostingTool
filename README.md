@@ -1,7 +1,5 @@
 # Costing Tool
 
-A GitHub-ready Streamlit MVP based on the proposed costing workflow. It supports:
-
 - secure sign-in using local hashed passwords or Streamlit OIDC;
 - existing-item prefilling from CSV, including optional BOM component costs;
 - new and revised product costings with required-field checks;
