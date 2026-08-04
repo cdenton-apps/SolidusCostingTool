@@ -1,4 +1,0 @@
-item_code,description,customer_name,material,product_group,board_gsm,blank_length_mm,blank_width_mm,pallet_quantity,order_quantity,material_cost_per_tonne,print_cost_per_1000,conversion_cost_per_1000,packing_cost_per_1000,fixed_tooling_cost,waste_percent,delivery_postcode,delivery_method,transport_rate_per_pallet,preferred_margin_percent
-DEMO-BOX-001,Printed solid-board tray,Demo Foods Ltd,Solid board,Finished goods,1250,574,376,1000,10000,780,36,24,8,150,6,BD20 0AA,Haulier,48,30
-DEMO-BOX-002,Plain corrugated outer,Sample Retail Ltd,Corrugated,Finished goods,650,620,420,500,5000,690,0,18,6,0,5,LS1 1AA,Haulier,52,28
-
