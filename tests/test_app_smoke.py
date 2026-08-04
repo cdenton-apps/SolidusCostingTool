@@ -23,8 +23,14 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.number_input, "Order quantity *").set_value(10000)
     _widget(app.button, "Save specification").click().run()
 
-    _widget(app.button, "Calculate total cost").click().run()
+    _widget(app.selectbox, "Board item *").set_value(
+        "BRD001/101/LPB/1000G/BW"
+    ).run()
+    _widget(app.selectbox, "Other-component template *").set_value(
+        "__NONE__"
+    ).run()
+    _widget(app.button, "Calculate pricing base").click().run()
     _widget(app.button, "Continue to pricing").click().run()
 
     assert not app.exception
-    assert "Set margin or selling price" in [item.value for item in app.subheader]
+    assert "Set spread or selling price" in [item.value for item in app.subheader]

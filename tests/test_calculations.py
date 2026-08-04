@@ -4,8 +4,8 @@ import pytest
 
 from src.calculations import (
     calculate_cost,
-    margin_from_price,
-    price_from_margin,
+    price_from_spread,
+    spread_from_price,
     validate_details,
 )
 
@@ -43,11 +43,24 @@ def test_cost_breakdown(valid_costing: dict) -> None:
 
     assert result["net_weight_kg_per_1000"] == pytest.approx(80)
     assert result["pallet_count"] == 5
-    assert result["machine_cost_per_1000"] == pytest.approx(37)
     assert result["transport_cost_per_1000"] == pytest.approx(25)
     assert result["tooling_cost_per_1000"] == pytest.approx(10)
-    assert result["manufacturing_cost_per_1000"] == pytest.approx(135.4)
-    assert result["total_cost_per_1000"] == pytest.approx(160.4)
+    assert result["material_base_per_1000"] == pytest.approx(83.4)
+    assert result["pricing_base_per_1000"] == pytest.approx(108.4)
+
+
+def test_machine_and_labour_source_values_are_ignored(valid_costing: dict) -> None:
+    result = calculate_cost(valid_costing)
+    valid_costing.update(
+        {
+            "print_machine_cost_per_1000": 10_000,
+            "die_cut_machine_cost_per_1000": 10_000,
+            "fold_glue_machine_cost_per_1000": 10_000,
+            "other_machine_cost_per_1000": 10_000,
+            "labour_cost_per_1000": 10_000,
+        }
+    )
+    assert calculate_cost(valid_costing) == result
 
 
 def test_customer_collection_has_no_transport_cost(valid_costing: dict) -> None:
@@ -55,14 +68,15 @@ def test_customer_collection_has_no_transport_cost(valid_costing: dict) -> None:
     result = calculate_cost(valid_costing)
     assert result["transport_total"] == 0
     assert result["transport_cost_per_1000"] == 0
-    assert result["total_cost_per_1000"] == pytest.approx(135.4)
+    assert result["pricing_base_per_1000"] == pytest.approx(83.4)
 
 
-def test_margin_and_price_are_reversible() -> None:
-    price = price_from_margin(140.4, 30)
-    margin = margin_from_price(140.4, price["selling_price_per_1000"])
-    assert price["selling_price_per_1000"] == pytest.approx(200.5714)
-    assert margin["preferred_margin_percent"] == pytest.approx(30, abs=0.001)
+def test_spread_and_price_are_reversible() -> None:
+    price = price_from_spread(140.4, 80, 250)
+    spread = spread_from_price(140.4, 80, price["selling_price_per_1000"])
+    assert price["spread_value_per_1000"] == pytest.approx(20)
+    assert price["selling_price_per_1000"] == pytest.approx(160.4)
+    assert spread["target_spread_per_tonne"] == pytest.approx(250, abs=0.001)
 
 
 def test_validation_blocks_missing_fields(valid_costing: dict) -> None:
@@ -71,4 +85,3 @@ def test_validation_blocks_missing_fields(valid_costing: dict) -> None:
     errors = validate_details(valid_costing)
     assert "Item code is required." in errors
     assert "Order quantity must be greater than zero." in errors
-

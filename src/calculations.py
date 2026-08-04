@@ -52,7 +52,12 @@ def validate_details(values: dict[str, Any]) -> list[str]:
 
 
 def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
-    """Calculate an imported/edited BOM plus transport cost per 1,000 units."""
+    """Calculate the material-led pricing base per 1,000 units.
+
+    Machine and labour values may still exist in the source BOM extract, but the
+    commercial model deliberately excludes them. Tooling, manual adjustments and
+    transport are treated as pass-throughs before the spread is applied.
+    """
     errors = validate_details(values)
     if errors:
         raise ValueError(" ".join(errors))
@@ -74,77 +79,73 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
             * _number(values, "board_gsm")
         )
 
-    machine_components = {
-        "print_machine_cost_per_1000": _number(
-            values, "print_machine_cost_per_1000"
-        ),
-        "die_cut_machine_cost_per_1000": _number(
-            values, "die_cut_machine_cost_per_1000"
-        ),
-        "fold_glue_machine_cost_per_1000": _number(
-            values, "fold_glue_machine_cost_per_1000"
-        ),
-        "other_machine_cost_per_1000": _number(
-            values, "other_machine_cost_per_1000"
-        ),
-    }
-    machine_total = sum(machine_components.values())
     materials = _number(values, "materials_cost_per_1000")
-    labour = _number(values, "labour_cost_per_1000")
     manual_adjustment = _number(values, "manual_adjustment_per_1000")
     tooling_cost_per_1000 = _number(values, "fixed_tooling_cost") / order_in_thousands
-    manufacturing_cost = (
-        materials
-        + labour
-        + machine_total
-        + manual_adjustment
-        + tooling_cost_per_1000
-    )
+    material_base = materials + manual_adjustment + tooling_cost_per_1000
 
     delivery_method = str(values.get("delivery_method", "Haulier"))
     transport_total = (
         _number(values, "transport_total") if delivery_method == "Haulier" else 0.0
     )
     transport_cost_per_1000 = transport_total / order_in_thousands
-    total_cost = manufacturing_cost + transport_cost_per_1000
+    pricing_base = material_base + transport_cost_per_1000
 
     return {
         "net_weight_kg_per_1000": round(net_weight_kg_per_1000, 4),
         "pallet_count": float(pallet_count),
         "transport_total": round(transport_total, 4),
         "materials_cost_per_1000": round(materials, 4),
-        **{key: round(value, 4) for key, value in machine_components.items()},
-        "machine_cost_per_1000": round(machine_total, 4),
-        "labour_cost_per_1000": round(labour, 4),
         "manual_adjustment_per_1000": round(manual_adjustment, 4),
         "tooling_cost_per_1000": round(tooling_cost_per_1000, 4),
-        "manufacturing_cost_per_1000": round(manufacturing_cost, 4),
+        "material_base_per_1000": round(material_base, 4),
         "transport_cost_per_1000": round(transport_cost_per_1000, 4),
-        "total_cost_per_1000": round(total_cost, 4),
-        "cost_per_item": round(total_cost / 1_000, 6),
+        "pricing_base_per_1000": round(pricing_base, 4),
+        "pricing_base_per_item": round(pricing_base / 1_000, 6),
     }
 
 
-def price_from_margin(cost_per_1000: float, margin_percent: float) -> dict[str, float]:
-    if cost_per_1000 < 0:
-        raise ValueError("Cost cannot be negative.")
-    if not 0 <= margin_percent < 100:
-        raise ValueError("Margin must be between 0% and 99.99%.")
-    selling_price = cost_per_1000 / (1 - margin_percent / 100)
+def price_from_spread(
+    pricing_base_per_1000: float,
+    net_weight_kg_per_1000: float,
+    target_spread_per_tonne: float,
+) -> dict[str, float]:
+    """Return selling price for a target spread expressed in pounds per tonne."""
+    if pricing_base_per_1000 < 0:
+        raise ValueError("Pricing base cannot be negative.")
+    if net_weight_kg_per_1000 <= 0:
+        raise ValueError("Net weight must be greater than zero to calculate spread.")
+    if target_spread_per_tonne < 0:
+        raise ValueError("Target spread cannot be negative.")
+    spread_value_per_1000 = (
+        target_spread_per_tonne * net_weight_kg_per_1000 / 1_000
+    )
+    selling_price = pricing_base_per_1000 + spread_value_per_1000
     return {
-        "preferred_margin_percent": round(margin_percent, 4),
+        "target_spread_per_tonne": round(target_spread_per_tonne, 4),
+        "spread_value_per_1000": round(spread_value_per_1000, 4),
         "selling_price_per_1000": round(selling_price, 4),
         "selling_price_per_item": round(selling_price / 1_000, 6),
     }
 
 
-def margin_from_price(cost_per_1000: float, selling_price: float) -> dict[str, float]:
+def spread_from_price(
+    pricing_base_per_1000: float,
+    net_weight_kg_per_1000: float,
+    selling_price: float,
+) -> dict[str, float]:
+    """Return achieved pounds-per-tonne spread for a selected selling price."""
+    if pricing_base_per_1000 < 0:
+        raise ValueError("Pricing base cannot be negative.")
+    if net_weight_kg_per_1000 <= 0:
+        raise ValueError("Net weight must be greater than zero to calculate spread.")
     if selling_price <= 0:
         raise ValueError("Selling price must be greater than zero.")
-    margin_percent = ((selling_price - cost_per_1000) / selling_price) * 100
+    spread_value_per_1000 = selling_price - pricing_base_per_1000
+    spread_per_tonne = spread_value_per_1000 / net_weight_kg_per_1000 * 1_000
     return {
-        "preferred_margin_percent": round(margin_percent, 4),
+        "target_spread_per_tonne": round(spread_per_tonne, 4),
+        "spread_value_per_1000": round(spread_value_per_1000, 4),
         "selling_price_per_1000": round(selling_price, 4),
         "selling_price_per_item": round(selling_price / 1_000, 6),
     }
-

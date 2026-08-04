@@ -19,9 +19,10 @@ from reportlab.platypus import (
 )
 
 
-NAVY = colors.HexColor("#16324F")
-TEAL = colors.HexColor("#1F7A6D")
-PALE = colors.HexColor("#EAF4F1")
+INK = colors.HexColor("#000000")
+YELLOW = colors.HexColor("#FDD615")
+PALE = colors.HexColor("#F3F5F2")
+GREY = colors.HexColor("#D4DEDD")
 
 
 def _money(value: Any) -> str:
@@ -46,7 +47,10 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
     styles.add(ParagraphStyle(name="Right", parent=styles["BodyText"], alignment=TA_RIGHT))
 
     story = [
-        Paragraph("COSTING QUOTATION", styles["Title"]),
+        Paragraph("Solidus", styles["Title"]),
+        Paragraph("Your circular packaging partner", styles["Heading3"]),
+        Spacer(1, 2 * mm),
+        Paragraph("COSTING QUOTATION", styles["Heading1"]),
         Spacer(1, 5 * mm),
         Table(
             [
@@ -60,9 +64,9 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             colWidths=[48 * mm, 105 * mm],
             style=[
                 ("BACKGROUND", (0, 0), (0, -1), PALE),
-                ("TEXTCOLOR", (0, 0), (0, -1), NAVY),
+                ("TEXTCOLOR", (0, 0), (0, -1), INK),
                 ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C5C1")),
+                ("GRID", (0, 0), (-1, -1), 0.35, GREY),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("PADDING", (0, 0), (-1, -1), 7),
             ],
@@ -79,11 +83,11 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ],
             colWidths=[95 * mm, 58 * mm],
             style=[
-                ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
+                ("TEXTCOLOR", (0, 0), (-1, 0), INK),
                 ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
                 ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#B8C5C1")),
+                ("GRID", (0, 0), (-1, -1), 0.35, GREY),
                 ("PADDING", (0, 0), (-1, -1), 8),
             ],
         ),
@@ -118,22 +122,25 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
         "item_code",
         "revision",
         "customer_name",
-        "total_cost_per_1000",
+        "pricing_base_per_1000",
         "selling_price_per_1000",
-        "preferred_margin_percent",
+        "target_spread_per_tonne",
     ]
     available = [column for column in columns if column in frame.columns]
     headings = [column.replace("_", " ").title() for column in available]
     rows = [headings]
     for _, row in frame[available].iterrows():
         rows.append([str(row[column])[:38] for column in available])
-    story = [Paragraph("Costing audit history", styles["Title"]), Spacer(1, 4 * mm)]
+    story = [
+        Paragraph("Solidus costing audit history", styles["Title"]),
+        Spacer(1, 4 * mm),
+    ]
     table = Table(rows, repeatRows=1)
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
+                ("TEXTCOLOR", (0, 0), (-1, 0), INK),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, -1), 7),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),

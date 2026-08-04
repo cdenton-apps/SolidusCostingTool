@@ -11,8 +11,8 @@ import streamlit as st
 from src.auth import require_user, sign_out_button
 from src.calculations import (
     calculate_cost,
-    margin_from_price,
-    price_from_margin,
+    price_from_spread,
+    spread_from_price,
     validate_details,
 )
 from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
@@ -29,8 +29,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 STAGES = ["1 · Select", "2 · Specification", "3 · Costs", "4 · Price", "5 · Save"]
 
 st.set_page_config(
-    page_title="Costing Tool",
-    page_icon="🧮",
+    page_title="Solidus Costing Tool",
+    page_icon="♻️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -38,15 +38,32 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    :root { --navy: #16324f; --teal: #1f7a6d; --pale: #eaf4f1; }
+    :root {
+        --solidus-yellow: #fdd615;
+        --solidus-gold: #dac20a;
+        --solidus-mist: #f3f5f2;
+        --solidus-grey: #d4dedd;
+        --solidus-ink: #000000;
+    }
     .block-container { padding-top: 1.5rem; padding-bottom: 3rem; max-width: 1280px; }
-    h1, h2, h3 { color: var(--navy); letter-spacing: -0.02em; }
-    div[data-testid="stMetric"] { background: #f7faf9; border: 1px solid #dce7e3;
-        border-radius: 12px; padding: 12px 16px; }
-    div[data-testid="stForm"] { border-color: #dce7e3; border-radius: 14px; }
-    .status-card { padding: 1rem 1.1rem; border-radius: 12px; background: var(--pale);
-        border-left: 5px solid var(--teal); margin: .5rem 0 1rem; }
-    .small-note { color: #52606d; font-size: .9rem; }
+    h1, h2, h3 { color: var(--solidus-ink); letter-spacing: -0.025em; }
+    div[data-testid="stMetric"] { background: #ffffff; border: 1px solid var(--solidus-grey);
+        border-top: 5px solid var(--solidus-yellow); border-radius: 12px; padding: 12px 16px; }
+    div[data-testid="stForm"] { border-color: var(--solidus-grey); border-radius: 14px; }
+    .status-card { padding: 1rem 1.1rem; border-radius: 12px; background: var(--solidus-mist);
+        border-left: 5px solid var(--solidus-yellow); margin: .5rem 0 1rem; }
+    .small-note { color: #4a5050; font-size: .9rem; }
+    .brand-banner { display: flex; align-items: center; justify-content: space-between;
+        gap: 1rem; padding: .8rem 1rem; margin: 0 0 1.1rem; background: var(--solidus-mist);
+        border-radius: 14px; border-right: 12px solid var(--solidus-yellow); }
+    .brand-name { font-size: 2.2rem; line-height: 1; font-weight: 800; letter-spacing: -.06em; }
+    .brand-tagline { font-size: .9rem; font-weight: 700; margin-top: .35rem; }
+    .brand-tool { font-size: 1rem; font-weight: 700; background: var(--solidus-yellow);
+        padding: .55rem .8rem; border-radius: 999px; white-space: nowrap; }
+    .stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"] {
+        background: var(--solidus-yellow); color: var(--solidus-ink); border-color: var(--solidus-gold); }
+    .stButton > button[kind="primary"]:hover { background: var(--solidus-gold); color: var(--solidus-ink); }
+    div[data-testid="stProgressBar"] > div > div { background-color: var(--solidus-yellow); }
     @media (max-width: 700px) { .block-container { padding: 1rem; } }
     </style>
     """,
@@ -85,11 +102,17 @@ def default_draft() -> dict[str, Any]:
         "order_quantity": 0,
         "bom_available": 0,
         "materials_cost_per_1000": 0.0,
-        "print_machine_cost_per_1000": 0.0,
-        "die_cut_machine_cost_per_1000": 0.0,
-        "fold_glue_machine_cost_per_1000": 0.0,
-        "other_machine_cost_per_1000": 0.0,
-        "labour_cost_per_1000": 0.0,
+        "board_item_code": "",
+        "board_article_code": "",
+        "board_price_per_tonne": 0.0,
+        "board_price_period": "",
+        "board_price_source": "",
+        "board_tonnes_per_1000": 0.0,
+        "board_cost_per_1000": 0.0,
+        "other_components_cost_per_1000": 0.0,
+        "component_template_item_code": "",
+        "units_out": 1.0,
+        "material_cost_source": "",
         "manual_adjustment_per_1000": 0.0,
         "fixed_tooling_cost": 0.0,
         "delivery_postcode": "",
@@ -101,7 +124,7 @@ def default_draft() -> dict[str, Any]:
         "transport_rate_zone": "",
         "transport_manual_override": 0,
         "transport_total": 0.0,
-        "preferred_margin_percent": 30.0,
+        "target_spread_per_tonne": 0.0,
         "source_item_code": "",
     }
 
@@ -117,6 +140,7 @@ def reset_downstream() -> None:
     st.session_state.pop("breakdown", None)
     st.session_state.pop("pricing", None)
     st.session_state.pop("transport_quotes", None)
+    st.session_state.pop("material_lines", None)
     st.session_state.pop("last_saved", None)
 
 
@@ -159,23 +183,20 @@ def stage_navigation() -> None:
 def show_cost_breakdown(breakdown: dict[str, float]) -> None:
     metric_columns = st.columns(4)
     metric_columns[0].metric(
-        "Total cost / 1,000", f"£{breakdown['total_cost_per_1000']:,.2f}"
+        "Pricing base / 1,000", f"£{breakdown['pricing_base_per_1000']:,.2f}"
     )
-    metric_columns[1].metric("Cost per item", f"£{breakdown['cost_per_item']:,.4f}")
+    metric_columns[1].metric(
+        "Pricing base / item", f"£{breakdown['pricing_base_per_item']:,.4f}"
+    )
     metric_columns[2].metric("Pallets", f"{breakdown['pallet_count']:,.0f}")
     metric_columns[3].metric(
         "Net kg / 1,000", f"{breakdown['net_weight_kg_per_1000']:,.2f}"
     )
     rows = [
-        ("BOM materials", breakdown["materials_cost_per_1000"]),
-        ("Print machine", breakdown["print_machine_cost_per_1000"]),
-        ("Die-cut machine", breakdown["die_cut_machine_cost_per_1000"]),
-        ("Fold-glue machine", breakdown["fold_glue_machine_cost_per_1000"]),
-        ("Other machine", breakdown["other_machine_cost_per_1000"]),
-        ("Labour", breakdown["labour_cost_per_1000"]),
-        ("Manual adjustment", breakdown["manual_adjustment_per_1000"]),
-        ("Tooling allocation", breakdown["tooling_cost_per_1000"]),
-        ("Transport", breakdown["transport_cost_per_1000"]),
+        ("Calculated materials", breakdown["materials_cost_per_1000"]),
+        ("Commercial adjustment", breakdown["manual_adjustment_per_1000"]),
+        ("Tooling pass-through", breakdown["tooling_cost_per_1000"]),
+        ("Delivery pass-through", breakdown["transport_cost_per_1000"]),
     ]
     table = pd.DataFrame(rows, columns=["Cost element", "Cost per 1,000"])
     st.dataframe(
@@ -213,21 +234,9 @@ def render_select(repository: CsvRepository) -> None:
             placeholder="Search by item code or description",
         )
         selected = clean_record(catalog.loc[selected_index].to_dict())
-        selected_bom_total = float(
-            selected.get("imported_bom_total_per_1000", 0) or 0
+        selected_material_total = float(
+            selected.get("materials_cost_per_1000", 0) or 0
         )
-        if selected_bom_total == 0:
-            selected_bom_total = sum(
-                float(selected.get(column, 0) or 0)
-                for column in [
-                    "materials_cost_per_1000",
-                    "print_machine_cost_per_1000",
-                    "die_cut_machine_cost_per_1000",
-                    "fold_glue_machine_cost_per_1000",
-                    "other_machine_cost_per_1000",
-                    "labour_cost_per_1000",
-                ]
-            )
         columns = st.columns(5)
         columns[0].metric("Product group", str(selected.get("product_group", "—")))
         columns[1].metric("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}")
@@ -235,8 +244,8 @@ def render_select(repository: CsvRepository) -> None:
             "Pallet quantity", f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}"
         )
         columns[3].metric(
-            "BOM cost / 1,000",
-            f"£{selected_bom_total:,.2f}"
+            "Calculated material / 1,000",
+            f"£{selected_material_total:,.2f}"
             if float(selected.get("bom_available", 0) or 0)
             else "No BOM",
         )
@@ -247,28 +256,39 @@ def render_select(repository: CsvRepository) -> None:
             f"{float(selected.get('height_mm', 0) or 0):,.0f} mm · "
             f"Net mass {float(selected.get('net_mass_kg', 0) or 0):,.4f} kg"
         )
-        bom_lines = repository.load_bom_lines(str(selected.get("item_code", "")))
-        if not bom_lines.empty:
-            with st.expander(f"View imported BOM ({len(bom_lines)} lines)"):
+        material_result = repository.material_breakdown(
+            str(selected.get("item_code", ""))
+        )
+        material_lines = material_result["lines"]
+        if not material_lines.empty:
+            with st.expander(
+                f"View automatic material calculation ({len(material_lines)} components)"
+            ):
+                st.caption(
+                    f"Board price source: {selected.get('board_price_source', '—')}. "
+                    "Machine and labour are excluded from every value shown here."
+                )
                 visible = [
-                    "cost_type",
-                    "process_group",
-                    "cost_code",
-                    "cost_description",
+                    "component_type",
+                    "component_code",
+                    "description",
                     "unit_of_measure",
                     "quantity",
-                    "run_hours",
-                    "effective_quantity_per_run",
-                    "cost_rate",
-                    "extended_cost",
+                    "tonnes_per_1000",
+                    "rate",
+                    "cost_per_1000",
+                    "source",
                 ]
                 st.dataframe(
-                    bom_lines[[column for column in visible if column in bom_lines]],
+                    material_lines[
+                        [column for column in visible if column in material_lines]
+                    ],
                     hide_index=True,
                     width="stretch",
                     column_config={
-                        "cost_rate": st.column_config.NumberColumn(format="£%.4f"),
-                        "extended_cost": st.column_config.NumberColumn(format="£%.4f"),
+                        "rate": st.column_config.NumberColumn(format="£%.2f"),
+                        "cost_per_1000": st.column_config.NumberColumn(format="£%.2f"),
+                        "tonnes_per_1000": st.column_config.NumberColumn(format="%.4f"),
                     },
                 )
         st.caption(
@@ -282,8 +302,10 @@ def render_select(repository: CsvRepository) -> None:
             draft.update(
                 {key: selected.get(key, draft.get(key)) for key in COST_INPUT_COLUMNS}
             )
-            if "preferred_margin_percent" in selected:
-                draft["preferred_margin_percent"] = selected["preferred_margin_percent"]
+            if "target_spread_per_tonne" in selected:
+                draft["target_spread_per_tonne"] = selected[
+                    "target_spread_per_tonne"
+                ]
             draft["source_item_code"] = selected.get("item_code", "")
             st.session_state.draft = clean_record(draft)
             reset_downstream()
@@ -435,74 +457,174 @@ def render_specification() -> None:
             navigate_to(2)
 
 
-def render_costs(rate_table: HaulierRateTable) -> None:
-    st.subheader("Production and transport costs")
+def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> None:
+    st.subheader("Material base and delivery")
     draft = st.session_state.draft
-    imported_total = (
-        draft_number("materials_cost_per_1000")
-        + draft_number("print_machine_cost_per_1000")
-        + draft_number("die_cut_machine_cost_per_1000")
-        + draft_number("fold_glue_machine_cost_per_1000")
-        + draft_number("other_machine_cost_per_1000")
-        + draft_number("labour_cost_per_1000")
-    )
-    if float(draft.get("bom_available", 0) or 0):
+    source_item_code = str(draft.get("source_item_code") or draft.get("item_code", ""))
+    material_result: dict[str, Any] | None = None
+    selected_board: pd.Series | None = None
+
+    if float(draft.get("bom_available", 0) or 0) and source_item_code:
+        material_result = repository.material_breakdown(source_item_code)
+        imported_total = float(
+            material_result["summary"].get("materials_cost_per_1000", 0) or 0
+        )
         st.success(
-            f"Imported BOM found. Supplied manufacturing cost: £{imported_total:,.2f} per 1,000."
+            f"Materials calculated automatically from the BOM and board data: £{imported_total:,.2f} per 1,000."
         )
     else:
-        st.warning(
-            "No imported BOM was found for this item. Enter the material, machine and labour costs manually."
+        st.info(
+            "This item has no BOM. Choose a priced board and a component template; the app will calculate the material value."
+        )
+        board_catalog = repository.load_priced_board_catalog().copy()
+        required_gsm = draft_number("board_gsm")
+        if required_gsm > 0:
+            matching_gsm = board_catalog[
+                pd.to_numeric(board_catalog["effective_gsm"], errors="coerce").eq(
+                    required_gsm
+                )
+            ]
+            if not matching_gsm.empty:
+                board_catalog = matching_gsm
+        site = str(draft.get("manufacturing_site", "")).split(".")[0]
+        if site:
+            matching_site = board_catalog[
+                board_catalog["board_item_code"].astype(str).str.contains(
+                    f"/{site}/", regex=False
+                )
+            ]
+            if not matching_site.empty:
+                board_catalog = matching_site
+        board_catalog = board_catalog.sort_values(
+            ["effective_gsm", "board_item_code"]
+        ).drop_duplicates("board_item_code")
+        board_labels = {
+            str(row["board_item_code"]): (
+                f"{row['board_item_code']} — {row.get('board_item_name', '')} — "
+                f"{float(row['price_per_tonne']):,.0f} £/tonne"
+            )
+            for _, row in board_catalog.iterrows()
+        }
+        board_options = ["", *board_labels]
+        current_board = str(draft.get("board_item_code", ""))
+        selected_board_code = st.selectbox(
+            "Board item *",
+            board_options,
+            index=board_options.index(current_board)
+            if current_board in board_options
+            else 0,
+            format_func=lambda value: board_labels.get(value, "Choose a board item"),
+        )
+        units_out = st.number_input(
+            "Finished units out per board sheet *",
+            min_value=0.01,
+            value=max(0.01, draft_number("units_out", 1)),
+            step=1.0,
+            help="For example, enter 2 when one board sheet makes two finished items.",
         )
 
-    st.markdown("#### BOM and production")
-    col1, col2, col3 = st.columns(3)
-    materials_cost = col1.number_input(
-        "Materials per 1,000 (£)",
-        min_value=0.0,
-        value=draft_number("materials_cost_per_1000"),
-        step=1.0,
+        templates = repository.load_current_items()
+        templates = templates[
+            pd.to_numeric(templates["bom_available"], errors="coerce").fillna(0).gt(0)
+        ].sort_values("item_code")
+        template_labels = {
+            str(row["item_code"]): f"{row['item_code']} — {row.get('description', '')}"
+            for _, row in templates.iterrows()
+        }
+        template_labels["__NONE__"] = "No other components required"
+        template_options = [
+            "",
+            "__NONE__",
+            *[code for code in template_labels if code != "__NONE__"],
+        ]
+        current_template = str(draft.get("component_template_item_code", ""))
+        selected_template = st.selectbox(
+            "Other-component template *",
+            template_options,
+            index=template_options.index(current_template)
+            if current_template in template_options
+            else 0,
+            format_func=lambda value: template_labels.get(
+                value, "Choose a comparable BOM or confirm none"
+            ),
+            help="Copies banding, pallets, layercards, wrap, adhesive and other non-board BOM components from a comparable item.",
+        )
+        if selected_board_code and selected_template:
+            template_code = "" if selected_template == "__NONE__" else selected_template
+            material_result = repository.new_item_material_breakdown(
+                selected_board_code,
+                units_out=units_out,
+                component_template_item_code=template_code,
+            )
+            selected_board = board_catalog[
+                board_catalog["board_item_code"].astype(str).eq(selected_board_code)
+            ].iloc[0]
+
+    st.markdown("#### Included pricing components")
+    st.caption(
+        "Board is priced from the April 2026 mill list wherever an unambiguous match exists. Other components come from the BOM. Machine and labour are excluded."
     )
-    print_machine = col2.number_input(
-        "Print machine per 1,000 (£)",
-        min_value=0.0,
-        value=draft_number("print_machine_cost_per_1000"),
-        step=1.0,
-    )
-    die_cut_machine = col3.number_input(
-        "Die-cut machine per 1,000 (£)",
-        min_value=0.0,
-        value=draft_number("die_cut_machine_cost_per_1000"),
-        step=1.0,
-    )
-    col1, col2, col3 = st.columns(3)
-    fold_glue_machine = col1.number_input(
-        "Fold-glue machine per 1,000 (£)",
-        min_value=0.0,
-        value=draft_number("fold_glue_machine_cost_per_1000"),
-        step=1.0,
-    )
-    other_machine = col2.number_input(
-        "Other machine per 1,000 (£)",
-        min_value=0.0,
-        value=draft_number("other_machine_cost_per_1000"),
-        step=1.0,
-    )
-    labour_cost = col3.number_input(
-        "Labour per 1,000 (£)",
-        min_value=0.0,
-        value=draft_number("labour_cost_per_1000"),
-        step=1.0,
-    )
+    if material_result is not None:
+        material_summary = material_result["summary"]
+        material_lines = material_result["lines"]
+        metrics = st.columns(4)
+        metrics[0].metric(
+            "Board / 1,000", f"£{float(material_summary['board_cost_per_1000']):,.2f}"
+        )
+        metrics[1].metric(
+            "Other components / 1,000",
+            f"£{float(material_summary['other_components_cost_per_1000']):,.2f}",
+        )
+        metrics[2].metric(
+            "Total materials / 1,000",
+            f"£{float(material_summary['materials_cost_per_1000']):,.2f}",
+        )
+        metrics[3].metric(
+            "Board rate",
+            f"£{float(material_summary['board_price_per_tonne']):,.2f} / tonne",
+        )
+        st.caption(
+            f"{material_summary.get('board_article_code') or material_summary.get('board_item_code', 'Board')} · "
+            f"{material_summary.get('board_price_source', '')}"
+        )
+        if not material_lines.empty:
+            with st.expander("View board and component calculation"):
+                visible = [
+                    "component_type",
+                    "component_code",
+                    "description",
+                    "quantity",
+                    "unit_of_measure",
+                    "tonnes_per_1000",
+                    "rate",
+                    "cost_per_1000",
+                    "source",
+                ]
+                st.dataframe(
+                    material_lines[
+                        [column for column in visible if column in material_lines]
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "rate": st.column_config.NumberColumn(format="£%.2f"),
+                        "cost_per_1000": st.column_config.NumberColumn(format="£%.2f"),
+                        "tonnes_per_1000": st.column_config.NumberColumn(format="%.4f"),
+                    },
+                )
+    else:
+        material_summary = None
+        st.warning("Choose both a board item and an other-component option to continue.")
+
     col1, col2 = st.columns(2)
-    manual_adjustment = col1.number_input(
-        "Manual adjustment per 1,000 (£)",
+    manual_adjustment = col2.number_input(
+        "Commercial adjustment per 1,000 (£)",
         value=draft_number("manual_adjustment_per_1000"),
         step=1.0,
         help="Use a negative value for a credit or reduction.",
     )
-    fixed_tooling = col2.number_input(
-        "Fixed tooling / setup for this order (£)",
+    fixed_tooling = col1.number_input(
+        "Tooling pass-through for this order (£)",
         min_value=0.0,
         value=draft_number("fixed_tooling_cost"),
         step=10.0,
@@ -565,16 +687,15 @@ def render_costs(rate_table: HaulierRateTable) -> None:
             "AM/PM adds £7 per load; Timed adds £19 per load. McDowells adds £40 for each complete 26-pallet load."
         )
 
-    calculate = st.button("Calculate total cost", type="primary")
+    calculate = st.button(
+        "Calculate pricing base",
+        type="primary",
+        disabled=material_summary is None,
+    )
 
-    if calculate:
+    if calculate and material_summary is not None:
         updated = {
-            "materials_cost_per_1000": materials_cost,
-            "print_machine_cost_per_1000": print_machine,
-            "die_cut_machine_cost_per_1000": die_cut_machine,
-            "fold_glue_machine_cost_per_1000": fold_glue_machine,
-            "other_machine_cost_per_1000": other_machine,
-            "labour_cost_per_1000": labour_cost,
+            **material_summary,
             "manual_adjustment_per_1000": manual_adjustment,
             "fixed_tooling_cost": fixed_tooling,
             "delivery_method": delivery_method,
@@ -583,6 +704,19 @@ def render_costs(rate_table: HaulierRateTable) -> None:
             "transport_vendor_preference": vendor_preference,
             "transport_manual_override": int(manual_override),
         }
+        if selected_board is not None:
+            updated.update(
+                {
+                    "board_gsm": float(selected_board["effective_gsm"]),
+                    "board_width_mm": float(selected_board["effective_width_mm"]),
+                    "board_length_mm": float(selected_board["effective_length_mm"]),
+                    "board_code": str(selected_board.get("resolved_article_no", "")),
+                }
+            )
+            if draft_number("net_mass_kg") <= 0:
+                updated["net_mass_kg"] = float(
+                    material_summary["board_tonnes_per_1000"]
+                )
         try:
             if delivery_method == "Haulier" and not manual_override:
                 quotes = rate_table.quote_options(
@@ -632,6 +766,7 @@ def render_costs(rate_table: HaulierRateTable) -> None:
                 st.session_state.transport_quotes = []
 
             st.session_state.draft.update(updated)
+            st.session_state.material_lines = material_lines
             st.session_state.breakdown = calculate_cost(st.session_state.draft)
             st.session_state.pop("pricing", None)
             st.rerun()
@@ -686,32 +821,35 @@ def render_costs(rate_table: HaulierRateTable) -> None:
 
 
 def render_pricing() -> None:
-    st.subheader("Set margin or selling price")
+    st.subheader("Set spread or selling price")
     breakdown = st.session_state.breakdown
     show_cost_breakdown(breakdown)
+    st.info(
+        "Spread is measured in £ per tonne. Selling price = pricing base + (spread × net tonnes per 1,000)."
+    )
     basis = st.radio(
         "Which value do you want to control?",
-        ["Preferred margin", "Selling price"],
+        ["Target spread", "Selling price"],
         horizontal=True,
     )
     with st.form("pricing_form"):
-        if basis == "Preferred margin":
+        if basis == "Target spread":
             value = st.number_input(
-                "Preferred margin %",
+                "Target spread (£/tonne)",
                 min_value=0.0,
-                max_value=99.99,
                 value=float(
                     st.session_state.get("pricing", {}).get(
-                        "preferred_margin_percent",
-                        draft_number("preferred_margin_percent", 30),
+                        "target_spread_per_tonne",
+                        draft_number("target_spread_per_tonne", 0),
                     )
                 ),
-                step=0.25,
+                step=10.0,
             )
         else:
-            suggested = price_from_margin(
-                breakdown["total_cost_per_1000"],
-                draft_number("preferred_margin_percent", 30),
+            suggested = price_from_spread(
+                breakdown["pricing_base_per_1000"],
+                breakdown["net_weight_kg_per_1000"],
+                draft_number("target_spread_per_tonne", 0),
             )["selling_price_per_1000"]
             value = st.number_input(
                 "Selling price per 1,000 (£)",
@@ -728,13 +866,21 @@ def render_pricing() -> None:
     if apply_price:
         try:
             pricing = (
-                price_from_margin(breakdown["total_cost_per_1000"], value)
-                if basis == "Preferred margin"
-                else margin_from_price(breakdown["total_cost_per_1000"], value)
+                price_from_spread(
+                    breakdown["pricing_base_per_1000"],
+                    breakdown["net_weight_kg_per_1000"],
+                    value,
+                )
+                if basis == "Target spread"
+                else spread_from_price(
+                    breakdown["pricing_base_per_1000"],
+                    breakdown["net_weight_kg_per_1000"],
+                    value,
+                )
             )
             st.session_state.pricing = pricing
-            st.session_state.draft["preferred_margin_percent"] = pricing[
-                "preferred_margin_percent"
+            st.session_state.draft["target_spread_per_tonne"] = pricing[
+                "target_spread_per_tonne"
             ]
             st.rerun()
         except ValueError as exc:
@@ -749,9 +895,11 @@ def render_pricing() -> None:
         columns[1].metric(
             "Selling price / item", f"£{pricing['selling_price_per_item']:,.4f}"
         )
-        columns[2].metric("Margin", f"{pricing['preferred_margin_percent']:,.2f}%")
-        if pricing["preferred_margin_percent"] < 0:
-            st.warning("The selected selling price produces a negative margin.")
+        columns[2].metric(
+            "Spread", f"£{pricing['target_spread_per_tonne']:,.2f} / tonne"
+        )
+        if pricing["target_spread_per_tonne"] < 0:
+            st.warning("The selected selling price produces a negative spread.")
         if st.button("Continue to save and print", type="primary"):
             navigate_to(4)
 
@@ -785,7 +933,9 @@ def render_save(repository: CsvRepository, user_email: str, user_name: str) -> N
     columns = st.columns(4)
     columns[0].metric("Item", str(record["item_code"]))
     columns[1].metric("Quantity", f"{float(record['order_quantity']):,.0f}")
-    columns[2].metric("Cost / 1,000", f"£{record['total_cost_per_1000']:,.2f}")
+    columns[2].metric(
+        "Pricing base / 1,000", f"£{record['pricing_base_per_1000']:,.2f}"
+    )
     columns[3].metric("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}")
 
     if st.button("Save as a new revision", type="primary", width="stretch"):
@@ -858,9 +1008,9 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         "customer_name",
         "description",
         "order_quantity",
-        "total_cost_per_1000",
+        "pricing_base_per_1000",
         "selling_price_per_1000",
-        "preferred_margin_percent",
+        "target_spread_per_tonne",
         "costing_id",
     ]
     st.dataframe(
@@ -868,9 +1018,9 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         hide_index=True,
         width="stretch",
         column_config={
-            "total_cost_per_1000": st.column_config.NumberColumn(format="£%.2f"),
+            "pricing_base_per_1000": st.column_config.NumberColumn(format="£%.2f"),
             "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
-            "preferred_margin_percent": st.column_config.NumberColumn(format="%.2f%%"),
+            "target_spread_per_tonne": st.column_config.NumberColumn(format="£%.2f"),
             "order_quantity": st.column_config.NumberColumn(format="%.0f"),
         },
     )
@@ -897,15 +1047,22 @@ def render_workflow(
     user_email: str,
     user_name: str,
 ) -> None:
-    st.title("Costing Tool")
-    st.caption("Create auditable product costings, quotes and stock-item export drafts.")
+    st.markdown(
+        '<div class="brand-banner"><div><div class="brand-name">Solidus</div>'
+        '<div class="brand-tagline">Your circular packaging partner</div></div>'
+        '<div class="brand-tool">Spread Costing Tool</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Create auditable material-and-spread costings, quotes and stock-item export drafts."
+    )
     stage_navigation()
     if st.session_state.step == 0:
         render_select(repository)
     elif st.session_state.step == 1:
         render_specification()
     elif st.session_state.step == 2:
-        render_costs(rate_table)
+        render_costs(repository, rate_table)
     elif st.session_state.step == 3:
         render_pricing()
     else:
@@ -918,12 +1075,14 @@ def main() -> None:
     rate_table = HaulierRateTable(repository.haulier_path)
     st.session_state.setdefault("step", 0)
 
-    st.sidebar.markdown("### Costing Tool")
+    st.sidebar.markdown("## Solidus")
+    st.sidebar.caption("Your circular packaging partner")
+    st.sidebar.markdown("### Spread Costing Tool")
     st.sidebar.caption(f"Signed in as {user.name}")
     page = st.sidebar.radio("Navigation", ["Costing workflow", "History"])
     st.sidebar.divider()
     st.sidebar.caption(
-        "Inputs: current_items.csv, bom_costs.csv and haulier_rates.csv\n\nOutput: append-only saved_costings.csv"
+        "Inputs: current items, BOMs, board stock, April 2026 mill prices and haulier rates\n\nOutput: append-only saved_costings.csv"
     )
     sign_out_button()
 

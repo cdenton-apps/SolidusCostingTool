@@ -1,4 +1,4 @@
-# Costing Tool
+# Solidus Spread Costing Tool
 
 A GitHub-ready Streamlit costing application using the supplied Sage item/BOM
 test extracts and haulier price matrix.
@@ -7,12 +7,14 @@ test extracts and haulier price matrix.
 
 - secure sign-in using local hashed passwords or Streamlit OIDC;
 - 354 current items with their Sage analysis values;
+- 986 board stock items, including board code, dimensions, GSM and FSC data;
+- 1,163 April 2026 mill price rows, with 579 board items matched to an unambiguous current rate;
 - 2,330 detailed BOM lines covering 179 costed items;
-- imported BOM materials, print, die-cut, fold-glue, other-machine and labour totals;
+- automatic board pricing plus BOM component roll-up, with no normal material-cost typing;
 - required-field checks before a costing can progress;
 - postcode, service, haulier and pallet-count transport pricing;
 - automatic comparison of Joda and McDowells where both rates are available;
-- margin-led or selling-price-led pricing;
+- spread-led or selling-price-led pricing in £ per tonne;
 - append-only revision history showing who created each costing and when;
 - customer quotation PDFs, audit PDFs and CSV extracts;
 - an indicative Sage new-stock-item CSV using the supplied import headings.
@@ -42,7 +44,9 @@ The real secrets file is excluded from Git.
 | File | Purpose |
 | --- | --- |
 | `data/current_items.csv` | Converted item fields and Sage analysis values |
-| `data/bom_costs.csv` | Detailed BOM material, labour and machine lines |
+| `data/board_items.csv` | Board stock information and resolved April 2026 mill match |
+| `data/board_prices.csv` | April 2026 mill price list and article aliases |
+| `data/bom_costs.csv` | Source BOM extract; only material rows feed the commercial value |
 | `data/haulier_rates.csv` | Postcode/service/vendor matrix for 1–26 pallets |
 | `data/saved_costings.csv` | Append-only costing and revision history |
 
@@ -51,19 +55,45 @@ persistent mounted folder.
 
 ## Cost calculation
 
-For items with an imported BOM, the initial production cost is taken from the
-supplied BOM totals. The extract reconciles exactly as:
+For existing items, the app finds every non-informational board component in the
+BOM, joins it to the board stock list and applies the April 2026 mill price. It
+matches by article/board code first. Size and GSM are used only when they lead to
+one unambiguous price.
 
-`BOM materials + BOM machine total + BOM labour = BOM total unit cost`
+If the mill list has no safe match, the app automatically falls back to the
+BOM's material-only value. For rolled printed-board children, rolled labour and
+machine values are explicitly subtracted before the fallback is used. Other
+material components such as pallets, banding, layercards, wrap, topsheets and
+adhesive are added from their BOM lines.
 
-The app exposes the supplied machine breakdown for print, die cutting, fold
-gluing and other machinery. Users can amend these values, add a manual cost
-adjustment, and allocate fixed tooling across the selected order quantity.
+For a brand-new item, the user selects a priced board item, enters the number of
+finished units out per sheet and selects a comparable BOM for the other
+components (or explicitly confirms that none are required). The material value
+is then calculated; there is no free-typed material-cost field.
 
-Transport is converted into a cost per 1,000 and added to the manufacturing
-cost. Margin pricing uses:
+Commercial adjustments and allocated tooling are added to the material base as
+pass-throughs. Transport is converted into a value per 1,000 and added as a
+delivery pass-through.
 
-`selling price = total cost / (1 - margin)`
+Spread is measured in pounds per net tonne:
+
+`spread value per 1,000 = target spread (£/tonne) × net kg per 1,000 ÷ 1,000`
+
+`selling price per 1,000 = pricing base per 1,000 + spread value per 1,000`
+
+Entering a selling price performs the inverse calculation and reports the
+achieved spread in £ per tonne.
+
+## Refresh the workbook feeds
+
+After replacing the source workbooks, regenerate the app CSVs with:
+
+```bash
+python scripts/import_workbooks.py \
+  --costing-workbook "Costing app test data.xlsx" \
+  --board-prices "Mill Price List Comparison Apr 26.XLSX" \
+  --output-dir data
+```
 
 ## Transport rules
 
@@ -99,8 +129,9 @@ backed-up store.
 - Whether AM/PM, timed and McDowells full-load surcharges are current and VAT/FSC treatment.
 - How to handle dual collections and special delivery instructions.
 - Which users may alter imported BOM values versus only viewing them.
+- Ownership of board items that still have no unambiguous current mill-price match.
 - The mandatory accounts/defaults needed for a fully importable new Sage item row.
-- Approval thresholds for margin, manual adjustments and transport overrides.
+- Target spread thresholds, and approval rules for commercial adjustments and transport overrides.
 
 ## Test
 
@@ -108,7 +139,7 @@ backed-up store.
 pytest -q
 ```
 
-The tests cover imported BOM costing, pricing, password hashing, append-only
+The tests cover imported material pricing, spread calculations, explicit
+machine/labour exclusion, password hashing, append-only
 history, postcode-zone selection, haulier comparisons, full-load rules,
 unavailable rates, exports and the Streamlit workflow.
-

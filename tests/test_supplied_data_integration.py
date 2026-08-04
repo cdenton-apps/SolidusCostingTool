@@ -12,7 +12,7 @@ from src.transport import HaulierRateTable
 DATA_PATH = Path(__file__).resolve().parents[1] / "data"
 
 
-def test_imported_bom_and_haulier_rate_roll_into_total_cost() -> None:
+def test_imported_material_and_haulier_rate_roll_into_pricing_base() -> None:
     repository = CsvRepository(DATA_PATH)
     rate_table = HaulierRateTable(repository.haulier_path)
     item = repository.load_current_items().loc[
@@ -35,7 +35,6 @@ def test_imported_bom_and_haulier_rate_roll_into_total_cost() -> None:
 
     assert quotes[0].vendor == "McDowells"
     assert quotes[0].total_cost == pytest.approx(133)
-    assert result["manufacturing_cost_per_1000"] == pytest.approx(606.27)
+    assert result["material_base_per_1000"] == pytest.approx(488.2616)
     assert result["transport_cost_per_1000"] == pytest.approx(13.3)
-    assert result["total_cost_per_1000"] == pytest.approx(619.57)
-
+    assert result["pricing_base_per_1000"] == pytest.approx(501.5616)

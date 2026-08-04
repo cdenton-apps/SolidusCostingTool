@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -54,11 +55,29 @@ SPECIFICATION_COLUMNS = [
 COST_INPUT_COLUMNS = [
     "bom_available",
     "materials_cost_per_1000",
-    "print_machine_cost_per_1000",
-    "die_cut_machine_cost_per_1000",
-    "fold_glue_machine_cost_per_1000",
-    "other_machine_cost_per_1000",
-    "labour_cost_per_1000",
+    "board_item_code",
+    "board_article_code",
+    "board_price_per_tonne",
+    "board_price_period",
+    "board_price_source",
+    "board_tonnes_per_1000",
+    "board_cost_per_1000",
+    "other_components_cost_per_1000",
+    "component_template_item_code",
+    "units_out",
+    "material_cost_source",
+    "manual_adjustment_per_1000",
+    "fixed_tooling_cost",
+]
+
+NUMERIC_COST_INPUT_COLUMNS = [
+    "bom_available",
+    "materials_cost_per_1000",
+    "board_price_per_tonne",
+    "board_tonnes_per_1000",
+    "board_cost_per_1000",
+    "other_components_cost_per_1000",
+    "units_out",
     "manual_adjustment_per_1000",
     "fixed_tooling_cost",
 ]
@@ -67,13 +86,13 @@ CALCULATION_COLUMNS = [
     "net_weight_kg_per_1000",
     "pallet_count",
     "transport_total",
-    "machine_cost_per_1000",
     "tooling_cost_per_1000",
-    "manufacturing_cost_per_1000",
+    "material_base_per_1000",
     "transport_cost_per_1000",
-    "total_cost_per_1000",
-    "cost_per_item",
-    "preferred_margin_percent",
+    "pricing_base_per_1000",
+    "pricing_base_per_item",
+    "target_spread_per_tonne",
+    "spread_value_per_1000",
     "selling_price_per_1000",
     "selling_price_per_item",
 ]
@@ -94,7 +113,7 @@ HISTORY_COLUMNS = [
 ]
 
 BOM_TOTAL_RENAMES = {
-    "bom_materials": "materials_cost_per_1000",
+    "bom_materials": "imported_bom_materials_per_1000",
     "bom_print_machine": "print_machine_cost_per_1000",
     "bom_die_cut_machine": "die_cut_machine_cost_per_1000",
     "bom_fold_glue_machine": "fold_glue_machine_cost_per_1000",
@@ -112,6 +131,8 @@ class CsvRepository:
         self.data_dir = Path(data_dir)
         self.items_path = self.data_dir / "current_items.csv"
         self.bom_path = self.data_dir / "bom_costs.csv"
+        self.board_items_path = self.data_dir / "board_items.csv"
+        self.board_prices_path = self.data_dir / "board_prices.csv"
         self.haulier_path = self.data_dir / "haulier_rates.csv"
         self.history_path = self.data_dir / "saved_costings.csv"
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -137,11 +158,300 @@ class CsvRepository:
         )
         return summary
 
+    def load_board_items(self) -> pd.DataFrame:
+        if not self.board_items_path.exists():
+            return pd.DataFrame()
+        return pd.read_csv(self.board_items_path)
+
+    def load_board_prices(self) -> pd.DataFrame:
+        if not self.board_prices_path.exists():
+            return pd.DataFrame()
+        return pd.read_csv(self.board_prices_path)
+
+    @staticmethod
+    def _positive_number(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) and parsed > 0 else None
+
+    @classmethod
+    def _board_tonnes_per_1000(
+        cls, line: pd.Series, board: pd.Series | None
+    ) -> float | None:
+        quantity = cls._positive_number(line.get("quantity"))
+        if quantity is None:
+            return None
+        if "tonne" in str(line.get("unit_of_measure", "")).lower():
+            return quantity
+        if board is None:
+            return None
+        width = cls._positive_number(board.get("board_width_mm")) or cls._positive_number(
+            board.get("resolved_width_mm")
+        )
+        length = cls._positive_number(
+            board.get("board_length_mm")
+        ) or cls._positive_number(board.get("resolved_length_mm"))
+        gsm = cls._positive_number(board.get("board_gsm")) or cls._positive_number(
+            board.get("resolved_gsm")
+        )
+        if not width or not length or not gsm:
+            return None
+        return quantity * width * length * gsm / 1_000_000_000
+
+    @classmethod
+    def _material_breakdown_from_frames(
+        cls,
+        item_code: str,
+        bom: pd.DataFrame,
+        boards: pd.DataFrame,
+    ) -> dict[str, Any]:
+        item_lines = bom[bom["bom_code"].astype(str) == str(item_code)].copy()
+        if item_lines.empty:
+            return {
+                "summary": {
+                    "materials_cost_per_1000": 0.0,
+                    "board_item_code": "",
+                    "board_article_code": "",
+                    "board_price_per_tonne": 0.0,
+                    "board_price_period": "",
+                    "board_price_source": "No BOM board component",
+                    "board_tonnes_per_1000": 0.0,
+                    "board_cost_per_1000": 0.0,
+                    "other_components_cost_per_1000": 0.0,
+                    "material_cost_source": "No BOM material lines",
+                },
+                "lines": pd.DataFrame(),
+            }
+
+        informational = pd.to_numeric(
+            item_lines.get("is_informational_row", 0), errors="coerce"
+        ).fillna(0)
+        materials = item_lines[
+            item_lines["cost_type"].astype(str).eq("Material")
+            & informational.eq(0)
+        ].copy()
+        board_lookup = (
+            boards.set_index("board_item_code", drop=False)
+            if not boards.empty and "board_item_code" in boards
+            else pd.DataFrame()
+        )
+
+        detail_rows: list[dict[str, Any]] = []
+        board_total = 0.0
+        board_tonnes = 0.0
+        other_total = 0.0
+        board_items: list[str] = []
+        articles: list[str] = []
+        sources: list[str] = []
+        periods: list[str] = []
+
+        for _, line in materials.iterrows():
+            component_code = str(line.get("cost_code", ""))
+            extended_value = pd.to_numeric(line.get("extended_cost"), errors="coerce")
+            extended = float(extended_value) if pd.notna(extended_value) else 0.0
+            if not component_code.upper().startswith("BRD"):
+                other_total += extended
+                detail_rows.append(
+                    {
+                        "component_type": "Other component",
+                        "component_code": component_code,
+                        "description": line.get("cost_description", ""),
+                        "quantity": line.get("quantity", 0),
+                        "unit_of_measure": line.get("unit_of_measure", ""),
+                        "rate": line.get("unit_cost", 0),
+                        "cost_per_1000": extended,
+                        "source": "BOM component rate",
+                    }
+                )
+                continue
+
+            board = None
+            if not board_lookup.empty and component_code in board_lookup.index:
+                board = board_lookup.loc[component_code]
+                if isinstance(board, pd.DataFrame):
+                    board = board.iloc[0]
+            tonnes = cls._board_tonnes_per_1000(line, board)
+            rate = cls._positive_number(board.get("price_per_tonne")) if board is not None else None
+            source = str(board.get("price_source", "")) if board is not None else ""
+            article = str(board.get("resolved_article_no", "")) if board is not None else ""
+            period = str(board.get("price_period", "")) if board is not None else ""
+
+            if rate is not None and tonnes is not None:
+                cost = rate * tonnes
+            else:
+                rolled = item_lines[
+                    item_lines["cost_type"].astype(str).eq("Rolled Child")
+                    & item_lines["cost_code"].astype(str).eq(component_code)
+                    & item_lines["cost_description"]
+                    .astype(str)
+                    .str.contains("Labour|Machine", case=False, regex=True)
+                ]
+                excluded_conversion = pd.to_numeric(
+                    rolled.get("extended_cost", 0), errors="coerce"
+                ).fillna(0).sum()
+                cost = max(0.0, extended - float(excluded_conversion))
+                rate = cost / tonnes if tonnes else None
+                source = "BOM material fallback (machine/labour removed)"
+                article = ""
+                period = ""
+
+            board_total += cost
+            if tonnes:
+                board_tonnes += tonnes
+            if component_code not in board_items:
+                board_items.append(component_code)
+            if article and article != "nan" and article not in articles:
+                articles.append(article)
+            if source and source not in sources:
+                sources.append(source)
+            if period and period != "nan" and period not in periods:
+                periods.append(period)
+            detail_rows.append(
+                {
+                    "component_type": "Board",
+                    "component_code": component_code,
+                    "description": line.get("cost_description", ""),
+                    "quantity": line.get("quantity", 0),
+                    "unit_of_measure": line.get("unit_of_measure", ""),
+                    "rate": rate,
+                    "tonnes_per_1000": tonnes,
+                    "cost_per_1000": cost,
+                    "article_no": article,
+                    "source": source,
+                }
+            )
+
+        materials_total = board_total + other_total
+        weighted_rate = board_total / board_tonnes if board_tonnes else 0.0
+        summary = {
+            "materials_cost_per_1000": round(materials_total, 4),
+            "board_item_code": " | ".join(board_items),
+            "board_article_code": " | ".join(articles),
+            "board_price_per_tonne": round(weighted_rate, 4),
+            "board_price_period": " | ".join(periods),
+            "board_price_source": " | ".join(sources) or "No BOM board component",
+            "board_tonnes_per_1000": round(board_tonnes, 6),
+            "board_cost_per_1000": round(board_total, 4),
+            "other_components_cost_per_1000": round(other_total, 4),
+            "material_cost_source": "Automatic board and BOM component calculation",
+        }
+        return {"summary": summary, "lines": pd.DataFrame(detail_rows)}
+
+    def material_breakdown(self, item_code: str) -> dict[str, Any]:
+        return self._material_breakdown_from_frames(
+            item_code, self.load_bom_lines(), self.load_board_items()
+        )
+
+    def load_material_summary(self) -> pd.DataFrame:
+        bom = self.load_bom_lines()
+        boards = self.load_board_items()
+        if bom.empty:
+            return pd.DataFrame(columns=["item_code", *COST_INPUT_COLUMNS])
+        summaries = []
+        for item_code in bom["bom_code"].dropna().astype(str).unique():
+            result = self._material_breakdown_from_frames(item_code, bom, boards)
+            summaries.append({"item_code": item_code, **result["summary"]})
+        return pd.DataFrame(summaries)
+
+    def load_priced_board_catalog(self) -> pd.DataFrame:
+        boards = self.load_board_items().copy()
+        if boards.empty:
+            return boards
+        price = pd.to_numeric(boards["price_per_tonne"], errors="coerce")
+        width = pd.to_numeric(boards["board_width_mm"], errors="coerce").fillna(
+            pd.to_numeric(boards.get("resolved_width_mm"), errors="coerce")
+        )
+        length = pd.to_numeric(boards["board_length_mm"], errors="coerce").fillna(
+            pd.to_numeric(boards.get("resolved_length_mm"), errors="coerce")
+        )
+        gsm = pd.to_numeric(boards["board_gsm"], errors="coerce").fillna(
+            pd.to_numeric(boards.get("resolved_gsm"), errors="coerce")
+        )
+        boards["effective_width_mm"] = width
+        boards["effective_length_mm"] = length
+        boards["effective_gsm"] = gsm
+        return boards[(price > 0) & width.gt(0) & length.gt(0) & gsm.gt(0)].copy()
+
+    def new_item_material_breakdown(
+        self,
+        board_item_code: str,
+        *,
+        units_out: float,
+        component_template_item_code: str = "",
+    ) -> dict[str, Any]:
+        if units_out <= 0:
+            raise ValueError("Units out per board sheet must be greater than zero.")
+        catalog = self.load_priced_board_catalog()
+        selected = catalog[catalog["board_item_code"].astype(str) == str(board_item_code)]
+        if selected.empty:
+            raise ValueError("Choose a board item with an unambiguous Apr-26 mill price.")
+        board = selected.iloc[0]
+        tonnes = (
+            float(board["effective_width_mm"])
+            * float(board["effective_length_mm"])
+            * float(board["effective_gsm"])
+            / 1_000_000_000
+            / units_out
+        )
+        rate = float(board["price_per_tonne"])
+        board_cost = tonnes * rate
+
+        other_lines = pd.DataFrame()
+        if component_template_item_code:
+            template = self.material_breakdown(component_template_item_code)
+            template_lines = template["lines"]
+            if not template_lines.empty:
+                other_lines = template_lines[
+                    template_lines["component_type"].eq("Other component")
+                ].copy()
+        other_total = (
+            float(pd.to_numeric(other_lines.get("cost_per_1000", 0), errors="coerce").fillna(0).sum())
+            if not other_lines.empty
+            else 0.0
+        )
+        board_line = pd.DataFrame(
+            [
+                {
+                    "component_type": "Board",
+                    "component_code": board_item_code,
+                    "description": board.get("board_item_name", ""),
+                    "quantity": 1 / units_out,
+                    "unit_of_measure": "1000 sheets",
+                    "rate": rate,
+                    "tonnes_per_1000": tonnes,
+                    "cost_per_1000": board_cost,
+                    "article_no": board.get("resolved_article_no", ""),
+                    "source": board.get("price_source", ""),
+                }
+            ]
+        )
+        summary = {
+            "materials_cost_per_1000": round(board_cost + other_total, 4),
+            "board_item_code": board_item_code,
+            "board_article_code": board.get("resolved_article_no", ""),
+            "board_price_per_tonne": round(rate, 4),
+            "board_price_period": board.get("price_period", ""),
+            "board_price_source": board.get("price_source", ""),
+            "board_tonnes_per_1000": round(tonnes, 6),
+            "board_cost_per_1000": round(board_cost, 4),
+            "other_components_cost_per_1000": round(other_total, 4),
+            "component_template_item_code": component_template_item_code,
+            "units_out": units_out,
+            "material_cost_source": "Selected board plus automatic component template",
+        }
+        return {
+            "summary": summary,
+            "lines": pd.concat([board_line, other_lines], ignore_index=True, sort=False),
+        }
+
     def load_current_items(self) -> pd.DataFrame:
         if not self.items_path.exists():
             return pd.DataFrame(columns=SPECIFICATION_COLUMNS)
         items = pd.read_csv(self.items_path)
         items = items.merge(self.load_bom_summary(), on="item_code", how="left")
+        items = items.merge(self.load_material_summary(), on="item_code", how="left")
         defaults: dict[str, Any] = {
             "customer_name": "",
             "material": "BOM-defined materials",
@@ -156,7 +466,8 @@ class CsvRepository:
             "transport_manual_override": 0,
             "manual_adjustment_per_1000": 0.0,
             "fixed_tooling_cost": 0.0,
-            "preferred_margin_percent": 30.0,
+            "target_spread_per_tonne": 0.0,
+            "units_out": 1.0,
         }
         for column, value in defaults.items():
             if column not in items:
@@ -165,8 +476,11 @@ class CsvRepository:
                 items[column] = items[column].fillna(value)
         for column in COST_INPUT_COLUMNS:
             if column not in items:
-                items[column] = 0.0
+                items[column] = 0.0 if column in NUMERIC_COST_INPUT_COLUMNS else ""
+        for column in NUMERIC_COST_INPUT_COLUMNS:
             items[column] = pd.to_numeric(items[column], errors="coerce").fillna(0)
+        for column in set(COST_INPUT_COLUMNS) - set(NUMERIC_COST_INPUT_COLUMNS):
+            items[column] = items[column].fillna("")
         return items
 
     def load_history(self) -> pd.DataFrame:
@@ -194,7 +508,7 @@ class CsvRepository:
         catalog_columns = [
             *SPECIFICATION_COLUMNS,
             *COST_INPUT_COLUMNS,
-            "preferred_margin_percent",
+            "target_spread_per_tonne",
         ]
         latest = latest[[c for c in catalog_columns if c in latest.columns]].copy()
         latest["source_type"] = "Saved costing"
@@ -250,4 +564,3 @@ class CsvRepository:
 def data_directory(project_root: Path) -> Path:
     configured = os.getenv("COSTING_DATA_DIR")
     return Path(configured).expanduser() if configured else project_root / "data"
-
