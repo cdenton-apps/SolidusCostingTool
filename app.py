@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,13 @@ from src.calculations import (
     validate_details,
 )
 from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
-from src.repository import CsvRepository, SPECIFICATION_COLUMNS, data_directory
+from src.repository import (
+    COST_INPUT_COLUMNS,
+    CsvRepository,
+    SPECIFICATION_COLUMNS,
+    data_directory,
+)
+from src.transport import HaulierRateTable, TransportLookupError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -58,24 +65,42 @@ def default_draft() -> dict[str, Any]:
     return {
         "customer_name": "",
         "item_code": "",
+        "item_name": "",
         "description": "",
         "material": "Solid board",
         "product_group": "Finished goods",
+        "manufacturing_site": "101",
+        "net_mass_kg": 0.0,
         "board_gsm": 1_000.0,
-        "blank_length_mm": 500.0,
-        "blank_width_mm": 400.0,
+        "length_mm": 0.0,
+        "width_mm": 0.0,
+        "height_mm": 0.0,
+        "board_width_mm": 0.0,
+        "board_length_mm": 0.0,
+        "number_of_colours": 0,
+        "fsc": "",
+        "board_code": "",
+        "pallet_size": "1000x1200",
         "pallet_quantity": 1_000,
-        "order_quantity": 10_000,
-        "material_cost_per_tonne": 750.0,
-        "bom_cost_per_1000": 0.0,
-        "print_cost_per_1000": 0.0,
-        "conversion_cost_per_1000": 0.0,
-        "packing_cost_per_1000": 0.0,
+        "order_quantity": 0,
+        "bom_available": 0,
+        "materials_cost_per_1000": 0.0,
+        "print_machine_cost_per_1000": 0.0,
+        "die_cut_machine_cost_per_1000": 0.0,
+        "fold_glue_machine_cost_per_1000": 0.0,
+        "other_machine_cost_per_1000": 0.0,
+        "labour_cost_per_1000": 0.0,
+        "manual_adjustment_per_1000": 0.0,
         "fixed_tooling_cost": 0.0,
-        "waste_percent": 5.0,
         "delivery_postcode": "",
         "delivery_method": "Haulier",
-        "transport_rate_per_pallet": 45.0,
+        "transport_service": "Economy",
+        "transport_vendor_preference": "Cheapest available",
+        "transport_vendor": "",
+        "transport_booking": "Standard",
+        "transport_rate_zone": "",
+        "transport_manual_override": 0,
+        "transport_total": 0.0,
         "preferred_margin_percent": 30.0,
         "source_item_code": "",
     }
@@ -91,6 +116,7 @@ def draft_number(key: str, fallback: float = 0.0) -> float:
 def reset_downstream() -> None:
     st.session_state.pop("breakdown", None)
     st.session_state.pop("pricing", None)
+    st.session_state.pop("transport_quotes", None)
     st.session_state.pop("last_saved", None)
 
 
@@ -138,14 +164,16 @@ def show_cost_breakdown(breakdown: dict[str, float]) -> None:
     metric_columns[1].metric("Cost per item", f"£{breakdown['cost_per_item']:,.4f}")
     metric_columns[2].metric("Pallets", f"{breakdown['pallet_count']:,.0f}")
     metric_columns[3].metric(
-        "Gross kg / 1,000", f"{breakdown['gross_weight_kg_per_1000']:,.2f}"
+        "Net kg / 1,000", f"{breakdown['net_weight_kg_per_1000']:,.2f}"
     )
     rows = [
-        ("Material (including waste)", breakdown["material_cost_per_1000"]),
-        ("BOM / bought-in components", breakdown["bom_cost_per_1000"]),
-        ("Print", breakdown["print_cost_per_1000"]),
-        ("Conversion", breakdown["conversion_cost_per_1000"]),
-        ("Packing", breakdown["packing_cost_per_1000"]),
+        ("BOM materials", breakdown["materials_cost_per_1000"]),
+        ("Print machine", breakdown["print_machine_cost_per_1000"]),
+        ("Die-cut machine", breakdown["die_cut_machine_cost_per_1000"]),
+        ("Fold-glue machine", breakdown["fold_glue_machine_cost_per_1000"]),
+        ("Other machine", breakdown["other_machine_cost_per_1000"]),
+        ("Labour", breakdown["labour_cost_per_1000"]),
+        ("Manual adjustment", breakdown["manual_adjustment_per_1000"]),
         ("Tooling allocation", breakdown["tooling_cost_per_1000"]),
         ("Transport", breakdown["transport_cost_per_1000"]),
     ]
@@ -185,20 +213,74 @@ def render_select(repository: CsvRepository) -> None:
             placeholder="Search by item code or description",
         )
         selected = clean_record(catalog.loc[selected_index].to_dict())
-        columns = st.columns(4)
-        columns[0].metric("Material", str(selected.get("material", "—")))
-        columns[1].metric("GSM", f"{float(selected.get('board_gsm', 0)):,.0f}")
-        columns[2].metric(
-            "Pallet quantity", f"{float(selected.get('pallet_quantity', 0)):,.0f}"
+        selected_bom_total = float(
+            selected.get("imported_bom_total_per_1000", 0) or 0
         )
-        columns[3].metric("Source", str(selected.get("source_type", "Feed")))
+        if selected_bom_total == 0:
+            selected_bom_total = sum(
+                float(selected.get(column, 0) or 0)
+                for column in [
+                    "materials_cost_per_1000",
+                    "print_machine_cost_per_1000",
+                    "die_cut_machine_cost_per_1000",
+                    "fold_glue_machine_cost_per_1000",
+                    "other_machine_cost_per_1000",
+                    "labour_cost_per_1000",
+                ]
+            )
+        columns = st.columns(5)
+        columns[0].metric("Product group", str(selected.get("product_group", "—")))
+        columns[1].metric("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}")
+        columns[2].metric(
+            "Pallet quantity", f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}"
+        )
+        columns[3].metric(
+            "BOM cost / 1,000",
+            f"£{selected_bom_total:,.2f}"
+            if float(selected.get("bom_available", 0) or 0)
+            else "No BOM",
+        )
+        columns[4].metric("Source", str(selected.get("source_type", "Feed")))
         st.caption(
-            "You can use this item unchanged or alter any field. Saving always creates a new revision."
+            f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
+            f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
+            f"{float(selected.get('height_mm', 0) or 0):,.0f} mm · "
+            f"Net mass {float(selected.get('net_mass_kg', 0) or 0):,.4f} kg"
+        )
+        bom_lines = repository.load_bom_lines(str(selected.get("item_code", "")))
+        if not bom_lines.empty:
+            with st.expander(f"View imported BOM ({len(bom_lines)} lines)"):
+                visible = [
+                    "cost_type",
+                    "process_group",
+                    "cost_code",
+                    "cost_description",
+                    "unit_of_measure",
+                    "quantity",
+                    "run_hours",
+                    "effective_quantity_per_run",
+                    "cost_rate",
+                    "extended_cost",
+                ]
+                st.dataframe(
+                    bom_lines[[column for column in visible if column in bom_lines]],
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "cost_rate": st.column_config.NumberColumn(format="£%.4f"),
+                        "extended_cost": st.column_config.NumberColumn(format="£%.4f"),
+                    },
+                )
+        st.caption(
+            "You can use this item as the basis of a new costing and alter any field. Saving always creates a new revision."
         )
         if st.button("Use this item", type="primary"):
             draft = default_draft()
             draft.update(
                 {key: selected.get(key, draft.get(key)) for key in SPECIFICATION_COLUMNS}
+            )
+            draft.update(
+                {key: selected.get(key, draft.get(key)) for key in COST_INPUT_COLUMNS}
             )
             if "preferred_margin_percent" in selected:
                 draft["preferred_margin_percent"] = selected["preferred_margin_percent"]
@@ -228,7 +310,13 @@ def render_specification() -> None:
         description = st.text_input("Description *", value=str(draft.get("description", "")))
 
         col1, col2, col3 = st.columns(3)
-        material_options = ["Solid board", "Corrugated", "Fibre", "Other"]
+        material_options = [
+            "BOM-defined materials",
+            "Solid board",
+            "Corrugated",
+            "Fibre",
+            "Other",
+        ]
         current_material = str(draft.get("material", "Solid board"))
         if current_material not in material_options:
             material_options.append(current_material)
@@ -239,59 +327,77 @@ def render_specification() -> None:
             "Product group", value=str(draft.get("product_group", "Finished goods"))
         )
         board_gsm = col3.number_input(
-            "GSM *", min_value=1.0, value=draft_number("board_gsm", 1_000), step=25.0
+            "Grade / GSM *",
+            min_value=0.0,
+            value=draft_number("board_gsm"),
+            step=25.0,
         )
 
         col1, col2, col3 = st.columns(3)
-        blank_length_mm = col1.number_input(
-            "Blank length (mm) *",
-            min_value=1.0,
-            value=draft_number("blank_length_mm", 500),
-            step=1.0,
-        )
-        blank_width_mm = col2.number_input(
-            "Blank width (mm) *",
-            min_value=1.0,
-            value=draft_number("blank_width_mm", 400),
-            step=1.0,
-        )
-        waste_percent = col3.number_input(
-            "Material waste %",
+        length_mm = col1.number_input(
+            "Length (mm) *",
             min_value=0.0,
-            max_value=99.99,
-            value=draft_number("waste_percent", 5),
-            step=0.25,
+            value=draft_number("length_mm"),
+            step=1.0,
+        )
+        width_mm = col2.number_input(
+            "Width (mm) *",
+            min_value=0.0,
+            value=draft_number("width_mm"),
+            step=1.0,
+        )
+        height_mm = col3.number_input(
+            "Height (mm) *",
+            min_value=0.0,
+            value=draft_number("height_mm"),
+            step=1.0,
         )
 
         col1, col2, col3 = st.columns(3)
         pallet_quantity = col1.number_input(
             "Pallet quantity *",
-            min_value=1,
-            value=max(1, int(draft_number("pallet_quantity", 1_000))),
+            min_value=0,
+            value=max(0, int(draft_number("pallet_quantity"))),
             step=1,
         )
         order_quantity = col2.number_input(
             "Order quantity *",
-            min_value=1,
-            value=max(1, int(draft_number("order_quantity", 10_000))),
+            min_value=0,
+            value=max(0, int(draft_number("order_quantity"))),
             step=1_000,
         )
-        material_cost_per_tonne = col3.number_input(
-            "Material cost per tonne (£) *",
-            min_value=0.01,
-            value=draft_number("material_cost_per_tonne", 750),
-            step=10.0,
+        net_mass_kg = col3.number_input(
+            "Net mass per item (kg)",
+            min_value=0.0,
+            value=draft_number("net_mass_kg"),
+            step=0.0001,
+            format="%.4f",
         )
 
-        col1, col2 = st.columns(2)
-        bom_cost_per_1000 = col1.number_input(
-            "BOM / component cost per 1,000 (£)",
+        col1, col2, col3 = st.columns(3)
+        board_width_mm = col1.number_input(
+            "Board width / reel width (mm)",
             min_value=0.0,
-            value=draft_number("bom_cost_per_1000"),
+            value=draft_number("board_width_mm"),
             step=1.0,
-            help="Existing items can be prefilled from data/bom_costs.csv.",
         )
-        delivery_postcode = col2.text_input(
+        board_length_mm = col2.number_input(
+            "Board length / chop (mm)",
+            min_value=0.0,
+            value=draft_number("board_length_mm"),
+            step=1.0,
+        )
+        number_of_colours = col3.number_input(
+            "Number of colours",
+            min_value=0,
+            value=max(0, int(draft_number("number_of_colours"))),
+            step=1,
+        )
+
+        col1, col2, col3 = st.columns(3)
+        board_code = col1.text_input("Board code", value=str(draft.get("board_code", "")))
+        fsc = col2.text_input("FSC", value=str(draft.get("fsc", "")))
+        delivery_postcode = col3.text_input(
             "Delivery postcode *", value=str(draft.get("delivery_postcode", ""))
         )
         submitted = st.form_submit_button("Save specification", type="primary")
@@ -305,13 +411,17 @@ def render_specification() -> None:
             "material": material,
             "product_group": product_group.strip(),
             "board_gsm": board_gsm,
-            "blank_length_mm": blank_length_mm,
-            "blank_width_mm": blank_width_mm,
-            "waste_percent": waste_percent,
+            "length_mm": length_mm,
+            "width_mm": width_mm,
+            "height_mm": height_mm,
             "pallet_quantity": pallet_quantity,
             "order_quantity": order_quantity,
-            "material_cost_per_tonne": material_cost_per_tonne,
-            "bom_cost_per_1000": bom_cost_per_1000,
+            "net_mass_kg": net_mass_kg,
+            "board_width_mm": board_width_mm,
+            "board_length_mm": board_length_mm,
+            "number_of_colours": number_of_colours,
+            "board_code": board_code.strip(),
+            "fsc": fsc.strip(),
             "delivery_postcode": delivery_postcode.strip().upper(),
         }
         errors = validate_details(updated)
@@ -325,72 +435,251 @@ def render_specification() -> None:
             navigate_to(2)
 
 
-def render_costs() -> None:
+def render_costs(rate_table: HaulierRateTable) -> None:
     st.subheader("Production and transport costs")
     draft = st.session_state.draft
-    st.caption(
-        "Transport currently uses pallets × rate per pallet. The fuller transport-app rules can replace this module without changing the screens."
+    imported_total = (
+        draft_number("materials_cost_per_1000")
+        + draft_number("print_machine_cost_per_1000")
+        + draft_number("die_cut_machine_cost_per_1000")
+        + draft_number("fold_glue_machine_cost_per_1000")
+        + draft_number("other_machine_cost_per_1000")
+        + draft_number("labour_cost_per_1000")
     )
-    with st.form("cost_form"):
+    if float(draft.get("bom_available", 0) or 0):
+        st.success(
+            f"Imported BOM found. Supplied manufacturing cost: £{imported_total:,.2f} per 1,000."
+        )
+    else:
+        st.warning(
+            "No imported BOM was found for this item. Enter the material, machine and labour costs manually."
+        )
+
+    st.markdown("#### BOM and production")
+    col1, col2, col3 = st.columns(3)
+    materials_cost = col1.number_input(
+        "Materials per 1,000 (£)",
+        min_value=0.0,
+        value=draft_number("materials_cost_per_1000"),
+        step=1.0,
+    )
+    print_machine = col2.number_input(
+        "Print machine per 1,000 (£)",
+        min_value=0.0,
+        value=draft_number("print_machine_cost_per_1000"),
+        step=1.0,
+    )
+    die_cut_machine = col3.number_input(
+        "Die-cut machine per 1,000 (£)",
+        min_value=0.0,
+        value=draft_number("die_cut_machine_cost_per_1000"),
+        step=1.0,
+    )
+    col1, col2, col3 = st.columns(3)
+    fold_glue_machine = col1.number_input(
+        "Fold-glue machine per 1,000 (£)",
+        min_value=0.0,
+        value=draft_number("fold_glue_machine_cost_per_1000"),
+        step=1.0,
+    )
+    other_machine = col2.number_input(
+        "Other machine per 1,000 (£)",
+        min_value=0.0,
+        value=draft_number("other_machine_cost_per_1000"),
+        step=1.0,
+    )
+    labour_cost = col3.number_input(
+        "Labour per 1,000 (£)",
+        min_value=0.0,
+        value=draft_number("labour_cost_per_1000"),
+        step=1.0,
+    )
+    col1, col2 = st.columns(2)
+    manual_adjustment = col1.number_input(
+        "Manual adjustment per 1,000 (£)",
+        value=draft_number("manual_adjustment_per_1000"),
+        step=1.0,
+        help="Use a negative value for a credit or reduction.",
+    )
+    fixed_tooling = col2.number_input(
+        "Fixed tooling / setup for this order (£)",
+        min_value=0.0,
+        value=draft_number("fixed_tooling_cost"),
+        step=10.0,
+    )
+
+    st.markdown("#### Transport")
+    estimated_pallets = math.ceil(
+        draft_number("order_quantity") / draft_number("pallet_quantity", 1)
+    )
+    st.caption(
+        f"Order quantity requires {estimated_pallets:,} pallet(s). Rates cover 1–26 pallets per load; larger orders are split into additional loads."
+    )
+    methods = ["Haulier", "Customer collection", "Included elsewhere"]
+    current_method = str(draft.get("delivery_method", "Haulier"))
+    delivery_method = st.selectbox(
+        "Delivery method",
+        methods,
+        index=methods.index(current_method) if current_method in methods else 0,
+    )
+
+    service = str(draft.get("transport_service", "Economy"))
+    booking = str(draft.get("transport_booking", "Standard"))
+    vendor_preference = str(
+        draft.get("transport_vendor_preference", "Cheapest available")
+    )
+    manual_override = bool(float(draft.get("transport_manual_override", 0) or 0))
+    manual_transport_total = draft_number("transport_total")
+    if delivery_method == "Haulier":
         col1, col2, col3 = st.columns(3)
-        print_cost = col1.number_input(
-            "Print cost per 1,000 (£)",
-            min_value=0.0,
-            value=draft_number("print_cost_per_1000"),
-            step=1.0,
+        service = col1.selectbox(
+            "Service",
+            ["Economy", "Next Day"],
+            index=["Economy", "Next Day"].index(service),
         )
-        conversion_cost = col2.number_input(
-            "Conversion cost per 1,000 (£)",
-            min_value=0.0,
-            value=draft_number("conversion_cost_per_1000"),
-            step=1.0,
+        booking = col2.selectbox(
+            "Booking",
+            ["Standard", "AM/PM", "Timed"],
+            index=["Standard", "AM/PM", "Timed"].index(booking),
         )
-        packing_cost = col3.number_input(
-            "Packing cost per 1,000 (£)",
-            min_value=0.0,
-            value=draft_number("packing_cost_per_1000"),
-            step=1.0,
+        preferences = ["Cheapest available", "Joda", "McDowells"]
+        vendor_preference = col3.selectbox(
+            "Haulier",
+            preferences,
+            index=preferences.index(vendor_preference)
+            if vendor_preference in preferences
+            else 0,
         )
-        col1, col2, col3 = st.columns(3)
-        fixed_tooling = col1.number_input(
-            "Fixed tooling / setup (£)",
-            min_value=0.0,
-            value=draft_number("fixed_tooling_cost"),
-            step=10.0,
+        manual_override = st.checkbox(
+            "Use a manual transport total",
+            value=manual_override,
         )
-        methods = ["Haulier", "Customer collection", "Included elsewhere"]
-        current_method = str(draft.get("delivery_method", "Haulier"))
-        delivery_method = col2.selectbox(
-            "Delivery method", methods, index=methods.index(current_method)
+        if manual_override:
+            manual_transport_total = st.number_input(
+                "Manual transport total (£)",
+                min_value=0.0,
+                value=manual_transport_total,
+                step=1.0,
+            )
+        st.caption(
+            "AM/PM adds £7 per load; Timed adds £19 per load. McDowells adds £40 for each complete 26-pallet load."
         )
-        transport_rate = col3.number_input(
-            "Transport rate per pallet (£)",
-            min_value=0.0,
-            value=draft_number("transport_rate_per_pallet", 45),
-            step=1.0,
-            disabled=delivery_method != "Haulier",
-        )
-        calculate = st.form_submit_button("Calculate total cost", type="primary")
+
+    calculate = st.button("Calculate total cost", type="primary")
 
     if calculate:
-        if delivery_method == "Haulier" and transport_rate <= 0:
-            st.error("Enter a transport rate, or choose a non-haulier delivery method.")
-        else:
-            st.session_state.draft.update(
-                {
-                    "print_cost_per_1000": print_cost,
-                    "conversion_cost_per_1000": conversion_cost,
-                    "packing_cost_per_1000": packing_cost,
-                    "fixed_tooling_cost": fixed_tooling,
-                    "delivery_method": delivery_method,
-                    "transport_rate_per_pallet": transport_rate,
-                }
-            )
+        updated = {
+            "materials_cost_per_1000": materials_cost,
+            "print_machine_cost_per_1000": print_machine,
+            "die_cut_machine_cost_per_1000": die_cut_machine,
+            "fold_glue_machine_cost_per_1000": fold_glue_machine,
+            "other_machine_cost_per_1000": other_machine,
+            "labour_cost_per_1000": labour_cost,
+            "manual_adjustment_per_1000": manual_adjustment,
+            "fixed_tooling_cost": fixed_tooling,
+            "delivery_method": delivery_method,
+            "transport_service": service,
+            "transport_booking": booking,
+            "transport_vendor_preference": vendor_preference,
+            "transport_manual_override": int(manual_override),
+        }
+        try:
+            if delivery_method == "Haulier" and not manual_override:
+                quotes = rate_table.quote_options(
+                    postcode=str(draft["delivery_postcode"]),
+                    pallet_count=estimated_pallets,
+                    service=service,
+                    booking=booking,
+                )
+                if vendor_preference == "Cheapest available":
+                    selected_quote = quotes[0]
+                else:
+                    selected_quote = next(
+                        (quote for quote in quotes if quote.vendor == vendor_preference),
+                        None,
+                    )
+                    if selected_quote is None:
+                        raise TransportLookupError(
+                            f"{vendor_preference} does not have a complete rate for this postcode and pallet count."
+                        )
+                updated.update(
+                    {
+                        "transport_vendor": selected_quote.vendor,
+                        "transport_rate_zone": selected_quote.rate_zone,
+                        "transport_total": selected_quote.total_cost,
+                    }
+                )
+                st.session_state.transport_quotes = [
+                    quote.to_dict() for quote in quotes
+                ]
+            elif delivery_method == "Haulier":
+                updated.update(
+                    {
+                        "transport_vendor": "Manual override",
+                        "transport_rate_zone": "Manual",
+                        "transport_total": manual_transport_total,
+                    }
+                )
+                st.session_state.transport_quotes = []
+            else:
+                updated.update(
+                    {
+                        "transport_vendor": "",
+                        "transport_rate_zone": "",
+                        "transport_total": 0.0,
+                    }
+                )
+                st.session_state.transport_quotes = []
+
+            st.session_state.draft.update(updated)
             st.session_state.breakdown = calculate_cost(st.session_state.draft)
             st.session_state.pop("pricing", None)
             st.rerun()
+        except (TransportLookupError, ValueError) as exc:
+            st.error(str(exc))
 
     if st.session_state.get("breakdown"):
+        quotes = st.session_state.get("transport_quotes", [])
+        if quotes:
+            quote_frame = pd.DataFrame(quotes).rename(
+                columns={
+                    "vendor": "Haulier",
+                    "rate_zone": "Rate zone",
+                    "load_count": "Loads",
+                    "base_cost": "Base cost",
+                    "booking_surcharge": "Booking surcharge",
+                    "full_load_surcharge": "Full-load surcharge",
+                    "total_cost": "Total",
+                }
+            )
+            st.dataframe(
+                quote_frame[
+                    [
+                        "Haulier",
+                        "Rate zone",
+                        "Loads",
+                        "Base cost",
+                        "Booking surcharge",
+                        "Full-load surcharge",
+                        "Total",
+                    ]
+                ],
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    column: st.column_config.NumberColumn(format="£%.2f")
+                    for column in [
+                        "Base cost",
+                        "Booking surcharge",
+                        "Full-load surcharge",
+                        "Total",
+                    ]
+                },
+            )
+            st.success(
+                f"Selected {draft.get('transport_vendor')} using rate zone {draft.get('transport_rate_zone')}: "
+                f"£{float(draft.get('transport_total', 0)):,.2f}."
+            )
         show_cost_breakdown(st.session_state.breakdown)
         if st.button("Continue to pricing", type="primary"):
             navigate_to(3)
@@ -602,7 +891,12 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
     )
 
 
-def render_workflow(repository: CsvRepository, user_email: str, user_name: str) -> None:
+def render_workflow(
+    repository: CsvRepository,
+    rate_table: HaulierRateTable,
+    user_email: str,
+    user_name: str,
+) -> None:
     st.title("Costing Tool")
     st.caption("Create auditable product costings, quotes and stock-item export drafts.")
     stage_navigation()
@@ -611,7 +905,7 @@ def render_workflow(repository: CsvRepository, user_email: str, user_name: str) 
     elif st.session_state.step == 1:
         render_specification()
     elif st.session_state.step == 2:
-        render_costs()
+        render_costs(rate_table)
     elif st.session_state.step == 3:
         render_pricing()
     else:
@@ -621,6 +915,7 @@ def render_workflow(repository: CsvRepository, user_email: str, user_name: str) 
 def main() -> None:
     user = require_user()
     repository = CsvRepository(data_directory(PROJECT_ROOT))
+    rate_table = HaulierRateTable(repository.haulier_path)
     st.session_state.setdefault("step", 0)
 
     st.sidebar.markdown("### Costing Tool")
@@ -628,14 +923,14 @@ def main() -> None:
     page = st.sidebar.radio("Navigation", ["Costing workflow", "History"])
     st.sidebar.divider()
     st.sidebar.caption(
-        "Inputs: current_items.csv and bom_costs.csv\n\nOutput: append-only saved_costings.csv"
+        "Inputs: current_items.csv, bom_costs.csv and haulier_rates.csv\n\nOutput: append-only saved_costings.csv"
     )
     sign_out_button()
 
     if page == "History":
         render_history(repository, user.email)
     else:
-        render_workflow(repository, user.email, user.name)
+        render_workflow(repository, rate_table, user.email, user.name)
 
 
 if __name__ == "__main__":

@@ -73,6 +73,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
                 ["Selling price per 1,000", _money(record.get("selling_price_per_1000"))],
                 ["Selling price per item", _money(record.get("selling_price_per_item"))],
                 ["Delivery", html.escape(str(record.get("delivery_method", "")))],
+                ["Haulier", html.escape(str(record.get("transport_vendor", "")))],
+                ["Service", html.escape(str(record.get("transport_service", "")))],
                 ["Delivery postcode", html.escape(str(record.get("delivery_postcode", "")))],
             ],
             colWidths=[95 * mm, 58 * mm],
@@ -146,19 +148,43 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
 
 
 def sage_stock_import_csv(record: dict[str, Any]) -> bytes:
-    """Create an indicative Sage import row; headings must be mapped before production."""
+    """Create an indicative Sage row using headings present in the supplied item feed."""
+    analysis = [
+        ("Legacy Code", record.get("legacy_code", "")),
+        ("Doublestack", record.get("double_stack", "N")),
+        ("Pallet Size", record.get("pallet_size", "")),
+        ("MRP Type", record.get("mrp_type", "MTO")),
+        ("Length", record.get("length_mm", "")),
+        ("Width", record.get("width_mm", "")),
+        ("Height", record.get("height_mm", "")),
+        ("Grade / Gram", record.get("board_gsm", "")),
+        ("Boardwidth/Reel Width", record.get("board_width_mm", "")),
+        ("Boardlength/Chop", record.get("board_length_mm", "")),
+        ("BundleQty / Reel Core ID", record.get("bundle_quantity", "")),
+        ("Bundles Per Layer / Bundle Type", record.get("bundles_per_layer", "")),
+        ("Layers Per Pallet", record.get("layers_per_pallet", "")),
+        ("Pallet Height", record.get("pallet_height_mm", "")),
+        ("Product State", record.get("product_state", "FG Box")),
+        ("Number Of Colours", record.get("number_of_colours", "")),
+        ("FSC", record.get("fsc", "")),
+        ("Pallet Qty", record.get("pallet_quantity", "")),
+        ("Board Code", record.get("board_code", "")),
+        ("Market Segment", record.get("market_segment", "")),
+    ]
+    row: dict[str, Any] = {
+        "Stock item code": record.get("item_code", ""),
+        "Stock item name": record.get("item_name") or record.get("description", ""),
+        "Product group": record.get("product_group", ""),
+        "Tax code": 1,
+        "Stock item description": record.get("description", ""),
+        "Manufacturer's name": record.get("manufacturing_site", ""),
+        "Net mass": record.get("net_mass_kg", ""),
+        "Allow Sales order": 1,
+    }
+    for index, (name, value) in enumerate(analysis, start=1):
+        row[f"AnalysisName\\{index}"] = name
+        row[f"AnalysisValue\\{index}"] = value
     frame = pd.DataFrame(
-        [
-            {
-                "StockItemCode": record.get("item_code", ""),
-                "Name": record.get("description", ""),
-                "ProductGroup": record.get("product_group", ""),
-                "StockUnit": "Each",
-                "WeightKg": round(float(record.get("net_weight_kg_per_1000", 0)) / 1_000, 6),
-                "PalletQuantity": record.get("pallet_quantity", ""),
-                "SellingPricePer1000": record.get("selling_price_per_1000", ""),
-            }
-        ]
+        [row]
     )
     return frame.to_csv(index=False).encode("utf-8-sig")
-

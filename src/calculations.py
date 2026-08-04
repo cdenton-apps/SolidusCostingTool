@@ -9,12 +9,12 @@ REQUIRED_FIELDS = {
     "item_code": "Item code",
     "description": "Description",
     "material": "Material",
-    "board_gsm": "GSM",
-    "blank_length_mm": "Blank length",
-    "blank_width_mm": "Blank width",
+    "board_gsm": "Grade / GSM",
+    "length_mm": "Length",
+    "width_mm": "Width",
+    "height_mm": "Height",
     "pallet_quantity": "Pallet quantity",
     "order_quantity": "Order quantity",
-    "material_cost_per_tonne": "Material cost per tonne",
     "delivery_postcode": "Delivery postcode",
 }
 
@@ -31,11 +31,11 @@ def validate_details(values: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     numeric_required = {
         "board_gsm",
-        "blank_length_mm",
-        "blank_width_mm",
+        "length_mm",
+        "width_mm",
+        "height_mm",
         "pallet_quantity",
         "order_quantity",
-        "material_cost_per_tonne",
     }
 
     for key, label in REQUIRED_FIELDS.items():
@@ -48,64 +48,78 @@ def validate_details(values: dict[str, Any]) -> list[str]:
                 errors.append(f"{label} must be a number.")
         elif not str(value or "").strip():
             errors.append(f"{label} is required.")
-
-    waste = _number(values, "waste_percent")
-    if not 0 <= waste < 100:
-        errors.append("Waste must be between 0% and 99.99%.")
     return errors
 
 
 def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
-    """Calculate a transparent cost breakdown, expressed per 1,000 units."""
+    """Calculate an imported/edited BOM plus transport cost per 1,000 units."""
     errors = validate_details(values)
     if errors:
         raise ValueError(" ".join(errors))
-
-    length_m = _number(values, "blank_length_mm") / 1_000
-    width_m = _number(values, "blank_width_mm") / 1_000
-    gsm = _number(values, "board_gsm")
-    waste_multiplier = 1 + (_number(values, "waste_percent") / 100)
-
-    # Area (m²) × gsm gives grams per item; for 1,000 items the same
-    # numeric value is kilograms.
-    net_weight_kg_per_1000 = length_m * width_m * gsm
-    gross_weight_kg_per_1000 = net_weight_kg_per_1000 * waste_multiplier
-    material_cost_per_1000 = (
-        gross_weight_kg_per_1000
-        / 1_000
-        * _number(values, "material_cost_per_tonne")
-    )
 
     order_quantity = _number(values, "order_quantity")
     order_in_thousands = order_quantity / 1_000
     pallet_quantity = _number(values, "pallet_quantity")
     pallet_count = math.ceil(order_quantity / pallet_quantity)
 
+    net_mass_kg = _number(values, "net_mass_kg")
+    if net_mass_kg > 0:
+        net_weight_kg_per_1000 = net_mass_kg * 1_000
+    else:
+        # A fallback estimate for brand-new items without an imported net mass.
+        net_weight_kg_per_1000 = (
+            _number(values, "length_mm")
+            / 1_000
+            * (_number(values, "width_mm") / 1_000)
+            * _number(values, "board_gsm")
+        )
+
+    machine_components = {
+        "print_machine_cost_per_1000": _number(
+            values, "print_machine_cost_per_1000"
+        ),
+        "die_cut_machine_cost_per_1000": _number(
+            values, "die_cut_machine_cost_per_1000"
+        ),
+        "fold_glue_machine_cost_per_1000": _number(
+            values, "fold_glue_machine_cost_per_1000"
+        ),
+        "other_machine_cost_per_1000": _number(
+            values, "other_machine_cost_per_1000"
+        ),
+    }
+    machine_total = sum(machine_components.values())
+    materials = _number(values, "materials_cost_per_1000")
+    labour = _number(values, "labour_cost_per_1000")
+    manual_adjustment = _number(values, "manual_adjustment_per_1000")
+    tooling_cost_per_1000 = _number(values, "fixed_tooling_cost") / order_in_thousands
+    manufacturing_cost = (
+        materials
+        + labour
+        + machine_total
+        + manual_adjustment
+        + tooling_cost_per_1000
+    )
+
     delivery_method = str(values.get("delivery_method", "Haulier"))
-    rate_per_pallet = _number(values, "transport_rate_per_pallet")
     transport_total = (
-        pallet_count * rate_per_pallet if delivery_method == "Haulier" else 0.0
+        _number(values, "transport_total") if delivery_method == "Haulier" else 0.0
     )
     transport_cost_per_1000 = transport_total / order_in_thousands
-    tooling_cost_per_1000 = _number(values, "fixed_tooling_cost") / order_in_thousands
-
-    components = {
-        "material_cost_per_1000": material_cost_per_1000,
-        "bom_cost_per_1000": _number(values, "bom_cost_per_1000"),
-        "print_cost_per_1000": _number(values, "print_cost_per_1000"),
-        "conversion_cost_per_1000": _number(values, "conversion_cost_per_1000"),
-        "packing_cost_per_1000": _number(values, "packing_cost_per_1000"),
-        "tooling_cost_per_1000": tooling_cost_per_1000,
-        "transport_cost_per_1000": transport_cost_per_1000,
-    }
-    total_cost = sum(components.values())
+    total_cost = manufacturing_cost + transport_cost_per_1000
 
     return {
         "net_weight_kg_per_1000": round(net_weight_kg_per_1000, 4),
-        "gross_weight_kg_per_1000": round(gross_weight_kg_per_1000, 4),
         "pallet_count": float(pallet_count),
         "transport_total": round(transport_total, 4),
-        **{key: round(value, 4) for key, value in components.items()},
+        "materials_cost_per_1000": round(materials, 4),
+        **{key: round(value, 4) for key, value in machine_components.items()},
+        "machine_cost_per_1000": round(machine_total, 4),
+        "labour_cost_per_1000": round(labour, 4),
+        "manual_adjustment_per_1000": round(manual_adjustment, 4),
+        "tooling_cost_per_1000": round(tooling_cost_per_1000, 4),
+        "manufacturing_cost_per_1000": round(manufacturing_cost, 4),
+        "transport_cost_per_1000": round(transport_cost_per_1000, 4),
         "total_cost_per_1000": round(total_cost, 4),
         "cost_per_item": round(total_cost / 1_000, 6),
     }

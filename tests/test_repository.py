@@ -7,6 +7,9 @@ import pandas as pd
 from src.repository import CsvRepository
 
 
+PROJECT_DATA = Path(__file__).resolve().parents[1] / "data"
+
+
 def test_saves_append_only_revisions(tmp_path: Path) -> None:
     repository = CsvRepository(tmp_path)
     record = {
@@ -45,3 +48,16 @@ def test_saved_item_appears_in_catalog(tmp_path: Path) -> None:
     assert catalog.iloc[0]["item_code"] == "NEW-001"
     assert catalog.iloc[0]["source_type"] == "Saved costing"
 
+
+def test_supplied_item_and_bom_feeds_reconcile() -> None:
+    repository = CsvRepository(PROJECT_DATA)
+    items = repository.load_current_items()
+    item = items[items["item_code"] == "BOX001/101/LPB/1000G/1240P"].iloc[0]
+
+    assert len(items) == 354
+    assert int(items["bom_available"].sum()) == 179
+    assert item["pallet_quantity"] == 1240
+    assert item["materials_cost_per_1000"] == 488.26
+    assert item["imported_machine_cost_per_1000"] == 66.92
+    assert item["labour_cost_per_1000"] == 51.09
+    assert item["imported_bom_total_per_1000"] == 606.27

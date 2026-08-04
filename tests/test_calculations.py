@@ -18,20 +18,23 @@ def valid_costing() -> dict:
         "description": "Test box",
         "material": "Solid board",
         "board_gsm": 400,
-        "blank_length_mm": 500,
-        "blank_width_mm": 400,
+        "length_mm": 500,
+        "width_mm": 400,
+        "height_mm": 100,
+        "net_mass_kg": 0.08,
         "pallet_quantity": 2_000,
         "order_quantity": 10_000,
-        "material_cost_per_tonne": 800,
-        "bom_cost_per_1000": 0,
-        "print_cost_per_1000": 10,
-        "conversion_cost_per_1000": 20,
-        "packing_cost_per_1000": 5,
+        "materials_cost_per_1000": 70.4,
+        "print_machine_cost_per_1000": 10,
+        "die_cut_machine_cost_per_1000": 20,
+        "fold_glue_machine_cost_per_1000": 5,
+        "other_machine_cost_per_1000": 2,
+        "labour_cost_per_1000": 15,
+        "manual_adjustment_per_1000": 3,
         "fixed_tooling_cost": 100,
-        "waste_percent": 10,
         "delivery_postcode": "BD20 0AA",
         "delivery_method": "Haulier",
-        "transport_rate_per_pallet": 50,
+        "transport_total": 250,
     }
 
 
@@ -39,12 +42,12 @@ def test_cost_breakdown(valid_costing: dict) -> None:
     result = calculate_cost(valid_costing)
 
     assert result["net_weight_kg_per_1000"] == pytest.approx(80)
-    assert result["gross_weight_kg_per_1000"] == pytest.approx(88)
-    assert result["material_cost_per_1000"] == pytest.approx(70.4)
     assert result["pallet_count"] == 5
+    assert result["machine_cost_per_1000"] == pytest.approx(37)
     assert result["transport_cost_per_1000"] == pytest.approx(25)
     assert result["tooling_cost_per_1000"] == pytest.approx(10)
-    assert result["total_cost_per_1000"] == pytest.approx(140.4)
+    assert result["manufacturing_cost_per_1000"] == pytest.approx(135.4)
+    assert result["total_cost_per_1000"] == pytest.approx(160.4)
 
 
 def test_customer_collection_has_no_transport_cost(valid_costing: dict) -> None:
@@ -52,6 +55,7 @@ def test_customer_collection_has_no_transport_cost(valid_costing: dict) -> None:
     result = calculate_cost(valid_costing)
     assert result["transport_total"] == 0
     assert result["transport_cost_per_1000"] == 0
+    assert result["total_cost_per_1000"] == pytest.approx(135.4)
 
 
 def test_margin_and_price_are_reversible() -> None:
