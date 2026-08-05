@@ -460,7 +460,7 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         canvas.drawString(
             15 * mm,
             8 * mm,
-            "Solidus | Customer quotation | Subject to final commercial approval",
+            "This quotation is generated from the costing tool and remains subject to final commercial approval.",
         )
         canvas.drawRightString(
             A4[0] - 15 * mm, 8 * mm, f"Page {canvas.getPageNumber()}"

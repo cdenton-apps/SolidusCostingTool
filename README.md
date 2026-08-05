@@ -74,14 +74,23 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The project starts in clearly labelled demo mode. To require a login:
+The app is locked until at least one password user is configured. Passwords are
+stored only as secure hashes and must never be committed to GitHub.
+
+For local use:
 
 1. Copy `.streamlit/secrets.example.toml` to `.streamlit/secrets.toml`.
 2. Run `python scripts/generate_password_hash.py`.
 3. Paste the generated hash into the local secrets file.
 4. Restart Streamlit.
 
-Never commit the real secrets file.
+For Streamlit Community Cloud, open the app's **Settings > Secrets**, paste the
+same TOML content there, replace the example name/email/hash, and save. The key
+after `[users.` is the username used on the login screen. Add another
+`[users.username]` block for each authorised user.
+
+The real secrets file is ignored by Git and must never be committed. Explicit
+`mode = "demo"` remains available for local development tests only.
 
 ## Keeping the data current
 

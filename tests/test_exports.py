@@ -58,6 +58,10 @@ def test_quote_and_sage_exports() -> None:
     assert "NOTES" in quote_text
     assert "Customer artwork approval is required" in quote_text
     assert "attached Solidus General Terms and Conditions" in quote_text
+    assert (
+        "This quotation is generated from the costing tool and remains subject to final commercial approval."
+        in quote_text
+    )
     assert "General Terms and Condition of Sale" in terms_text
     assert "Stock item code" in csv
     assert "BOX-TEST" in csv

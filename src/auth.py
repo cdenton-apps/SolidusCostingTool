@@ -68,7 +68,7 @@ def _identity_allowed(email: str, config: dict[str, Any]) -> bool:
 def require_user() -> AuthenticatedUser:
     """Authenticate with OIDC, a local password, or explicit demo mode."""
     config = _secret_section("app_auth")
-    mode = str(config.get("mode", "demo")).lower()
+    mode = str(config.get("mode", "password")).lower()
 
     if mode == "oidc":
         if not st.user.is_logged_in:
@@ -92,9 +92,16 @@ def require_user() -> AuthenticatedUser:
             return AuthenticatedUser(email=stored["email"], name=stored["name"])
 
         users = _secret_section("users")
-        st.title("Costing Tool")
+        st.markdown("## Solidus")
+        st.title("Spread Costing Tool")
+        st.caption("Sign in to continue.")
+        if not users:
+            st.error(
+                "Login has not been configured. Please ask the app administrator to add an authorised user."
+            )
+            st.stop()
         with st.form("login_form"):
-            username = st.text_input("Email or username")
+            username = st.text_input("Username")
             password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Sign in", type="primary")
         if submitted:
@@ -111,17 +118,20 @@ def require_user() -> AuthenticatedUser:
             st.error("The username or password was not recognised.")
         st.stop()
 
-    # Demo mode is deliberately obvious and must not be used for a live deployment.
-    st.warning("Demo mode: authentication is not enabled.", icon="⚠️")
-    return AuthenticatedUser(email="demo@local", name="Demo user")
+    if mode == "demo":
+        # Demo mode must be explicitly configured and is only for development.
+        st.warning("Demo mode: authentication is not enabled.", icon="⚠️")
+        return AuthenticatedUser(email="demo@local", name="Demo user")
+
+    st.error("Authentication is configured with an unsupported mode.")
+    st.stop()
 
 
 def sign_out_button() -> None:
     config = _secret_section("app_auth")
-    mode = str(config.get("mode", "demo")).lower()
+    mode = str(config.get("mode", "password")).lower()
     if mode == "oidc" and st.sidebar.button("Sign out"):
         st.logout()
     if mode == "password" and st.sidebar.button("Sign out"):
         st.session_state.pop("authenticated_user", None)
         st.rerun()
-

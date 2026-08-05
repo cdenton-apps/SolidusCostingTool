@@ -13,8 +13,14 @@ def _widget(group, label: str):
     return next(item for item in group if item.label == label)
 
 
+def _demo_app() -> AppTest:
+    app = AppTest.from_file(APP_PATH, default_timeout=10)
+    app.secrets["app_auth"] = {"mode": "demo"}
+    return app
+
+
 def test_new_item_reaches_pricing_stage() -> None:
-    app = AppTest.from_file(APP_PATH, default_timeout=10).run()
+    app = _demo_app().run()
     _widget(app.radio, "What would you like to cost?").set_value("New item").run()
     _widget(app.button, "Create a new costing").click().run()
 
@@ -47,7 +53,7 @@ def test_new_item_reaches_pricing_stage() -> None:
 
 
 def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
-    app = AppTest.from_file(APP_PATH, default_timeout=10)
+    app = _demo_app()
     app.session_state["step"] = 3
     app.session_state["draft"] = {
         "customer_name": "Pricing test",
@@ -91,7 +97,7 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
 
 
 def test_existing_item_specification_is_collapsed() -> None:
-    app = AppTest.from_file(APP_PATH, default_timeout=10).run()
+    app = _demo_app().run()
     _widget(app.button, "Use this item").click().run()
 
     specification = next(
@@ -104,7 +110,7 @@ def test_existing_item_specification_is_collapsed() -> None:
 
 
 def test_mtc_can_be_entered_in_pallets() -> None:
-    app = AppTest.from_file(APP_PATH, default_timeout=10).run()
+    app = _demo_app().run()
     _widget(app.radio, "What would you like to cost?").set_value("New item").run()
     _widget(app.button, "Create a new costing").click().run()
 
