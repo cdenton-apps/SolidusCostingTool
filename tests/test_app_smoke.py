@@ -24,6 +24,8 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.number_input, "Order quantity (units) *").set_value(10000)
     _widget(app.button, "Save order details").click().run()
 
+    assert all("tooling" not in widget.label.lower() for widget in app.number_input)
+
     _widget(app.selectbox, "Board item *").set_value(
         "BRD001/101/LPB/1000G/BW"
     ).run()
@@ -63,7 +65,6 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
         "net_weight_kg_per_1000": 500.0,
         "materials_cost_per_1000": 90.0,
         "manual_adjustment_per_1000": 0.0,
-        "tooling_cost_per_1000": 0.0,
         "transport_cost_per_1000": 10.0,
     }
     app.run()
@@ -107,9 +108,11 @@ def test_mtc_can_be_entered_in_pallets() -> None:
     _widget(app.number_input, "Width (mm) *").set_value(376)
     _widget(app.number_input, "Height (mm) *").set_value(149)
     _widget(app.radio, "Fulfilment type").set_value("MTC — Make to Contract").run()
+    assert all(
+        widget.label != "Stock holding target (%)" for widget in app.number_input
+    )
     _widget(app.radio, "Enter order quantity as").set_value("Pallets").run()
     _widget(app.number_input, "Order quantity (pallets) *").set_value(10).run()
-    _widget(app.number_input, "Stock holding target (%)").set_value(20)
     _widget(app.number_input, "Pallets per delivery / call-off *").set_value(1)
     _widget(
         app.number_input, "Potential holding charge (£ per pallet per week)"
@@ -120,4 +123,3 @@ def test_mtc_can_be_entered_in_pallets() -> None:
     assert app.session_state["draft"]["order_quantity"] == 10_000
     assert app.session_state["draft"]["order_pallets"] == 10
     assert app.session_state["draft"]["estimated_delivery_count"] == 10
-    assert app.session_state["draft"]["stock_holding_pallets"] == 2

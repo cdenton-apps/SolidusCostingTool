@@ -14,8 +14,8 @@ spread on selling price. Machine and labour are deliberately not included.
    entered as units or pallets.
 3. Choose the fulfilment type:
    - **MTO (Make to Order):** the order is treated as one delivery event.
-   - **MTC (Make to Contract):** enter the agreement term, stock-holding target,
-     pallets per call-off and any potential pallet holding charge.
+   - **MTC (Make to Contract):** enter the agreement term, pallets per call-off
+     and any potential pallet holding charge.
 4. Review the automatic material calculation and delivery quote.
 5. Change either spread percentage or selling price; the other value updates
    immediately.
@@ -42,7 +42,7 @@ change is needed.
   differently from one ten-pallet delivery.
 
 The commercial pricing base is material plus any approved commercial
-adjustment, allocated tooling and delivery pass-through. Spread is a gross
+adjustment and delivery pass-through. Spread is a gross
 percentage of selling price:
 
 `spread % = (selling price − pricing base) ÷ selling price × 100`
@@ -106,10 +106,15 @@ checkout or on a persistent mounted folder.
 - Missing rates are unavailable, never treated as zero.
 - A manual total remains available for exceptional or unlisted movements.
 
-The MTC quotation includes the agreement term, planned stock percentage,
-call-off profile and pallet-holding wording. If a holding rate is entered, it is
-shown as £ per pallet per week; otherwise the paperwork says a rate may be
-agreed in the final contract.
+The customer quotation uses the official Solidus brand artwork and includes a
+wrapping product description, key technical specifications, price, delivery
+basis, postcode, booking window and call-off profile. Haulier and service detail
+is kept in the commercial terms. For MTC, any holding rate entered is shown as
+£ per pallet per week; otherwise the paperwork says a rate may be agreed in the
+final contract.
+
+The included quotation artwork is the official Solidus brand header published
+with the company's 2023 brand identity announcement.
 
 ## GitHub and deployment
 

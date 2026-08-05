@@ -104,8 +104,6 @@ def default_draft() -> dict[str, Any]:
         "order_quantity": 0,
         "order_pallets": 0,
         "agreement_term_months": 12,
-        "stock_holding_percent": 0.0,
-        "stock_holding_pallets": 0,
         "delivery_pallets_per_calloff": 0,
         "estimated_delivery_count": 1,
         "pallet_holding_charge_per_pallet_per_week": 0.0,
@@ -123,7 +121,6 @@ def default_draft() -> dict[str, Any]:
         "units_out": 1.0,
         "material_cost_source": "",
         "manual_adjustment_per_1000": 0.0,
-        "fixed_tooling_cost": 0.0,
         "delivery_postcode": "",
         "delivery_method": "Haulier",
         "transport_service": "Economy",
@@ -209,7 +206,6 @@ def show_cost_breakdown(breakdown: dict[str, float]) -> None:
     rows = [
         ("Calculated materials", breakdown["materials_cost_per_1000"]),
         ("Commercial adjustment", breakdown["manual_adjustment_per_1000"]),
-        ("Tooling pass-through", breakdown["tooling_cost_per_1000"]),
         ("Delivery pass-through", breakdown["transport_cost_per_1000"]),
     ]
     table = pd.DataFrame(rows, columns=["Cost element", "Cost per 1,000"])
@@ -517,7 +513,6 @@ def render_specification() -> None:
     quantity_metrics[2].metric("Units per pallet", f"{safe_pallet_quantity:,}")
 
     agreement_term_months = int(draft_number("agreement_term_months", 12))
-    stock_holding_percent = draft_number("stock_holding_percent")
     pallet_holding_charge = draft_number(
         "pallet_holding_charge_per_pallet_per_week"
     )
@@ -530,20 +525,11 @@ def render_specification() -> None:
             value=max(1, agreement_term_months),
             step=1,
         )
-        stock_holding_percent = col2.number_input(
-            "Stock holding target (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=min(100.0, max(0.0, stock_holding_percent)),
-            step=1.0,
-            help="The share of the agreement volume planned to be held as finished pallet stock.",
-        )
         max_calloff = max(1, int(order_pallets))
         default_calloff = int(draft_number("delivery_pallets_per_calloff"))
         if default_calloff <= 0:
             default_calloff = min(10, max_calloff)
-        col1, col2 = st.columns(2)
-        delivery_pallets_per_calloff = col1.number_input(
+        delivery_pallets_per_calloff = col2.number_input(
             "Pallets per delivery / call-off *",
             min_value=1,
             max_value=max_calloff,
@@ -551,7 +537,7 @@ def render_specification() -> None:
             step=1,
             help="Transport will be costed across every planned call-off, not as one combined shipment.",
         )
-        pallet_holding_charge = col2.number_input(
+        pallet_holding_charge = st.number_input(
             "Potential holding charge (£ per pallet per week)",
             min_value=0.0,
             value=max(0.0, pallet_holding_charge),
@@ -561,11 +547,6 @@ def render_specification() -> None:
     else:
         delivery_pallets_per_calloff = max(1, int(order_pallets))
 
-    stock_holding_pallets = (
-        math.ceil(int(order_pallets) * float(stock_holding_percent) / 100)
-        if fulfilment_type == "MTC"
-        else 0
-    )
     estimated_delivery_count = (
         math.ceil(int(order_pallets) / int(delivery_pallets_per_calloff))
         if order_pallets
@@ -573,8 +554,8 @@ def render_specification() -> None:
     )
     if fulfilment_type == "MTC":
         st.caption(
-            f"Planned profile: approximately {estimated_delivery_count:,} deliveries; "
-            f"target finished stock {stock_holding_pallets:,} pallets."
+            f"Planned profile: approximately {estimated_delivery_count:,} deliveries "
+            f"of up to {int(delivery_pallets_per_calloff):,} pallets."
         )
 
     submitted = st.button("Save order details", type="primary")
@@ -603,8 +584,6 @@ def render_specification() -> None:
             "quantity_input_mode": quantity_input_mode,
             "order_pallets": int(order_pallets),
             "agreement_term_months": int(agreement_term_months),
-            "stock_holding_percent": float(stock_holding_percent),
-            "stock_holding_pallets": int(stock_holding_pallets),
             "delivery_pallets_per_calloff": int(delivery_pallets_per_calloff),
             "estimated_delivery_count": int(estimated_delivery_count),
             "pallet_holding_charge_per_pallet_per_week": float(
@@ -782,20 +761,12 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
         material_summary = None
         st.warning("Choose both a board item and an other-component option to continue.")
 
-    col1, col2 = st.columns(2)
-    manual_adjustment = col2.number_input(
+    manual_adjustment = st.number_input(
         "Commercial adjustment per 1,000 (£)",
         value=draft_number("manual_adjustment_per_1000"),
         step=1.0,
         help="Use a negative value for a credit or reduction.",
     )
-    fixed_tooling = col1.number_input(
-        "Tooling pass-through for this order (£)",
-        min_value=0.0,
-        value=draft_number("fixed_tooling_cost"),
-        step=10.0,
-    )
-
     st.markdown("#### Transport")
     estimated_pallets = int(draft_number("order_pallets")) or math.ceil(
         draft_number("order_quantity") / draft_number("pallet_quantity", 1)
@@ -880,7 +851,6 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
         updated = {
             **material_summary,
             "manual_adjustment_per_1000": manual_adjustment,
-            "fixed_tooling_cost": fixed_tooling,
             "delivery_method": delivery_method,
             "transport_service": service,
             "transport_booking": booking,

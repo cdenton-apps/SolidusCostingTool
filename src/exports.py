@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -11,6 +12,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
+    Image,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -23,6 +25,8 @@ INK = colors.HexColor("#000000")
 YELLOW = colors.HexColor("#FDD615")
 PALE = colors.HexColor("#F3F5F2")
 GREY = colors.HexColor("#D4DEDD")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BRAND_HEADER_PATH = PROJECT_ROOT / "assets" / "solidus-brand-header.jpg"
 
 
 def _money(value: Any) -> str:
@@ -39,39 +43,168 @@ def _number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _display(value: Any, default: str = "Not specified") -> str:
+    text = str(value or "").strip()
+    return html.escape(text or default)
+
+
+def _whole_number(value: Any, suffix: str = "") -> str:
+    number = _number(value)
+    return f"{number:,.0f}{suffix}" if number > 0 else "Not specified"
+
+
+def _delivery_basis(method: Any) -> str:
+    return {
+        "Haulier": "Delivered",
+        "Customer collection": "Ex-works / customer collection",
+        "Included elsewhere": "Delivery included elsewhere",
+    }.get(str(method or ""), str(method or "Not specified"))
+
+
 def quote_pdf(record: dict[str, Any]) -> bytes:
     buffer = BytesIO()
     document = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        rightMargin=18 * mm,
-        leftMargin=18 * mm,
-        topMargin=16 * mm,
-        bottomMargin=16 * mm,
+        rightMargin=15 * mm,
+        leftMargin=15 * mm,
+        topMargin=12 * mm,
+        bottomMargin=17 * mm,
         title=f"Quotation {record.get('quote_reference', '')}",
     )
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="Right", parent=styles["BodyText"], alignment=TA_RIGHT))
+    styles.add(
+        ParagraphStyle(
+            name="QuoteTitle",
+            parent=styles["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=18,
+            leading=20,
+            alignment=TA_RIGHT,
+            textColor=INK,
+            spaceAfter=4,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="QuoteMeta",
+            parent=styles["BodyText"],
+            fontSize=9,
+            leading=12,
+            alignment=TA_RIGHT,
+            textColor=colors.HexColor("#4A5050"),
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="SectionLabel",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            leading=11,
+            textColor=INK,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CellLabel",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=10,
+            textColor=colors.HexColor("#3F4545"),
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CellValue",
+            parent=styles["BodyText"],
+            fontSize=8.5,
+            leading=10.5,
+            textColor=INK,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CardValue",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            leading=12,
+            alignment=TA_RIGHT,
+            textColor=INK,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="Terms",
+            parent=styles["BodyText"],
+            fontSize=7.8,
+            leading=9.6,
+            textColor=colors.HexColor("#303434"),
+            spaceAfter=2,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="Disclaimer",
+            parent=styles["Italic"],
+            fontSize=7.5,
+            leading=9,
+            textColor=colors.HexColor("#565C5C"),
+        )
+    )
+
+    def paragraph(value: Any, style_name: str = "CellValue") -> Paragraph:
+        return Paragraph(_display(value), styles[style_name])
+
+    def section(title: str) -> Table:
+        return Table(
+            [[Paragraph(title.upper(), styles["SectionLabel"])]],
+            colWidths=[180 * mm],
+            rowHeights=[7 * mm],
+            style=[
+                ("BACKGROUND", (0, 0), (-1, -1), YELLOW),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ],
+        )
+
+    def details_table(rows: list[tuple[str, Any]]) -> Table:
+        data = [
+            [paragraph(label, "CellLabel"), paragraph(value)] for label, value in rows
+        ]
+        return Table(
+            data,
+            colWidths=[45 * mm, 135 * mm],
+            style=[
+                ("BACKGROUND", (0, 0), (0, -1), PALE),
+                ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ],
+        )
 
     fulfilment_type = str(record.get("fulfilment_type", "MTO") or "MTO").upper()
     fulfilment_label = (
         "MTC - Make to Contract" if fulfilment_type == "MTC" else "MTO - Make to Order"
     )
-    order_rows = [
-        ["Quote reference", html.escape(str(record.get("quote_reference", "Draft")))],
-        ["Customer", html.escape(str(record.get("customer_name", "")))],
-        ["For the attention of", html.escape(str(record.get("customer_contact", "")))],
-        ["Item", html.escape(str(record.get("item_code", "")))],
-        ["Description", html.escape(str(record.get("description", "")))],
-        ["Fulfilment", fulfilment_label],
-        ["Order / agreement quantity", f"{_number(record.get('order_quantity')):,.0f} units"],
-        ["Equivalent pallets", f"{_number(record.get('order_pallets')):,.0f}"],
+    order_rows: list[tuple[str, Any]] = [
+        ("Customer", record.get("customer_name")),
+        ("For the attention of", record.get("customer_contact")),
+        ("Item code", record.get("item_code")),
+        ("Description", record.get("description")),
+        ("Fulfilment", fulfilment_label),
+        ("Order / agreement quantity", f"{_number(record.get('order_quantity')):,.0f} units"),
+        ("Equivalent pallets", f"{_number(record.get('order_pallets')):,.0f}"),
     ]
     commercial_terms: list[str] = []
     if fulfilment_type == "MTC":
         agreement_months = _number(record.get("agreement_term_months"), 12)
-        holding_percent = _number(record.get("stock_holding_percent"))
-        holding_pallets = _number(record.get("stock_holding_pallets"))
         calloff_pallets = _number(record.get("delivery_pallets_per_calloff"))
         delivery_count = _number(record.get("estimated_delivery_count"), 1)
         holding_charge = _number(
@@ -81,90 +214,241 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         delivery_unit = "delivery" if delivery_count == 1 else "deliveries"
         order_rows.extend(
             [
-                ["Agreement term", f"{agreement_months:,.0f} months"],
-                [
-                    "Stock holding target",
-                    f"{holding_percent:,.1f}% (approximately {holding_pallets:,.0f} pallets)",
-                ],
-                [
+                ("Agreement term", f"{agreement_months:,.0f} months"),
+                (
                     "Planned call-off",
                     f"Up to {calloff_pallets:,.0f} {calloff_unit} per delivery; approximately {delivery_count:,.0f} {delivery_unit}",
-                ],
+                ),
             ]
         )
         commercial_terms.append(
             f"This quotation assumes a {agreement_months:,.0f}-month MTC agreement and the stated call-off profile. Changes to delivery frequency or pallet quantities may change transport pricing."
         )
-        commercial_terms.append(
-            f"The planned finished-goods stock holding is {holding_percent:,.1f}% of the agreement volume (approximately {holding_pallets:,.0f} pallets)."
-        )
         if holding_charge > 0:
             commercial_terms.append(
-                f"Pallets held beyond the agreed stock and call-off profile may be charged at £{holding_charge:,.2f} per pallet per week."
+                f"Pallet stock held beyond the agreed call-off profile may be charged at £{holding_charge:,.2f} per pallet per week."
             )
         else:
             commercial_terms.append(
-                "Pallets held beyond the agreed stock and call-off profile may attract a holding charge; the rate will be confirmed in the final contract."
+                "Pallet stock held beyond the agreed call-off profile may attract a holding charge; the rate will be confirmed in the final contract."
             )
     else:
         commercial_terms.append(
             "MTO pricing assumes the quoted order quantity is released as one delivery event. A changed delivery profile may change transport pricing."
         )
 
-    story = [
-        Paragraph("Solidus", styles["Title"]),
-        Paragraph("Your circular packaging partner", styles["Heading3"]),
-        Spacer(1, 2 * mm),
-        Paragraph("COSTING QUOTATION", styles["Heading1"]),
-        Spacer(1, 5 * mm),
-        Table(
-            order_rows,
-            colWidths=[48 * mm, 105 * mm],
-            style=[
-                ("BACKGROUND", (0, 0), (0, -1), PALE),
-                ("TEXTCOLOR", (0, 0), (0, -1), INK),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("GRID", (0, 0), (-1, -1), 0.35, GREY),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("PADDING", (0, 0), (-1, -1), 7),
-            ],
-        ),
-        Spacer(1, 8 * mm),
-        Table(
-            [
-                ["Selling price per 1,000", _money(record.get("selling_price_per_1000"))],
-                ["Selling price per item", _money(record.get("selling_price_per_item"))],
-                ["Delivery", html.escape(str(record.get("delivery_method", "")))],
-                ["Haulier", html.escape(str(record.get("transport_vendor", "")))],
-                ["Service", html.escape(str(record.get("transport_service", "")))],
-                ["Delivery postcode", html.escape(str(record.get("delivery_postcode", "")))],
-            ],
-            colWidths=[95 * mm, 58 * mm],
-            style=[
-                ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
-                ("TEXTCOLOR", (0, 0), (-1, 0), INK),
-                ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-                ("GRID", (0, 0), (-1, -1), 0.35, GREY),
-                ("PADDING", (0, 0), (-1, -1), 8),
-            ],
-        ),
-        Spacer(1, 8 * mm),
-        Paragraph("Notes", styles["Heading2"]),
-        Paragraph(html.escape(str(record.get("notes", "No additional notes."))), styles["BodyText"]),
-        Spacer(1, 6 * mm),
-        Paragraph("Commercial terms", styles["Heading2"]),
-        *[
-            Paragraph(f"- {html.escape(term)}", styles["BodyText"])
-            for term in commercial_terms
-        ],
-        Spacer(1, 12 * mm),
-        Paragraph(
-            "This quotation is generated from the costing tool and remains subject to final commercial approval.",
-            styles["Italic"],
-        ),
+    delivery_method = str(record.get("delivery_method", ""))
+    transport_vendor = str(record.get("transport_vendor", "") or "").strip()
+    transport_service = str(record.get("transport_service", "") or "").strip()
+    if delivery_method == "Haulier" and transport_vendor not in {"", "Manual override"}:
+        ordinary_service = " ".join(
+            part for part in [transport_vendor, transport_service] if part
+        )
+        commercial_terms.append(
+            f"The delivery allowance is based on {ordinary_service}. This will ordinarily be the service used."
+        )
+
+    dimensions = [_number(record.get(key)) for key in ("length_mm", "width_mm", "height_mm")]
+    finished_size = (
+        f"{dimensions[0]:,.0f} x {dimensions[1]:,.0f} x {dimensions[2]:,.0f} mm"
+        if all(value > 0 for value in dimensions)
+        else "Not specified"
+    )
+    board_dimensions = [
+        _number(record.get("board_width_mm")),
+        _number(record.get("board_length_mm")),
     ]
-    document.build(story)
+    board_size = (
+        f"{board_dimensions[0]:,.0f} x {board_dimensions[1]:,.0f} mm"
+        if all(value > 0 for value in board_dimensions)
+        else "Not specified"
+    )
+    material = str(record.get("material", "") or "").strip()
+    gsm = _number(record.get("board_gsm"))
+    material_grade = " / ".join(
+        value for value in [material, f"{gsm:,.0f} GSM" if gsm > 0 else ""] if value
+    ) or "Not specified"
+    net_mass = _number(record.get("net_mass_kg"))
+    net_mass_display = f"{net_mass:,.4f} kg" if net_mass > 0 else "Not specified"
+    technical_items = [
+        ("Finished size", finished_size),
+        ("Material / GSM", material_grade),
+        ("Board size", board_size),
+        ("Board code", record.get("board_code")),
+        ("Pallet quantity", _whole_number(record.get("pallet_quantity"))),
+        ("Pallet size", record.get("pallet_size")),
+        ("Print colours", _whole_number(record.get("number_of_colours"))),
+        ("FSC", record.get("fsc")),
+        ("Net mass / item", net_mass_display),
+        ("Product group", record.get("product_group")),
+    ]
+    technical_rows: list[list[Paragraph]] = []
+    for index in range(0, len(technical_items), 2):
+        left_label, left_value = technical_items[index]
+        right_label, right_value = technical_items[index + 1]
+        technical_rows.append(
+            [
+                paragraph(left_label, "CellLabel"),
+                paragraph(left_value),
+                paragraph(right_label, "CellLabel"),
+                paragraph(right_value),
+            ]
+        )
+    technical_table = Table(
+        technical_rows,
+        colWidths=[31 * mm, 59 * mm, 31 * mm, 59 * mm],
+        style=[
+            ("BACKGROUND", (0, 0), (0, -1), PALE),
+            ("BACKGROUND", (2, 0), (2, -1), PALE),
+            ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ],
+    )
+
+    price_card = Table(
+        [
+            [paragraph("PRICE", "SectionLabel"), ""],
+            [paragraph("Per 1,000", "CellLabel"), paragraph(_money(record.get("selling_price_per_1000")), "CardValue")],
+            [paragraph("Per item", "CellLabel"), paragraph(_money(record.get("selling_price_per_item")), "CardValue")],
+        ],
+        colWidths=[45 * mm, 42 * mm],
+        style=[
+            ("SPAN", (0, 0), (1, 0)),
+            ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
+            ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ],
+    )
+    booking = str(record.get("transport_booking", "Standard") or "Standard")
+    profile_pallets = _number(record.get("delivery_pallets_per_calloff"))
+    profile_unit = "pallet" if profile_pallets == 1 else "pallets"
+    delivery_profile = (
+        f"Up to {profile_pallets:,.0f} {profile_unit} per call-off"
+        if fulfilment_type == "MTC"
+        else "One delivery event"
+    )
+    delivery_card = Table(
+        [
+            [paragraph("DELIVERY", "SectionLabel"), ""],
+            [paragraph("Supply basis", "CellLabel"), paragraph(_delivery_basis(delivery_method))],
+            [paragraph("Postcode", "CellLabel"), paragraph(record.get("delivery_postcode"))],
+            [paragraph("Booking", "CellLabel"), paragraph(booking)],
+            [paragraph("Profile", "CellLabel"), paragraph(delivery_profile)],
+        ],
+        colWidths=[34 * mm, 53 * mm],
+        style=[
+            ("SPAN", (0, 0), (1, 0)),
+            ("BACKGROUND", (0, 0), (-1, 0), PALE),
+            ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ],
+    )
+
+    logo = (
+        Image(str(BRAND_HEADER_PATH), width=88 * mm, height=27.5 * mm)
+        if BRAND_HEADER_PATH.exists()
+        else Paragraph("Solidus", styles["QuoteTitle"])
+    )
+    header = Table(
+        [
+            [
+                logo,
+                [
+                    Paragraph("CUSTOMER QUOTATION", styles["QuoteTitle"]),
+                    Paragraph(
+                        f"Reference<br/><b>{_display(record.get('quote_reference'), 'Draft')}</b>",
+                        styles["QuoteMeta"],
+                    ),
+                ],
+            ]
+        ],
+        colWidths=[95 * mm, 85 * mm],
+        style=[
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ],
+    )
+
+    story = [header, Spacer(1, 4 * mm), section("Quote details"), details_table(order_rows)]
+    story.extend(
+        [
+            Spacer(1, 4 * mm),
+            section("Technical specification"),
+            technical_table,
+            Spacer(1, 4 * mm),
+            Table(
+                [[price_card, "", delivery_card]],
+                colWidths=[87 * mm, 6 * mm, 87 * mm],
+                style=[("VALIGN", (0, 0), (-1, -1), "TOP")],
+            ),
+        ]
+    )
+    notes = str(record.get("notes", "") or "").strip()
+    if notes:
+        story.extend(
+            [
+                Spacer(1, 4 * mm),
+                section("Notes"),
+                Table(
+                    [[Paragraph(html.escape(notes), styles["CellValue"])]],
+                    colWidths=[180 * mm],
+                    style=[
+                        ("BACKGROUND", (0, 0), (-1, -1), PALE),
+                        ("BOX", (0, 0), (-1, -1), 0.3, GREY),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                        ("TOPPADDING", (0, 0), (-1, -1), 6),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ],
+                ),
+            ]
+        )
+    story.extend(
+        [
+            Spacer(1, 4 * mm),
+            section("Commercial terms"),
+            Spacer(1, 2 * mm),
+            *[
+                Paragraph(f"- {html.escape(term)}", styles["Terms"])
+                for term in commercial_terms
+            ],
+            Spacer(1, 3 * mm),
+            Paragraph(
+                "This quotation is generated from the costing tool and remains subject to final commercial approval.",
+                styles["Disclaimer"],
+            ),
+        ]
+    )
+
+    def draw_footer(canvas, _: Any) -> None:
+        canvas.saveState()
+        canvas.setStrokeColor(GREY)
+        canvas.setLineWidth(0.4)
+        canvas.line(15 * mm, 12 * mm, A4[0] - 15 * mm, 12 * mm)
+        canvas.setFillColor(colors.HexColor("#666C6C"))
+        canvas.setFont("Helvetica", 7)
+        canvas.drawString(15 * mm, 8 * mm, "Solidus | Customer quotation")
+        canvas.drawRightString(
+            A4[0] - 15 * mm, 8 * mm, f"Page {canvas.getPageNumber()}"
+        )
+        canvas.restoreState()
+
+    document.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
     return buffer.getvalue()
 
 

@@ -57,9 +57,6 @@ def validate_details(values: dict[str, Any]) -> list[str]:
             errors.append("Agreement term must be greater than zero months.")
         if _number(values, "delivery_pallets_per_calloff") <= 0:
             errors.append("Pallets per delivery must be greater than zero.")
-        stock_holding_percent = _number(values, "stock_holding_percent")
-        if stock_holding_percent < 0 or stock_holding_percent > 100:
-            errors.append("Stock holding percentage must be between 0% and 100%.")
         if _number(values, "pallet_holding_charge_per_pallet_per_week") < 0:
             errors.append("Pallet holding charge cannot be negative.")
     return errors
@@ -69,8 +66,8 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
     """Calculate the material-led pricing base per 1,000 units.
 
     Machine and labour values may still exist in the source BOM extract, but the
-    commercial model deliberately excludes them. Tooling, manual adjustments and
-    transport are treated as pass-throughs before the spread is applied.
+    commercial model deliberately excludes them. Manual adjustments and transport
+    are treated as pass-throughs before the spread is applied.
     """
     errors = validate_details(values)
     if errors:
@@ -95,8 +92,7 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
 
     materials = _number(values, "materials_cost_per_1000")
     manual_adjustment = _number(values, "manual_adjustment_per_1000")
-    tooling_cost_per_1000 = _number(values, "fixed_tooling_cost") / order_in_thousands
-    material_base = materials + manual_adjustment + tooling_cost_per_1000
+    material_base = materials + manual_adjustment
 
     delivery_method = str(values.get("delivery_method", "Haulier"))
     transport_total = (
@@ -111,7 +107,6 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         "transport_total": round(transport_total, 4),
         "materials_cost_per_1000": round(materials, 4),
         "manual_adjustment_per_1000": round(manual_adjustment, 4),
-        "tooling_cost_per_1000": round(tooling_cost_per_1000, 4),
         "material_base_per_1000": round(material_base, 4),
         "transport_cost_per_1000": round(transport_cost_per_1000, 4),
         "pricing_base_per_1000": round(pricing_base, 4),

@@ -46,8 +46,6 @@ SPECIFICATION_COLUMNS = [
     "order_quantity",
     "order_pallets",
     "agreement_term_months",
-    "stock_holding_percent",
-    "stock_holding_pallets",
     "delivery_pallets_per_calloff",
     "estimated_delivery_count",
     "pallet_holding_charge_per_pallet_per_week",
@@ -76,7 +74,6 @@ COST_INPUT_COLUMNS = [
     "units_out",
     "material_cost_source",
     "manual_adjustment_per_1000",
-    "fixed_tooling_cost",
 ]
 
 NUMERIC_COST_INPUT_COLUMNS = [
@@ -88,14 +85,12 @@ NUMERIC_COST_INPUT_COLUMNS = [
     "other_components_cost_per_1000",
     "units_out",
     "manual_adjustment_per_1000",
-    "fixed_tooling_cost",
 ]
 
 CALCULATION_COLUMNS = [
     "net_weight_kg_per_1000",
     "pallet_count",
     "transport_total",
-    "tooling_cost_per_1000",
     "material_base_per_1000",
     "transport_cost_per_1000",
     "pricing_base_per_1000",
@@ -469,8 +464,6 @@ class CsvRepository:
             "order_quantity": 0,
             "order_pallets": 0,
             "agreement_term_months": 12,
-            "stock_holding_percent": 0.0,
-            "stock_holding_pallets": 0,
             "delivery_pallets_per_calloff": 0,
             "estimated_delivery_count": 1,
             "pallet_holding_charge_per_pallet_per_week": 0.0,
@@ -483,7 +476,6 @@ class CsvRepository:
             "transport_rate_zone": "",
             "transport_manual_override": 0,
             "manual_adjustment_per_1000": 0.0,
-            "fixed_tooling_cost": 0.0,
             "spread_percent": 30.0,
             "units_out": 1.0,
         }
