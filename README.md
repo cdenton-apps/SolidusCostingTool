@@ -1,12 +1,5 @@
 # Solidus Costing Tool
 
-This is a Streamlit app for building consistent packaging costings from the
-Solidus item, BOM, board-price and haulier data supplied with the project.
-
-The aim is simple: choose or describe a product, add the commercial order
-details, let the app calculate material and delivery, then test the effect of
-spread on selling price. Machine and labour are deliberately not included.
-
 ## What a user does
 
 1. Choose an existing item or start a new one.
