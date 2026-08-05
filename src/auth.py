@@ -47,6 +47,16 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
+def _verify_configured_password(password: str, entry: dict[str, Any]) -> bool:
+    """Accept a preferred hash or a plain password kept in Streamlit Secrets."""
+    encoded = str(entry.get("password_hash", "")).strip()
+    if encoded:
+        return verify_password(password, encoded)
+
+    configured = str(entry.get("password", ""))
+    return bool(configured) and hmac.compare_digest(password, configured)
+
+
 def _secret_section(name: str) -> dict[str, Any]:
     try:
         section = st.secrets.get(name, {})
@@ -109,7 +119,7 @@ def require_user() -> AuthenticatedUser:
                 (key for key in users if key.lower() == username.lower().strip()), None
             )
             entry = dict(users.get(matched_key, {})) if matched_key else {}
-            if entry and verify_password(password, str(entry.get("password_hash", ""))):
+            if entry and _verify_configured_password(password, entry):
                 st.session_state.authenticated_user = {
                     "email": str(entry.get("email", matched_key)),
                     "name": str(entry.get("name", matched_key)),

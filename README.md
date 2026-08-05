@@ -74,20 +74,24 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app is locked until at least one password user is configured. Passwords are
-stored only as secure hashes and must never be committed to GitHub.
+The app is locked until at least one password user is configured. For a basic
+internal setup, the chosen password can be stored directly in Streamlit's
+private Secrets. It must never be committed to GitHub.
 
 For local use:
 
 1. Copy `.streamlit/secrets.example.toml` to `.streamlit/secrets.toml`.
-2. Run `python scripts/generate_password_hash.py`.
-3. Paste the generated hash into the local secrets file.
-4. Restart Streamlit.
+2. Replace the example username, name, email and password.
+3. Restart Streamlit.
 
 For Streamlit Community Cloud, open the app's **Settings > Secrets**, paste the
-same TOML content there, replace the example name/email/hash, and save. The key
-after `[users.` is the username used on the login screen. Add another
+same TOML content there, replace the example name/email/password, and save. The
+key after `[users.` is the username used on the login screen. Add another
 `[users.username]` block for each authorised user.
+
+For stronger password storage, remove the plain `password` entry and use
+`python scripts/generate_password_hash.py` to create a `password_hash` instead.
+If both are supplied, the hash takes precedence.
 
 The real secrets file is ignored by Git and must never be committed. Explicit
 `mode = "demo"` remains available for local development tests only.

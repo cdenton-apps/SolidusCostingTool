@@ -4,7 +4,11 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from src.auth import make_password_hash, verify_password
+from src.auth import (
+    _verify_configured_password,
+    make_password_hash,
+    verify_password,
+)
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -18,6 +22,23 @@ def test_password_hash_round_trip() -> None:
     encoded = make_password_hash("a-secure-test-password")
     assert verify_password("a-secure-test-password", encoded)
     assert not verify_password("wrong-password", encoded)
+
+
+def test_configured_password_accepts_plain_secret_or_hash() -> None:
+    assert _verify_configured_password(
+        "chosen-password", {"password": "chosen-password"}
+    )
+    assert not _verify_configured_password(
+        "wrong-password", {"password": "chosen-password"}
+    )
+
+    encoded = make_password_hash("hashed-password")
+    assert _verify_configured_password(
+        "hashed-password", {"password_hash": encoded}
+    )
+    assert not _verify_configured_password(
+        "wrong-password", {"password_hash": encoded}
+    )
 
 
 def test_app_is_locked_when_no_users_are_configured() -> None:
@@ -36,7 +57,7 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
         "connor": {
             "name": "Connor Denton",
             "email": "connor@example.com",
-            "password_hash": make_password_hash("correct-horse-battery-staple"),
+            "password": "correct-horse-battery-staple",
         }
     }
     app.run()
@@ -57,7 +78,10 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
         "name": "Connor Denton",
     }
     assert _widget(app.radio, "What would you like to cost?")
-    assert any("Signed in as Connor Denton" in item.value for item in app.sidebar.caption)
+    assert any(
+        "Signed in as Connor Denton" in item.value
+        for item in app.sidebar.caption
+    )
 
     _widget(app.sidebar.button, "Sign out").click().run()
     assert "authenticated_user" not in app.session_state
