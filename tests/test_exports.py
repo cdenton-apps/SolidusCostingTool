@@ -10,6 +10,14 @@ def test_quote_and_sage_exports() -> None:
         "item_code": "BOX-TEST",
         "description": "Test box",
         "order_quantity": 10_000,
+        "order_pallets": 10,
+        "fulfilment_type": "MTC",
+        "agreement_term_months": 12,
+        "stock_holding_percent": 20,
+        "stock_holding_pallets": 2,
+        "delivery_pallets_per_calloff": 1,
+        "estimated_delivery_count": 10,
+        "pallet_holding_charge_per_pallet_per_week": 3,
         "selling_price_per_1000": 750,
         "selling_price_per_item": 0.75,
         "delivery_method": "Haulier",
@@ -33,4 +41,4 @@ def test_quote_and_sage_exports() -> None:
     assert "Stock item code" in csv
     assert "BOX-TEST" in csv
     assert "AnalysisName\\18" in csv
-
+    assert "MTC" in csv

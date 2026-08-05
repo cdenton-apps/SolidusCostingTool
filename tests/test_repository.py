@@ -18,7 +18,7 @@ def test_saves_append_only_revisions(tmp_path: Path) -> None:
         "description": "A test item",
         "customer_name": "Customer",
         "pricing_base_per_1000": 100,
-        "target_spread_per_tonne": 250,
+        "spread_percent": 30,
         "selling_price_per_1000": 150,
     }
 

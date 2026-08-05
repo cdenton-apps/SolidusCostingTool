@@ -53,6 +53,27 @@ def test_multiple_loads_and_booking_surcharge(rate_table: HaulierRateTable) -> N
     assert mcdowells.total_cost == pytest.approx(234)
 
 
+def test_mtc_calloffs_cost_more_than_one_combined_delivery(
+    rate_table: HaulierRateTable,
+) -> None:
+    combined = rate_table.quote_schedule(
+        postcode="BD20 0AA",
+        total_pallets=10,
+        pallets_per_delivery=10,
+        service="Economy",
+    )
+    calloffs = rate_table.quote_schedule(
+        postcode="BD20 0AA",
+        total_pallets=10,
+        pallets_per_delivery=1,
+        service="Economy",
+    )
+
+    assert combined[0].delivery_count == 1
+    assert calloffs[0].delivery_count == 10
+    assert calloffs[0].total_cost > combined[0].total_cost
+
+
 def test_unavailable_vendor_is_omitted(rate_table: HaulierRateTable) -> None:
     quotes = rate_table.quote_options(
         postcode="LL38 1AA", pallet_count=10, service="Economy"

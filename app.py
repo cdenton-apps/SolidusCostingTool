@@ -11,8 +11,8 @@ import streamlit as st
 from src.auth import require_user, sign_out_button
 from src.calculations import (
     calculate_cost,
-    price_from_spread,
-    spread_from_price,
+    price_from_spread_percent,
+    spread_percent_from_price,
     validate_details,
 )
 from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
@@ -26,7 +26,7 @@ from src.transport import HaulierRateTable, TransportLookupError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-STAGES = ["1 · Select", "2 · Specification", "3 · Costs", "4 · Price", "5 · Save"]
+STAGES = ["1 · Select", "2 · Order", "3 · Costs", "4 · Price", "5 · Save"]
 
 st.set_page_config(
     page_title="Solidus Costing Tool",
@@ -99,7 +99,16 @@ def default_draft() -> dict[str, Any]:
         "board_code": "",
         "pallet_size": "1000x1200",
         "pallet_quantity": 1_000,
+        "fulfilment_type": "MTO",
+        "quantity_input_mode": "Units",
         "order_quantity": 0,
+        "order_pallets": 0,
+        "agreement_term_months": 12,
+        "stock_holding_percent": 0.0,
+        "stock_holding_pallets": 0,
+        "delivery_pallets_per_calloff": 0,
+        "estimated_delivery_count": 1,
+        "pallet_holding_charge_per_pallet_per_week": 0.0,
         "bom_available": 0,
         "materials_cost_per_1000": 0.0,
         "board_item_code": "",
@@ -124,7 +133,7 @@ def default_draft() -> dict[str, Any]:
         "transport_rate_zone": "",
         "transport_manual_override": 0,
         "transport_total": 0.0,
-        "target_spread_per_tonne": 0.0,
+        "spread_percent": 30.0,
         "source_item_code": "",
     }
 
@@ -142,6 +151,11 @@ def reset_downstream() -> None:
     st.session_state.pop("transport_quotes", None)
     st.session_state.pop("material_lines", None)
     st.session_state.pop("last_saved", None)
+    st.session_state.pop("pricing_base_for_inputs", None)
+    st.session_state.pop("spread_percent_input", None)
+    st.session_state.pop("selling_price_input", None)
+    st.session_state.pop("fulfilment_type_input", None)
+    st.session_state.pop("quantity_input_mode_input", None)
 
 
 def navigate_to(step: int) -> None:
@@ -237,33 +251,39 @@ def render_select(repository: CsvRepository) -> None:
         selected_material_total = float(
             selected.get("materials_cost_per_1000", 0) or 0
         )
-        columns = st.columns(5)
-        columns[0].metric("Product group", str(selected.get("product_group", "—")))
-        columns[1].metric("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}")
-        columns[2].metric(
-            "Pallet quantity", f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}"
+        st.write(
+            f"**{selected.get('item_code', '')}** - {selected.get('description', '')}"
         )
-        columns[3].metric(
-            "Calculated material / 1,000",
-            f"£{selected_material_total:,.2f}"
-            if float(selected.get("bom_available", 0) or 0)
-            else "No BOM",
-        )
-        columns[4].metric("Source", str(selected.get("source_type", "Feed")))
-        st.caption(
-            f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
-            f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
-            f"{float(selected.get('height_mm', 0) or 0):,.0f} mm · "
-            f"Net mass {float(selected.get('net_mass_kg', 0) or 0):,.4f} kg"
-        )
-        material_result = repository.material_breakdown(
-            str(selected.get("item_code", ""))
-        )
-        material_lines = material_result["lines"]
-        if not material_lines.empty:
-            with st.expander(
-                f"View automatic material calculation ({len(material_lines)} components)"
-            ):
+        with st.expander("View product specification and material calculation"):
+            columns = st.columns(5)
+            columns[0].metric(
+                "Product group", str(selected.get("product_group", "—"))
+            )
+            columns[1].metric(
+                "GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"
+            )
+            columns[2].metric(
+                "Pallet quantity",
+                f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
+            )
+            columns[3].metric(
+                "Calculated material / 1,000",
+                f"£{selected_material_total:,.2f}"
+                if float(selected.get("bom_available", 0) or 0)
+                else "No BOM",
+            )
+            columns[4].metric("Source", str(selected.get("source_type", "Feed")))
+            st.caption(
+                f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
+                f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
+                f"{float(selected.get('height_mm', 0) or 0):,.0f} mm · "
+                f"Net mass {float(selected.get('net_mass_kg', 0) or 0):,.4f} kg"
+            )
+            material_result = repository.material_breakdown(
+                str(selected.get("item_code", ""))
+            )
+            material_lines = material_result["lines"]
+            if not material_lines.empty:
                 st.caption(
                     f"Board price source: {selected.get('board_price_source', '—')}. "
                     "Machine and labour are excluded from every value shown here."
@@ -302,10 +322,8 @@ def render_select(repository: CsvRepository) -> None:
             draft.update(
                 {key: selected.get(key, draft.get(key)) for key in COST_INPUT_COLUMNS}
             )
-            if "target_spread_per_tonne" in selected:
-                draft["target_spread_per_tonne"] = selected[
-                    "target_spread_per_tonne"
-                ]
+            if "spread_percent" in selected:
+                draft["spread_percent"] = selected["spread_percent"]
             draft["source_item_code"] = selected.get("item_code", "")
             st.session_state.draft = clean_record(draft)
             reset_downstream()
@@ -323,13 +341,31 @@ def render_select(repository: CsvRepository) -> None:
 
 
 def render_specification() -> None:
-    st.subheader("Item specification")
+    st.subheader("Order and fulfilment")
     draft = st.session_state.draft
-    with st.form("specification_form"):
+    existing_item = bool(str(draft.get("source_item_code", "")).strip())
+    if existing_item:
+        st.markdown(
+            '<div class="status-card"><strong>'
+            f"{str(draft.get('item_code', ''))}</strong> — "
+            f"{str(draft.get('description', ''))}<br>"
+            "The saved product specification will be used unless you open and amend it below.</div>",
+            unsafe_allow_html=True,
+        )
+
+    expander_label = (
+        "View or amend product specification"
+        if existing_item
+        else "Product specification *"
+    )
+    with st.expander(expander_label, expanded=not existing_item):
         left, right = st.columns(2)
-        customer_name = left.text_input("Customer *", value=str(draft.get("customer_name", "")))
-        item_code = right.text_input("Item code *", value=str(draft.get("item_code", "")))
-        description = st.text_input("Description *", value=str(draft.get("description", "")))
+        item_code = left.text_input(
+            "Item code *", value=str(draft.get("item_code", ""))
+        )
+        description = right.text_input(
+            "Description *", value=str(draft.get("description", ""))
+        )
 
         col1, col2, col3 = st.columns(3)
         material_options = [
@@ -375,20 +411,14 @@ def render_specification() -> None:
             step=1.0,
         )
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         pallet_quantity = col1.number_input(
             "Pallet quantity *",
             min_value=0,
             value=max(0, int(draft_number("pallet_quantity"))),
             step=1,
         )
-        order_quantity = col2.number_input(
-            "Order quantity *",
-            min_value=0,
-            value=max(0, int(draft_number("order_quantity"))),
-            step=1_000,
-        )
-        net_mass_kg = col3.number_input(
+        net_mass_kg = col2.number_input(
             "Net mass per item (kg)",
             min_value=0.0,
             value=draft_number("net_mass_kg"),
@@ -416,13 +446,138 @@ def render_specification() -> None:
             step=1,
         )
 
-        col1, col2, col3 = st.columns(3)
-        board_code = col1.text_input("Board code", value=str(draft.get("board_code", "")))
-        fsc = col2.text_input("FSC", value=str(draft.get("fsc", "")))
-        delivery_postcode = col3.text_input(
-            "Delivery postcode *", value=str(draft.get("delivery_postcode", ""))
+        col1, col2 = st.columns(2)
+        board_code = col1.text_input(
+            "Board code", value=str(draft.get("board_code", ""))
         )
-        submitted = st.form_submit_button("Save specification", type="primary")
+        fsc = col2.text_input("FSC", value=str(draft.get("fsc", "")))
+
+    st.markdown("#### Required order details")
+    left, right = st.columns(2)
+    customer_name = left.text_input(
+        "Customer *", value=str(draft.get("customer_name", ""))
+    )
+    delivery_postcode = right.text_input(
+        "Delivery postcode *", value=str(draft.get("delivery_postcode", ""))
+    )
+
+    fulfilment_options = ["MTO — Make to Order", "MTC — Make to Contract"]
+    current_fulfilment = str(draft.get("fulfilment_type", "MTO") or "MTO").upper()
+    st.session_state.setdefault(
+        "fulfilment_type_input", fulfilment_options[1 if current_fulfilment == "MTC" else 0]
+    )
+    fulfilment_label = st.radio(
+        "Fulfilment type",
+        fulfilment_options,
+        horizontal=True,
+        key="fulfilment_type_input",
+    )
+    fulfilment_type = fulfilment_label[:3]
+
+    quantity_modes = ["Units", "Pallets"]
+    current_mode = str(draft.get("quantity_input_mode", "Units"))
+    st.session_state.setdefault(
+        "quantity_input_mode_input",
+        current_mode if current_mode in quantity_modes else "Units",
+    )
+    quantity_input_mode = st.radio(
+        "Enter order quantity as",
+        quantity_modes,
+        horizontal=True,
+        key="quantity_input_mode_input",
+    )
+    safe_pallet_quantity = max(1, int(pallet_quantity))
+    if quantity_input_mode == "Units":
+        order_quantity = st.number_input(
+            "Order quantity (units) *",
+            min_value=0,
+            value=max(0, int(draft_number("order_quantity"))),
+            step=1_000,
+        )
+        order_pallets = (
+            math.ceil(order_quantity / safe_pallet_quantity) if order_quantity else 0
+        )
+    else:
+        default_pallets = int(draft_number("order_pallets"))
+        if default_pallets <= 0 and draft_number("order_quantity") > 0:
+            default_pallets = math.ceil(
+                draft_number("order_quantity") / safe_pallet_quantity
+            )
+        order_pallets = st.number_input(
+            "Order quantity (pallets) *",
+            min_value=0,
+            value=max(0, default_pallets),
+            step=1,
+        )
+        order_quantity = int(order_pallets) * safe_pallet_quantity
+
+    quantity_metrics = st.columns(3)
+    quantity_metrics[0].metric("Units", f"{int(order_quantity):,}")
+    quantity_metrics[1].metric("Pallets", f"{int(order_pallets):,}")
+    quantity_metrics[2].metric("Units per pallet", f"{safe_pallet_quantity:,}")
+
+    agreement_term_months = int(draft_number("agreement_term_months", 12))
+    stock_holding_percent = draft_number("stock_holding_percent")
+    pallet_holding_charge = draft_number(
+        "pallet_holding_charge_per_pallet_per_week"
+    )
+    if fulfilment_type == "MTC":
+        st.markdown("#### Contract and call-off plan")
+        col1, col2 = st.columns(2)
+        agreement_term_months = col1.number_input(
+            "Agreement term (months) *",
+            min_value=1,
+            value=max(1, agreement_term_months),
+            step=1,
+        )
+        stock_holding_percent = col2.number_input(
+            "Stock holding target (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=min(100.0, max(0.0, stock_holding_percent)),
+            step=1.0,
+            help="The share of the agreement volume planned to be held as finished pallet stock.",
+        )
+        max_calloff = max(1, int(order_pallets))
+        default_calloff = int(draft_number("delivery_pallets_per_calloff"))
+        if default_calloff <= 0:
+            default_calloff = min(10, max_calloff)
+        col1, col2 = st.columns(2)
+        delivery_pallets_per_calloff = col1.number_input(
+            "Pallets per delivery / call-off *",
+            min_value=1,
+            max_value=max_calloff,
+            value=min(default_calloff, max_calloff),
+            step=1,
+            help="Transport will be costed across every planned call-off, not as one combined shipment.",
+        )
+        pallet_holding_charge = col2.number_input(
+            "Potential holding charge (£ per pallet per week)",
+            min_value=0.0,
+            value=max(0.0, pallet_holding_charge),
+            step=1.0,
+            help="Enter 0 if the rate is still to be agreed; the quotation will still flag that a charge may apply.",
+        )
+    else:
+        delivery_pallets_per_calloff = max(1, int(order_pallets))
+
+    stock_holding_pallets = (
+        math.ceil(int(order_pallets) * float(stock_holding_percent) / 100)
+        if fulfilment_type == "MTC"
+        else 0
+    )
+    estimated_delivery_count = (
+        math.ceil(int(order_pallets) / int(delivery_pallets_per_calloff))
+        if order_pallets
+        else 0
+    )
+    if fulfilment_type == "MTC":
+        st.caption(
+            f"Planned profile: approximately {estimated_delivery_count:,} deliveries; "
+            f"target finished stock {stock_holding_pallets:,} pallets."
+        )
+
+    submitted = st.button("Save order details", type="primary")
 
     if submitted:
         updated = {
@@ -444,6 +599,17 @@ def render_specification() -> None:
             "number_of_colours": number_of_colours,
             "board_code": board_code.strip(),
             "fsc": fsc.strip(),
+            "fulfilment_type": fulfilment_type,
+            "quantity_input_mode": quantity_input_mode,
+            "order_pallets": int(order_pallets),
+            "agreement_term_months": int(agreement_term_months),
+            "stock_holding_percent": float(stock_holding_percent),
+            "stock_holding_pallets": int(stock_holding_pallets),
+            "delivery_pallets_per_calloff": int(delivery_pallets_per_calloff),
+            "estimated_delivery_count": int(estimated_delivery_count),
+            "pallet_holding_charge_per_pallet_per_week": float(
+                pallet_holding_charge
+            ),
             "delivery_postcode": delivery_postcode.strip().upper(),
         }
         errors = validate_details(updated)
@@ -453,7 +619,7 @@ def render_specification() -> None:
         else:
             st.session_state.draft = updated
             reset_downstream()
-            st.success("Specification complete.")
+            st.success("Order details complete.")
             navigate_to(2)
 
 
@@ -631,12 +797,29 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
     )
 
     st.markdown("#### Transport")
-    estimated_pallets = math.ceil(
+    estimated_pallets = int(draft_number("order_pallets")) or math.ceil(
         draft_number("order_quantity") / draft_number("pallet_quantity", 1)
     )
-    st.caption(
-        f"Order quantity requires {estimated_pallets:,} pallet(s). Rates cover 1–26 pallets per load; larger orders are split into additional loads."
+    fulfilment_type = str(draft.get("fulfilment_type", "MTO") or "MTO").upper()
+    planned_pallets_per_delivery = (
+        max(1, int(draft_number("delivery_pallets_per_calloff")))
+        if fulfilment_type == "MTC"
+        else max(1, estimated_pallets)
     )
+    estimated_deliveries = math.ceil(
+        estimated_pallets / planned_pallets_per_delivery
+    )
+    if fulfilment_type == "MTC":
+        st.caption(
+            f"MTC agreement: {estimated_pallets:,} pallets across approximately "
+            f"{estimated_deliveries:,} call-offs of up to {planned_pallets_per_delivery:,} pallets. "
+            "Transport is priced across the full schedule."
+        )
+    else:
+        st.caption(
+            f"MTO order: {estimated_pallets:,} pallet(s) released as one delivery event. "
+            "Rates cover 1–26 pallets per vehicle load; larger movements are split into additional loads."
+        )
     methods = ["Haulier", "Customer collection", "Included elsewhere"]
     current_method = str(draft.get("delivery_method", "Haulier"))
     delivery_method = st.selectbox(
@@ -703,6 +886,8 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
             "transport_booking": booking,
             "transport_vendor_preference": vendor_preference,
             "transport_manual_override": int(manual_override),
+            "delivery_pallets_per_calloff": planned_pallets_per_delivery,
+            "estimated_delivery_count": estimated_deliveries,
         }
         if selected_board is not None:
             updated.update(
@@ -719,9 +904,10 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
                 )
         try:
             if delivery_method == "Haulier" and not manual_override:
-                quotes = rate_table.quote_options(
+                quotes = rate_table.quote_schedule(
                     postcode=str(draft["delivery_postcode"]),
-                    pallet_count=estimated_pallets,
+                    total_pallets=estimated_pallets,
+                    pallets_per_delivery=planned_pallets_per_delivery,
                     service=service,
                     booking=booking,
                 )
@@ -780,6 +966,8 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
                 columns={
                     "vendor": "Haulier",
                     "rate_zone": "Rate zone",
+                    "delivery_count": "Deliveries",
+                    "pallets_per_delivery": "Pallets / delivery",
                     "load_count": "Loads",
                     "base_cost": "Base cost",
                     "booking_surcharge": "Booking surcharge",
@@ -792,6 +980,8 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
                     [
                         "Haulier",
                         "Rate zone",
+                        "Deliveries",
+                        "Pallets / delivery",
                         "Loads",
                         "Base cost",
                         "Booking surcharge",
@@ -813,11 +1003,40 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
             )
             st.success(
                 f"Selected {draft.get('transport_vendor')} using rate zone {draft.get('transport_rate_zone')}: "
-                f"£{float(draft.get('transport_total', 0)):,.2f}."
+                f"£{float(draft.get('transport_total', 0)):,.2f} across "
+                f"{int(draft.get('estimated_delivery_count', 1) or 1):,} planned delivery event(s)."
             )
         show_cost_breakdown(st.session_state.breakdown)
         if st.button("Continue to pricing", type="primary"):
             navigate_to(3)
+
+
+def sync_selling_from_spread() -> None:
+    try:
+        pricing = price_from_spread_percent(
+            float(st.session_state.breakdown["pricing_base_per_1000"]),
+            float(st.session_state.spread_percent_input),
+        )
+        st.session_state.selling_price_input = pricing["selling_price_per_1000"]
+        st.session_state.pricing = pricing
+        st.session_state.draft["spread_percent"] = pricing["spread_percent"]
+        st.session_state.pop("pricing_error", None)
+    except ValueError as exc:
+        st.session_state.pricing_error = str(exc)
+
+
+def sync_spread_from_selling_price() -> None:
+    try:
+        pricing = spread_percent_from_price(
+            float(st.session_state.breakdown["pricing_base_per_1000"]),
+            float(st.session_state.selling_price_input),
+        )
+        st.session_state.spread_percent_input = pricing["spread_percent"]
+        st.session_state.pricing = pricing
+        st.session_state.draft["spread_percent"] = pricing["spread_percent"]
+        st.session_state.pop("pricing_error", None)
+    except ValueError as exc:
+        st.session_state.pricing_error = str(exc)
 
 
 def render_pricing() -> None:
@@ -825,80 +1044,64 @@ def render_pricing() -> None:
     breakdown = st.session_state.breakdown
     show_cost_breakdown(breakdown)
     st.info(
-        "Spread is measured in £ per tonne. Selling price = pricing base + (spread × net tonnes per 1,000)."
+        "Spread is a gross percentage of selling price: (selling price − pricing base) ÷ selling price. Change either field and the other updates immediately."
     )
-    basis = st.radio(
-        "Which value do you want to control?",
-        ["Target spread", "Selling price"],
-        horizontal=True,
-    )
-    with st.form("pricing_form"):
-        if basis == "Target spread":
-            value = st.number_input(
-                "Target spread (£/tonne)",
-                min_value=0.0,
-                value=float(
-                    st.session_state.get("pricing", {}).get(
-                        "target_spread_per_tonne",
-                        draft_number("target_spread_per_tonne", 0),
-                    )
-                ),
-                step=10.0,
-            )
-        else:
-            suggested = price_from_spread(
-                breakdown["pricing_base_per_1000"],
-                breakdown["net_weight_kg_per_1000"],
-                draft_number("target_spread_per_tonne", 0),
-            )["selling_price_per_1000"]
-            value = st.number_input(
-                "Selling price per 1,000 (£)",
-                min_value=0.01,
-                value=float(
-                    st.session_state.get("pricing", {}).get(
-                        "selling_price_per_1000", suggested
-                    )
-                ),
-                step=1.0,
-            )
-        apply_price = st.form_submit_button("Apply pricing", type="primary")
 
-    if apply_price:
+    pricing_base = float(breakdown["pricing_base_per_1000"])
+    if st.session_state.get("pricing_base_for_inputs") != pricing_base:
+        starting_spread = float(
+            st.session_state.get("pricing", {}).get(
+                "spread_percent", draft_number("spread_percent", 30)
+            )
+        )
         try:
-            pricing = (
-                price_from_spread(
-                    breakdown["pricing_base_per_1000"],
-                    breakdown["net_weight_kg_per_1000"],
-                    value,
-                )
-                if basis == "Target spread"
-                else spread_from_price(
-                    breakdown["pricing_base_per_1000"],
-                    breakdown["net_weight_kg_per_1000"],
-                    value,
-                )
-            )
-            st.session_state.pricing = pricing
-            st.session_state.draft["target_spread_per_tonne"] = pricing[
-                "target_spread_per_tonne"
-            ]
-            st.rerun()
-        except ValueError as exc:
-            st.error(str(exc))
+            pricing = price_from_spread_percent(pricing_base, starting_spread)
+        except ValueError:
+            pricing = price_from_spread_percent(pricing_base, 0.0)
+        st.session_state.pricing_base_for_inputs = pricing_base
+        st.session_state.spread_percent_input = pricing["spread_percent"]
+        st.session_state.selling_price_input = pricing[
+            "selling_price_per_1000"
+        ]
+        st.session_state.pricing = pricing
+        st.session_state.draft["spread_percent"] = pricing["spread_percent"]
 
-    if st.session_state.get("pricing"):
-        pricing = st.session_state.pricing
-        columns = st.columns(3)
+    left, right = st.columns(2)
+    left.number_input(
+        "Spread (%)",
+        min_value=-100_000.0,
+        max_value=99.99,
+        step=0.5,
+        format="%.2f",
+        key="spread_percent_input",
+        on_change=sync_selling_from_spread,
+    )
+    right.number_input(
+        "Selling price per 1,000 (£)",
+        min_value=0.01,
+        step=1.0,
+        format="%.2f",
+        key="selling_price_input",
+        on_change=sync_spread_from_selling_price,
+    )
+
+    if st.session_state.get("pricing_error"):
+        st.error(st.session_state.pricing_error)
+
+    pricing = st.session_state.get("pricing")
+    if pricing:
+        columns = st.columns(4)
         columns[0].metric(
             "Selling price / 1,000", f"£{pricing['selling_price_per_1000']:,.2f}"
         )
         columns[1].metric(
             "Selling price / item", f"£{pricing['selling_price_per_item']:,.4f}"
         )
-        columns[2].metric(
-            "Spread", f"£{pricing['target_spread_per_tonne']:,.2f} / tonne"
+        columns[2].metric("Spread", f"{pricing['spread_percent']:,.2f}%")
+        columns[3].metric(
+            "Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}"
         )
-        if pricing["target_spread_per_tonne"] < 0:
+        if pricing["spread_percent"] < 0:
             st.warning("The selected selling price produces a negative spread.")
         if st.button("Continue to save and print", type="primary"):
             navigate_to(4)
@@ -930,13 +1133,14 @@ def render_save(repository: CsvRepository, user_email: str, user_name: str) -> N
     st.text_area("Quote notes", key="quote_notes", height=100)
 
     record = current_record()
-    columns = st.columns(4)
+    columns = st.columns(5)
     columns[0].metric("Item", str(record["item_code"]))
     columns[1].metric("Quantity", f"{float(record['order_quantity']):,.0f}")
-    columns[2].metric(
+    columns[2].metric("Fulfilment", str(record.get("fulfilment_type", "MTO")))
+    columns[3].metric(
         "Pricing base / 1,000", f"£{record['pricing_base_per_1000']:,.2f}"
     )
-    columns[3].metric("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}")
+    columns[4].metric("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}")
 
     if st.button("Save as a new revision", type="primary", width="stretch"):
         record["source_item_code"] = draft.get("source_item_code", "")
@@ -1007,10 +1211,11 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         "revision",
         "customer_name",
         "description",
+        "fulfilment_type",
         "order_quantity",
         "pricing_base_per_1000",
         "selling_price_per_1000",
-        "target_spread_per_tonne",
+        "spread_percent",
         "costing_id",
     ]
     st.dataframe(
@@ -1020,7 +1225,7 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         column_config={
             "pricing_base_per_1000": st.column_config.NumberColumn(format="£%.2f"),
             "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
-            "target_spread_per_tonne": st.column_config.NumberColumn(format="£%.2f"),
+            "spread_percent": st.column_config.NumberColumn(format="%.2f%%"),
             "order_quantity": st.column_config.NumberColumn(format="%.0f"),
         },
     )

@@ -32,6 +32,13 @@ def _money(value: Any) -> str:
         return "—"
 
 
+def _number(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def quote_pdf(record: dict[str, Any]) -> bytes:
     buffer = BytesIO()
     document = SimpleDocTemplate(
@@ -46,6 +53,64 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="Right", parent=styles["BodyText"], alignment=TA_RIGHT))
 
+    fulfilment_type = str(record.get("fulfilment_type", "MTO") or "MTO").upper()
+    fulfilment_label = (
+        "MTC - Make to Contract" if fulfilment_type == "MTC" else "MTO - Make to Order"
+    )
+    order_rows = [
+        ["Quote reference", html.escape(str(record.get("quote_reference", "Draft")))],
+        ["Customer", html.escape(str(record.get("customer_name", "")))],
+        ["For the attention of", html.escape(str(record.get("customer_contact", "")))],
+        ["Item", html.escape(str(record.get("item_code", "")))],
+        ["Description", html.escape(str(record.get("description", "")))],
+        ["Fulfilment", fulfilment_label],
+        ["Order / agreement quantity", f"{_number(record.get('order_quantity')):,.0f} units"],
+        ["Equivalent pallets", f"{_number(record.get('order_pallets')):,.0f}"],
+    ]
+    commercial_terms: list[str] = []
+    if fulfilment_type == "MTC":
+        agreement_months = _number(record.get("agreement_term_months"), 12)
+        holding_percent = _number(record.get("stock_holding_percent"))
+        holding_pallets = _number(record.get("stock_holding_pallets"))
+        calloff_pallets = _number(record.get("delivery_pallets_per_calloff"))
+        delivery_count = _number(record.get("estimated_delivery_count"), 1)
+        holding_charge = _number(
+            record.get("pallet_holding_charge_per_pallet_per_week")
+        )
+        calloff_unit = "pallet" if calloff_pallets == 1 else "pallets"
+        delivery_unit = "delivery" if delivery_count == 1 else "deliveries"
+        order_rows.extend(
+            [
+                ["Agreement term", f"{agreement_months:,.0f} months"],
+                [
+                    "Stock holding target",
+                    f"{holding_percent:,.1f}% (approximately {holding_pallets:,.0f} pallets)",
+                ],
+                [
+                    "Planned call-off",
+                    f"Up to {calloff_pallets:,.0f} {calloff_unit} per delivery; approximately {delivery_count:,.0f} {delivery_unit}",
+                ],
+            ]
+        )
+        commercial_terms.append(
+            f"This quotation assumes a {agreement_months:,.0f}-month MTC agreement and the stated call-off profile. Changes to delivery frequency or pallet quantities may change transport pricing."
+        )
+        commercial_terms.append(
+            f"The planned finished-goods stock holding is {holding_percent:,.1f}% of the agreement volume (approximately {holding_pallets:,.0f} pallets)."
+        )
+        if holding_charge > 0:
+            commercial_terms.append(
+                f"Pallets held beyond the agreed stock and call-off profile may be charged at £{holding_charge:,.2f} per pallet per week."
+            )
+        else:
+            commercial_terms.append(
+                "Pallets held beyond the agreed stock and call-off profile may attract a holding charge; the rate will be confirmed in the final contract."
+            )
+    else:
+        commercial_terms.append(
+            "MTO pricing assumes the quoted order quantity is released as one delivery event. A changed delivery profile may change transport pricing."
+        )
+
     story = [
         Paragraph("Solidus", styles["Title"]),
         Paragraph("Your circular packaging partner", styles["Heading3"]),
@@ -53,14 +118,7 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         Paragraph("COSTING QUOTATION", styles["Heading1"]),
         Spacer(1, 5 * mm),
         Table(
-            [
-                ["Quote reference", html.escape(str(record.get("quote_reference", "Draft")))],
-                ["Customer", html.escape(str(record.get("customer_name", "")))],
-                ["For the attention of", html.escape(str(record.get("customer_contact", "")))],
-                ["Item", html.escape(str(record.get("item_code", "")))],
-                ["Description", html.escape(str(record.get("description", "")))],
-                ["Order quantity", f"{float(record.get('order_quantity', 0)):,.0f}"],
-            ],
+            order_rows,
             colWidths=[48 * mm, 105 * mm],
             style=[
                 ("BACKGROUND", (0, 0), (0, -1), PALE),
@@ -94,6 +152,12 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         Spacer(1, 8 * mm),
         Paragraph("Notes", styles["Heading2"]),
         Paragraph(html.escape(str(record.get("notes", "No additional notes."))), styles["BodyText"]),
+        Spacer(1, 6 * mm),
+        Paragraph("Commercial terms", styles["Heading2"]),
+        *[
+            Paragraph(f"- {html.escape(term)}", styles["BodyText"])
+            for term in commercial_terms
+        ],
         Spacer(1, 12 * mm),
         Paragraph(
             "This quotation is generated from the costing tool and remains subject to final commercial approval.",
@@ -124,7 +188,7 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
         "customer_name",
         "pricing_base_per_1000",
         "selling_price_per_1000",
-        "target_spread_per_tonne",
+        "spread_percent",
     ]
     available = [column for column in columns if column in frame.columns]
     headings = [column.replace("_", " ").title() for column in available]
@@ -160,7 +224,7 @@ def sage_stock_import_csv(record: dict[str, Any]) -> bytes:
         ("Legacy Code", record.get("legacy_code", "")),
         ("Doublestack", record.get("double_stack", "N")),
         ("Pallet Size", record.get("pallet_size", "")),
-        ("MRP Type", record.get("mrp_type", "MTO")),
+        ("MRP Type", record.get("fulfilment_type") or record.get("mrp_type", "MTO")),
         ("Length", record.get("length_mm", "")),
         ("Width", record.get("width_mm", "")),
         ("Height", record.get("height_mm", "")),

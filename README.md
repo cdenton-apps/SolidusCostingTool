@@ -1,27 +1,57 @@
-# Solidus Spread Costing Tool
+# Solidus Costing Tool
 
-A GitHub-ready Streamlit costing application using the supplied Sage item/BOM
-test extracts and haulier price matrix.
+This is a Streamlit app for building consistent packaging costings from the
+Solidus item, BOM, board-price and haulier data supplied with the project.
 
-## Included workflow
+The aim is simple: choose or describe a product, add the commercial order
+details, let the app calculate material and delivery, then test the effect of
+spread on selling price. Machine and labour are deliberately not included.
 
-- secure sign-in using local hashed passwords or Streamlit OIDC;
-- 354 current items with their Sage analysis values;
-- 986 board stock items, including board code, dimensions, GSM and FSC data;
-- 1,163 April 2026 mill price rows, with 579 board items matched to an unambiguous current rate;
-- 2,330 detailed BOM lines covering 179 costed items;
-- automatic board pricing plus BOM component roll-up, with no normal material-cost typing;
-- required-field checks before a costing can progress;
-- postcode, service, haulier and pallet-count transport pricing;
-- automatic comparison of Joda and McDowells where both rates are available;
-- spread-led or selling-price-led pricing in £ per tonne;
-- append-only revision history showing who created each costing and when;
-- customer quotation PDFs, audit PDFs and CSV extracts;
-- an indicative Sage new-stock-item CSV using the supplied import headings.
+## What a user does
 
-## Run locally
+1. Choose an existing item or start a new one.
+2. Enter the customer, delivery postcode and order quantity. Quantity can be
+   entered as units or pallets.
+3. Choose the fulfilment type:
+   - **MTO (Make to Order):** the order is treated as one delivery event.
+   - **MTC (Make to Contract):** enter the agreement term, stock-holding target,
+     pallets per call-off and any potential pallet holding charge.
+4. Review the automatic material calculation and delivery quote.
+5. Change either spread percentage or selling price; the other value updates
+   immediately.
+6. Save a new revision and download a customer quotation, costing CSV or
+   indicative Sage stock-item import.
 
-Use Python 3.12 to match Streamlit Community Cloud.
+For an existing item, the technical specification stays collapsed by default.
+It is still available through **View or amend product specification** when a
+change is needed.
+
+## Where the numbers come from
+
+- Board is matched to the April 2026 mill price list by article/board code where
+  possible. Size and GSM are only used when they produce one unambiguous match.
+- Other components such as pallets, banding, layercards, wrap, topsheets and
+  adhesive come from the BOM.
+- If board cannot be matched safely, the app uses the BOM material value after
+  explicitly removing rolled machine and labour values.
+- New items use a selected priced board, units out per sheet and an optional
+  comparable BOM for the other components. There is no normal free-typed
+  material-cost field.
+- Delivery is quoted from the supplied Joda and McDowells matrix. For MTC, each
+  planned pallet call-off is costed, so ten one-pallet deliveries cost
+  differently from one ten-pallet delivery.
+
+The commercial pricing base is material plus any approved commercial
+adjustment, allocated tooling and delivery pass-through. Spread is a gross
+percentage of selling price:
+
+`spread % = (selling price − pricing base) ÷ selling price × 100`
+
+`selling price = pricing base ÷ (1 − spread %)`
+
+## Run it locally
+
+Python 3.12 is recommended to match Streamlit Community Cloud.
 
 ```bash
 python -m venv .venv
@@ -30,63 +60,29 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The repository starts in clearly labelled demo mode. To require a login:
+The project starts in clearly labelled demo mode. To require a login:
 
 1. Copy `.streamlit/secrets.example.toml` to `.streamlit/secrets.toml`.
 2. Run `python scripts/generate_password_hash.py`.
 3. Paste the generated hash into the local secrets file.
 4. Restart Streamlit.
 
-The real secrets file is excluded from Git.
+Never commit the real secrets file.
 
-## Data feeds
+## Keeping the data current
 
-| File | Purpose |
+The `data` folder contains the app-ready feeds:
+
+| File | Used for |
 | --- | --- |
-| `data/current_items.csv` | Converted item fields and Sage analysis values |
-| `data/board_items.csv` | Board stock information and resolved April 2026 mill match |
-| `data/board_prices.csv` | April 2026 mill price list and article aliases |
-| `data/bom_costs.csv` | Source BOM extract; only material rows feed the commercial value |
-| `data/haulier_rates.csv` | Postcode/service/vendor matrix for 1–26 pallets |
-| `data/saved_costings.csv` | Append-only costing and revision history |
+| `current_items.csv` | Existing product and stock information |
+| `board_items.csv` | Board dimensions, GSM, FSC and resolved price match |
+| `board_prices.csv` | April 2026 mill price rows and aliases |
+| `bom_costs.csv` | Material BOM lines and imported audit values |
+| `haulier_rates.csv` | Postcode, service, vendor and pallet rates |
+| `saved_costings.csv` | Append-only costing revisions |
 
-Set `COSTING_DATA_DIR` to keep live data outside the Git checkout or on a
-persistent mounted folder.
-
-## Cost calculation
-
-For existing items, the app finds every non-informational board component in the
-BOM, joins it to the board stock list and applies the April 2026 mill price. It
-matches by article/board code first. Size and GSM are used only when they lead to
-one unambiguous price.
-
-If the mill list has no safe match, the app automatically falls back to the
-BOM's material-only value. For rolled printed-board children, rolled labour and
-machine values are explicitly subtracted before the fallback is used. Other
-material components such as pallets, banding, layercards, wrap, topsheets and
-adhesive are added from their BOM lines.
-
-For a brand-new item, the user selects a priced board item, enters the number of
-finished units out per sheet and selects a comparable BOM for the other
-components (or explicitly confirms that none are required). The material value
-is then calculated; there is no free-typed material-cost field.
-
-Commercial adjustments and allocated tooling are added to the material base as
-pass-throughs. Transport is converted into a value per 1,000 and added as a
-delivery pass-through.
-
-Spread is measured in pounds per net tonne:
-
-`spread value per 1,000 = target spread (£/tonne) × net kg per 1,000 ÷ 1,000`
-
-`selling price per 1,000 = pricing base per 1,000 + spread value per 1,000`
-
-Entering a selling price performs the inverse calculation and reports the
-achieved spread in £ per tonne.
-
-## Refresh the workbook feeds
-
-After replacing the source workbooks, regenerate the app CSVs with:
+After replacing the source workbooks, rebuild the app feeds with:
 
 ```bash
 python scripts/import_workbooks.py \
@@ -95,51 +91,55 @@ python scripts/import_workbooks.py \
   --output-dir data
 ```
 
-## Transport rules
+Set `COSTING_DATA_DIR` if live data and saved costings should sit outside the Git
+checkout or on a persistent mounted folder.
 
-- The full supplied postcode matrix is used for Economy and Next Day services.
-- Both Joda and McDowells are calculated where the workbook contains a rate.
-- `Cheapest available` selects the lowest valid total.
-- Orders above 26 pallets are split into additional loads.
-- AM/PM bookings add £7 per load.
-- Timed bookings add £19 per load.
+## Transport behaviour
+
+- Economy and Next Day use the supplied postcode matrix.
+- `Cheapest available` compares Joda and McDowells wherever both have a rate.
+- A delivery above 26 pallets is split into additional vehicle loads.
+- An MTC agreement is split into the planned pallet call-offs before rates are
+  added together.
+- AM/PM adds £7 per load; Timed adds £19 per load.
 - McDowells adds £40 for each complete 26-pallet load.
-- Missing workbook rates are treated as unavailable, not as zero.
-- A manual transport total is available for exceptional or unlisted movements.
+- Missing rates are unavailable, never treated as zero.
+- A manual total remains available for exceptional or unlisted movements.
 
-## Deploy from GitHub
+The MTC quotation includes the agreement term, planned stock percentage,
+call-off profile and pallet-holding wording. If a holding rate is entered, it is
+shown as £ per pallet per week; otherwise the paperwork says a rate may be
+agreed in the final contract.
 
-1. Keep `app.py`, `README.md` and `requirements.txt` in the repository root.
-2. Preserve the `src`, `data`, `tests`, `scripts` and `.streamlit` folders.
-3. Create a private GitHub repository and push the project.
-4. In Streamlit Community Cloud, select `app.py` as the entrypoint.
-5. Paste production secrets into Advanced settings; never commit them.
-6. For company use, prefer Microsoft Entra OIDC and restrict access by domain or email.
+## GitHub and deployment
 
-### Persistence limitation
+Keeping the deployable version on `main` is normal. For day-to-day changes, use
+a short-lived branch and pull request, then merge the tested change into
+`main`. A practical repository layout is already in place: the entrypoint and
+README are at the root, while source code, data, scripts and tests are grouped
+in their own folders.
 
-GitHub stores the code and input templates, not live multi-user transactions.
-The CSV history is suitable for local trials or a self-hosted instance whose
-`COSTING_DATA_DIR` points to durable storage. Before multi-user rollout, replace
-the CSV history repository with SQL/Postgres, Azure storage or another shared,
-backed-up store.
+For Streamlit Community Cloud, connect the repository and choose `app.py` as the
+entrypoint. Add production secrets in Streamlit's Advanced settings.
 
-## Items still requiring business confirmation
+GitHub stores code and reference data, not reliable live multi-user
+transactions. The CSV history is suitable for trials or a self-hosted instance
+with durable storage. Before wider rollout, move costing history to a shared,
+backed-up database or storage service.
 
-- Whether AM/PM, timed and McDowells full-load surcharges are current and VAT/FSC treatment.
-- How to handle dual collections and special delivery instructions.
-- Which users may alter imported BOM values versus only viewing them.
-- Ownership of board items that still have no unambiguous current mill-price match.
-- The mandatory accounts/defaults needed for a fully importable new Sage item row.
-- Target spread thresholds, and approval rules for commercial adjustments and transport overrides.
-
-## Test
+## Tests
 
 ```bash
 pytest -q
 ```
 
-The tests cover imported material pricing, spread calculations, explicit
-machine/labour exclusion, password hashing, append-only
-history, postcode-zone selection, haulier comparisons, full-load rules,
-unavailable rates, exports and the Streamlit workflow.
+The tests cover board/BOM integration, machine and labour exclusion, percentage
+spread, pallet call-offs, haulier rules, authentication, revision history,
+exports and the Streamlit workflow.
+
+## Before production use
+
+The business should still confirm surcharge/VAT treatment, permissions for
+overrides, approval thresholds, the treatment of unmatched board prices and the
+exact Sage 200 import mapping. The prototype Sage CSV is intentionally labelled
+indicative until that mapping is signed off.

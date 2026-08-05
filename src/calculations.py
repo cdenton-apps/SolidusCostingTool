@@ -27,7 +27,7 @@ def _number(values: dict[str, Any], key: str) -> float:
 
 
 def validate_details(values: dict[str, Any]) -> list[str]:
-    """Return human-readable validation errors for the specification stage."""
+    """Return human-readable validation errors for the order stage."""
     errors: list[str] = []
     numeric_required = {
         "board_gsm",
@@ -48,6 +48,20 @@ def validate_details(values: dict[str, Any]) -> list[str]:
                 errors.append(f"{label} must be a number.")
         elif not str(value or "").strip():
             errors.append(f"{label} is required.")
+
+    fulfilment_type = str(values.get("fulfilment_type", "MTO") or "MTO").upper()
+    if fulfilment_type not in {"MTO", "MTC"}:
+        errors.append("Fulfilment type must be MTO or MTC.")
+    if fulfilment_type == "MTC":
+        if _number(values, "agreement_term_months") <= 0:
+            errors.append("Agreement term must be greater than zero months.")
+        if _number(values, "delivery_pallets_per_calloff") <= 0:
+            errors.append("Pallets per delivery must be greater than zero.")
+        stock_holding_percent = _number(values, "stock_holding_percent")
+        if stock_holding_percent < 0 or stock_holding_percent > 100:
+            errors.append("Stock holding percentage must be between 0% and 100%.")
+        if _number(values, "pallet_holding_charge_per_pallet_per_week") < 0:
+            errors.append("Pallet holding charge cannot be negative.")
     return errors
 
 
@@ -105,46 +119,42 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
     }
 
 
-def price_from_spread(
+def price_from_spread_percent(
     pricing_base_per_1000: float,
-    net_weight_kg_per_1000: float,
-    target_spread_per_tonne: float,
+    spread_percent: float,
 ) -> dict[str, float]:
-    """Return selling price for a target spread expressed in pounds per tonne."""
+    """Return selling price for a gross spread percentage.
+
+    Spread is the share of selling price left after the pricing base:
+    ``(selling price - pricing base) / selling price``.
+    """
     if pricing_base_per_1000 < 0:
         raise ValueError("Pricing base cannot be negative.")
-    if net_weight_kg_per_1000 <= 0:
-        raise ValueError("Net weight must be greater than zero to calculate spread.")
-    if target_spread_per_tonne < 0:
-        raise ValueError("Target spread cannot be negative.")
-    spread_value_per_1000 = (
-        target_spread_per_tonne * net_weight_kg_per_1000 / 1_000
-    )
-    selling_price = pricing_base_per_1000 + spread_value_per_1000
+    if spread_percent >= 100:
+        raise ValueError("Spread percentage must be less than 100%.")
+    selling_price = pricing_base_per_1000 / (1 - spread_percent / 100)
+    spread_value_per_1000 = selling_price - pricing_base_per_1000
     return {
-        "target_spread_per_tonne": round(target_spread_per_tonne, 4),
+        "spread_percent": round(spread_percent, 4),
         "spread_value_per_1000": round(spread_value_per_1000, 4),
         "selling_price_per_1000": round(selling_price, 4),
         "selling_price_per_item": round(selling_price / 1_000, 6),
     }
 
 
-def spread_from_price(
+def spread_percent_from_price(
     pricing_base_per_1000: float,
-    net_weight_kg_per_1000: float,
     selling_price: float,
 ) -> dict[str, float]:
-    """Return achieved pounds-per-tonne spread for a selected selling price."""
+    """Return the achieved gross spread percentage for a selling price."""
     if pricing_base_per_1000 < 0:
         raise ValueError("Pricing base cannot be negative.")
-    if net_weight_kg_per_1000 <= 0:
-        raise ValueError("Net weight must be greater than zero to calculate spread.")
     if selling_price <= 0:
         raise ValueError("Selling price must be greater than zero.")
     spread_value_per_1000 = selling_price - pricing_base_per_1000
-    spread_per_tonne = spread_value_per_1000 / net_weight_kg_per_1000 * 1_000
+    spread_percent = spread_value_per_1000 / selling_price * 100
     return {
-        "target_spread_per_tonne": round(spread_per_tonne, 4),
+        "spread_percent": round(spread_percent, 4),
         "spread_value_per_1000": round(spread_value_per_1000, 4),
         "selling_price_per_1000": round(selling_price, 4),
         "selling_price_per_item": round(selling_price / 1_000, 6),

@@ -32,6 +32,24 @@ class TransportQuote:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class TransportScheduleQuote:
+    rate_zone: str
+    service: str
+    vendor: str
+    pallet_count: int
+    pallets_per_delivery: int
+    delivery_count: int
+    load_count: int
+    base_cost: float
+    booking_surcharge: float
+    full_load_surcharge: float
+    total_cost: float
+
+    def to_dict(self) -> dict[str, str | float | int]:
+        return asdict(self)
+
+
 def _normalised_zone(value: str) -> str:
     return re.sub(r"[^A-Z0-9+]", "", value.upper())
 
@@ -191,3 +209,102 @@ class HaulierRateTable:
                 f"Neither haulier has a complete {pallet_count}-pallet rate for {zone}."
             )
         return sorted(quotes, key=lambda quote: quote.total_cost)
+
+    def quote_schedule(
+        self,
+        *,
+        postcode: str,
+        total_pallets: int,
+        pallets_per_delivery: int,
+        service: str,
+        booking: str = "Standard",
+    ) -> list[TransportScheduleQuote]:
+        """Price all planned delivery call-offs using one haulier.
+
+        Repeated call-off sizes are quoted once and multiplied, so a long MTC
+        schedule stays fast even when it contains hundreds of deliveries.
+        """
+        if total_pallets <= 0:
+            raise TransportLookupError("Total pallet count must be greater than zero.")
+        if pallets_per_delivery <= 0:
+            raise TransportLookupError("Pallets per delivery must be greater than zero.")
+
+        planned_size = min(int(pallets_per_delivery), int(total_pallets))
+        full_deliveries, remainder = divmod(int(total_pallets), planned_size)
+        delivery_batches: list[tuple[int, int]] = []
+        if full_deliveries:
+            delivery_batches.append((planned_size, full_deliveries))
+        if remainder:
+            delivery_batches.append((remainder, 1))
+
+        options_by_size: list[tuple[int, dict[str, TransportQuote]]] = []
+        for batch_size, repeat_count in delivery_batches:
+            options = self.quote_options(
+                postcode=postcode,
+                pallet_count=batch_size,
+                service=service,
+                booking=booking,
+            )
+            options_by_size.append(
+                (repeat_count, {quote.vendor: quote for quote in options})
+            )
+
+        common_vendors = set(options_by_size[0][1])
+        for _, options in options_by_size[1:]:
+            common_vendors.intersection_update(options)
+        if not common_vendors:
+            raise TransportLookupError(
+                "No single haulier has a complete rate for every planned delivery."
+            )
+
+        delivery_count = sum(repeat_count for repeat_count, _ in options_by_size)
+        schedule_quotes: list[TransportScheduleQuote] = []
+        for vendor in common_vendors:
+            vendor_quotes = [
+                (repeat_count, options[vendor])
+                for repeat_count, options in options_by_size
+            ]
+            first_quote = vendor_quotes[0][1]
+            schedule_quotes.append(
+                TransportScheduleQuote(
+                    rate_zone=first_quote.rate_zone,
+                    service=service,
+                    vendor=vendor,
+                    pallet_count=int(total_pallets),
+                    pallets_per_delivery=planned_size,
+                    delivery_count=delivery_count,
+                    load_count=sum(
+                        repeat_count * quote.load_count
+                        for repeat_count, quote in vendor_quotes
+                    ),
+                    base_cost=round(
+                        sum(
+                            repeat_count * quote.base_cost
+                            for repeat_count, quote in vendor_quotes
+                        ),
+                        2,
+                    ),
+                    booking_surcharge=round(
+                        sum(
+                            repeat_count * quote.booking_surcharge
+                            for repeat_count, quote in vendor_quotes
+                        ),
+                        2,
+                    ),
+                    full_load_surcharge=round(
+                        sum(
+                            repeat_count * quote.full_load_surcharge
+                            for repeat_count, quote in vendor_quotes
+                        ),
+                        2,
+                    ),
+                    total_cost=round(
+                        sum(
+                            repeat_count * quote.total_cost
+                            for repeat_count, quote in vendor_quotes
+                        ),
+                        2,
+                    ),
+                )
+            )
+        return sorted(schedule_quotes, key=lambda quote: quote.total_cost)

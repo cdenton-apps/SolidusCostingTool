@@ -41,7 +41,16 @@ SPECIFICATION_COLUMNS = [
     "pallet_quantity",
     "board_code",
     "market_segment",
+    "fulfilment_type",
+    "quantity_input_mode",
     "order_quantity",
+    "order_pallets",
+    "agreement_term_months",
+    "stock_holding_percent",
+    "stock_holding_pallets",
+    "delivery_pallets_per_calloff",
+    "estimated_delivery_count",
+    "pallet_holding_charge_per_pallet_per_week",
     "delivery_postcode",
     "delivery_method",
     "transport_service",
@@ -91,7 +100,7 @@ CALCULATION_COLUMNS = [
     "transport_cost_per_1000",
     "pricing_base_per_1000",
     "pricing_base_per_item",
-    "target_spread_per_tonne",
+    "spread_percent",
     "spread_value_per_1000",
     "selling_price_per_1000",
     "selling_price_per_item",
@@ -455,7 +464,16 @@ class CsvRepository:
         defaults: dict[str, Any] = {
             "customer_name": "",
             "material": "BOM-defined materials",
+            "fulfilment_type": "MTO",
+            "quantity_input_mode": "Units",
             "order_quantity": 0,
+            "order_pallets": 0,
+            "agreement_term_months": 12,
+            "stock_holding_percent": 0.0,
+            "stock_holding_pallets": 0,
+            "delivery_pallets_per_calloff": 0,
+            "estimated_delivery_count": 1,
+            "pallet_holding_charge_per_pallet_per_week": 0.0,
             "delivery_postcode": "",
             "delivery_method": "Haulier",
             "transport_service": "Economy",
@@ -466,7 +484,7 @@ class CsvRepository:
             "transport_manual_override": 0,
             "manual_adjustment_per_1000": 0.0,
             "fixed_tooling_cost": 0.0,
-            "target_spread_per_tonne": 0.0,
+            "spread_percent": 30.0,
             "units_out": 1.0,
         }
         for column, value in defaults.items():
@@ -508,7 +526,7 @@ class CsvRepository:
         catalog_columns = [
             *SPECIFICATION_COLUMNS,
             *COST_INPUT_COLUMNS,
-            "target_spread_per_tonne",
+            "spread_percent",
         ]
         latest = latest[[c for c in catalog_columns if c in latest.columns]].copy()
         latest["source_type"] = "Saved costing"

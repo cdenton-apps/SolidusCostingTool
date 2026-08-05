@@ -4,8 +4,8 @@ import pytest
 
 from src.calculations import (
     calculate_cost,
-    price_from_spread,
-    spread_from_price,
+    price_from_spread_percent,
+    spread_percent_from_price,
     validate_details,
 )
 
@@ -72,11 +72,11 @@ def test_customer_collection_has_no_transport_cost(valid_costing: dict) -> None:
 
 
 def test_spread_and_price_are_reversible() -> None:
-    price = price_from_spread(140.4, 80, 250)
-    spread = spread_from_price(140.4, 80, price["selling_price_per_1000"])
-    assert price["spread_value_per_1000"] == pytest.approx(20)
-    assert price["selling_price_per_1000"] == pytest.approx(160.4)
-    assert spread["target_spread_per_tonne"] == pytest.approx(250, abs=0.001)
+    price = price_from_spread_percent(140.4, 30)
+    spread = spread_percent_from_price(140.4, price["selling_price_per_1000"])
+    assert price["spread_value_per_1000"] == pytest.approx(60.1714)
+    assert price["selling_price_per_1000"] == pytest.approx(200.5714)
+    assert spread["spread_percent"] == pytest.approx(30, abs=0.001)
 
 
 def test_validation_blocks_missing_fields(valid_costing: dict) -> None:
