@@ -100,6 +100,8 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
     )
     transport_cost_per_1000 = transport_total / order_in_thousands
     pricing_base = material_base + transport_cost_per_1000
+    machine_hours_per_1000 = _number(values, "machine_hours_per_1000")
+    total_machine_hours = machine_hours_per_1000 * order_in_thousands
 
     return {
         "net_weight_kg_per_1000": round(net_weight_kg_per_1000, 4),
@@ -110,7 +112,28 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         "material_base_per_1000": round(material_base, 4),
         "transport_cost_per_1000": round(transport_cost_per_1000, 4),
         "pricing_base_per_1000": round(pricing_base, 4),
-        "pricing_base_per_item": round(pricing_base / 1_000, 6),
+        "pricing_base_per_item": round(pricing_base / 1_000, 7),
+        "machine_hours_per_1000": round(machine_hours_per_1000, 6),
+        "total_machine_hours": round(total_machine_hours, 4),
+    }
+
+
+def operational_spread_metrics(
+    spread_value_per_1000: float,
+    order_quantity: float,
+    machine_hours_per_1000: float,
+) -> dict[str, float]:
+    """Return operational spread measures without changing the pricing base."""
+    order_in_thousands = max(0.0, float(order_quantity)) / 1_000
+    total_spread_value = float(spread_value_per_1000) * order_in_thousands
+    total_machine_hours = max(0.0, float(machine_hours_per_1000)) * order_in_thousands
+    spread_per_machine_hour = (
+        total_spread_value / total_machine_hours if total_machine_hours > 0 else 0.0
+    )
+    return {
+        "total_spread_value": round(total_spread_value, 4),
+        "total_machine_hours": round(total_machine_hours, 4),
+        "spread_per_machine_hour": round(spread_per_machine_hour, 4),
     }
 
 
@@ -133,7 +156,7 @@ def price_from_spread_percent(
         "spread_percent": round(spread_percent, 4),
         "spread_value_per_1000": round(spread_value_per_1000, 4),
         "selling_price_per_1000": round(selling_price, 4),
-        "selling_price_per_item": round(selling_price / 1_000, 6),
+        "selling_price_per_item": round(selling_price / 1_000, 7),
     }
 
 
@@ -152,5 +175,5 @@ def spread_percent_from_price(
         "spread_percent": round(spread_percent, 4),
         "spread_value_per_1000": round(spread_value_per_1000, 4),
         "selling_price_per_1000": round(selling_price, 4),
-        "selling_price_per_item": round(selling_price / 1_000, 6),
+        "selling_price_per_item": round(selling_price / 1_000, 7),
     }

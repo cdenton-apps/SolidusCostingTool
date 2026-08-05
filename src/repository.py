@@ -74,6 +74,8 @@ COST_INPUT_COLUMNS = [
     "units_out",
     "material_cost_source",
     "manual_adjustment_per_1000",
+    "machine_hours_per_1000",
+    "machine_time_source",
 ]
 
 NUMERIC_COST_INPUT_COLUMNS = [
@@ -85,6 +87,7 @@ NUMERIC_COST_INPUT_COLUMNS = [
     "other_components_cost_per_1000",
     "units_out",
     "manual_adjustment_per_1000",
+    "machine_hours_per_1000",
 ]
 
 CALCULATION_COLUMNS = [
@@ -99,6 +102,9 @@ CALCULATION_COLUMNS = [
     "spread_value_per_1000",
     "selling_price_per_1000",
     "selling_price_per_item",
+    "total_machine_hours",
+    "total_spread_value",
+    "spread_per_machine_hour",
 ]
 
 HISTORY_COLUMNS = [
@@ -181,6 +187,108 @@ class CsvRepository:
         return parsed if math.isfinite(parsed) and parsed > 0 else None
 
     @classmethod
+    def _machine_time_from_frames(
+        cls,
+        item_code: str,
+        bom: pd.DataFrame,
+    ) -> dict[str, Any]:
+        """Calculate machine hours per 1,000 from BOM operation speeds.
+
+        Direct operations provide run hours and effective output per run. Rolled
+        child machine rows do not carry the child speed, so their already-scaled
+        machine value is divided by the matching imported machine rate only to
+        recover time. No machine value is added to the commercial pricing base.
+        """
+        if bom.empty or "bom_code" not in bom or "cost_type" not in bom:
+            return {
+                "machine_hours_per_1000": 0.0,
+                "machine_time_source": "No BOM machine-time profile",
+            }
+        item_lines = bom[bom["bom_code"].astype(str) == str(item_code)].copy()
+        if item_lines.empty:
+            return {
+                "machine_hours_per_1000": 0.0,
+                "machine_time_source": "No BOM machine-time profile",
+            }
+
+        informational = pd.to_numeric(
+            item_lines.get("is_informational_row", 0), errors="coerce"
+        ).fillna(0)
+        machine_lines = item_lines[
+            item_lines["cost_type"].astype(str).eq("Machine")
+            & informational.eq(0)
+        ].copy()
+        run_hours = pd.to_numeric(
+            machine_lines.get("run_hours"), errors="coerce"
+        )
+        effective_quantity = pd.to_numeric(
+            machine_lines.get("effective_quantity_per_run"), errors="coerce"
+        ).fillna(
+            pd.to_numeric(
+                machine_lines.get("system_quantity_per_run"), errors="coerce"
+            )
+        )
+        valid_direct = run_hours.gt(0) & effective_quantity.gt(0)
+        direct_hours = float(
+            (run_hours[valid_direct] / effective_quantity[valid_direct]).sum()
+        )
+
+        all_machine_lines = bom[bom["cost_type"].astype(str).eq("Machine")].copy()
+        all_machine_lines["numeric_rate"] = pd.to_numeric(
+            all_machine_lines.get("cost_rate"), errors="coerce"
+        )
+        valid_rates = all_machine_lines[all_machine_lines["numeric_rate"].gt(0)]
+        rate_by_bucket = (
+            valid_rates.assign(
+                bucket=valid_rates.get("machine_bucket", "").astype(str)
+            )
+            .groupby("bucket")["numeric_rate"]
+            .median()
+            .to_dict()
+        )
+        overall_rate = (
+            float(valid_rates["numeric_rate"].median())
+            if not valid_rates.empty
+            else 0.0
+        )
+        rolled_machine = item_lines[
+            item_lines["cost_type"].astype(str).eq("Rolled Child")
+            & item_lines.get("cost_description", "")
+            .astype(str)
+            .str.contains("Machine", case=False, regex=False)
+        ]
+        rolled_hours = 0.0
+        for _, line in rolled_machine.iterrows():
+            description = str(line.get("cost_description", "")).lower()
+            if "print" in description:
+                bucket = "Print"
+            elif "die" in description:
+                bucket = "Die Cut"
+            elif "fold" in description or "glue" in description:
+                bucket = "Fold Glue"
+            else:
+                bucket = ""
+            rate = float(rate_by_bucket.get(bucket, overall_rate) or 0)
+            extended_value = pd.to_numeric(
+                line.get("extended_cost"), errors="coerce"
+            )
+            extended = float(extended_value) if pd.notna(extended_value) else 0.0
+            if rate > 0 and extended > 0:
+                rolled_hours += extended / rate
+
+        total_hours = direct_hours + rolled_hours
+        if total_hours <= 0:
+            source = "No BOM machine-time profile"
+        elif rolled_hours > 0:
+            source = "BOM operation speeds plus rolled-child machine time"
+        else:
+            source = "BOM operation speeds"
+        return {
+            "machine_hours_per_1000": round(total_hours, 6),
+            "machine_time_source": source,
+        }
+
+    @classmethod
     def _board_tonnes_per_1000(
         cls, line: pd.Series, board: pd.Series | None
     ) -> float | None:
@@ -212,6 +320,7 @@ class CsvRepository:
         boards: pd.DataFrame,
     ) -> dict[str, Any]:
         item_lines = bom[bom["bom_code"].astype(str) == str(item_code)].copy()
+        machine_time = cls._machine_time_from_frames(item_code, bom)
         if item_lines.empty:
             return {
                 "summary": {
@@ -225,6 +334,7 @@ class CsvRepository:
                     "board_cost_per_1000": 0.0,
                     "other_components_cost_per_1000": 0.0,
                     "material_cost_source": "No BOM material lines",
+                    **machine_time,
                 },
                 "lines": pd.DataFrame(),
             }
@@ -340,6 +450,7 @@ class CsvRepository:
             "board_cost_per_1000": round(board_total, 4),
             "other_components_cost_per_1000": round(other_total, 4),
             "material_cost_source": "Automatic board and BOM component calculation",
+            **machine_time,
         }
         return {"summary": summary, "lines": pd.DataFrame(detail_rows)}
 
@@ -347,6 +458,9 @@ class CsvRepository:
         return self._material_breakdown_from_frames(
             item_code, self.load_bom_lines(), self.load_board_items()
         )
+
+    def machine_time_summary(self, item_code: str) -> dict[str, Any]:
+        return self._machine_time_from_frames(item_code, self.load_bom_lines())
 
     def load_material_summary(self) -> pd.DataFrame:
         bom = self.load_bom_lines()
@@ -415,6 +529,14 @@ class CsvRepository:
             if not other_lines.empty
             else 0.0
         )
+        machine_time = (
+            self.machine_time_summary(component_template_item_code)
+            if component_template_item_code
+            else {
+                "machine_hours_per_1000": 0.0,
+                "machine_time_source": "No comparable BOM machine-time profile",
+            }
+        )
         board_line = pd.DataFrame(
             [
                 {
@@ -444,6 +566,7 @@ class CsvRepository:
             "component_template_item_code": component_template_item_code,
             "units_out": units_out,
             "material_cost_source": "Selected board plus automatic component template",
+            **machine_time,
         }
         return {
             "summary": summary,
@@ -476,6 +599,8 @@ class CsvRepository:
             "transport_rate_zone": "",
             "transport_manual_override": 0,
             "manual_adjustment_per_1000": 0.0,
+            "machine_hours_per_1000": 0.0,
+            "machine_time_source": "No BOM machine-time profile",
             "spread_percent": 30.0,
             "units_out": 1.0,
         }

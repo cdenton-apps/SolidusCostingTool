@@ -68,6 +68,7 @@ def test_supplied_item_and_bom_feeds_reconcile() -> None:
     assert item["imported_machine_cost_per_1000"] == 66.92
     assert item["labour_cost_per_1000"] == 51.09
     assert item["imported_bom_total_per_1000"] == 606.27
+    assert item["machine_hours_per_1000"] == pytest.approx(0.375958)
 
 
 def test_materials_use_april_mill_price_and_bom_components() -> None:
@@ -81,6 +82,8 @@ def test_materials_use_april_mill_price_and_bom_components() -> None:
     assert summary["board_cost_per_1000"] == pytest.approx(473.224)
     assert summary["other_components_cost_per_1000"] == pytest.approx(15.0376)
     assert summary["materials_cost_per_1000"] == pytest.approx(488.2616)
+    assert summary["machine_hours_per_1000"] == pytest.approx(0.375958)
+    assert summary["machine_time_source"] == "BOM operation speeds"
 
 
 def test_unmatched_board_falls_back_to_material_only_bom_value() -> None:
@@ -91,6 +94,8 @@ def test_unmatched_board_falls_back_to_material_only_bom_value() -> None:
     assert "machine/labour removed" in summary["board_price_source"]
     assert summary["board_cost_per_1000"] == pytest.approx(499.73886)
     assert summary["board_cost_per_1000"] < 555.26122
+    assert summary["machine_hours_per_1000"] == pytest.approx(0.478245)
+    assert "rolled-child" in summary["machine_time_source"]
 
 
 def test_new_item_materials_are_derived_without_a_typed_cost() -> None:
@@ -106,3 +111,4 @@ def test_new_item_materials_are_derived_without_a_typed_cost() -> None:
     assert summary["board_tonnes_per_1000"] == pytest.approx(0.596162)
     assert summary["board_cost_per_1000"] == pytest.approx(473.352628)
     assert summary["other_components_cost_per_1000"] == pytest.approx(15.0376)
+    assert summary["machine_hours_per_1000"] == pytest.approx(0.375958)

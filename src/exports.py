@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from pypdf import PdfReader, PdfWriter
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4, landscape
@@ -13,6 +14,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     Image,
+    KeepTogether,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -27,6 +29,7 @@ PALE = colors.HexColor("#F3F5F2")
 GREY = colors.HexColor("#D4DEDD")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BRAND_HEADER_PATH = PROJECT_ROOT / "assets" / "solidus-brand-header.jpg"
+TERMS_PATH = PROJECT_ROOT / "assets" / "solidus-terms-and-conditions.pdf"
 
 
 def _money(value: Any) -> str:
@@ -34,6 +37,32 @@ def _money(value: Any) -> str:
         return f"£{float(value):,.2f}"
     except (TypeError, ValueError):
         return "—"
+
+
+def _unit_money(value: Any) -> str:
+    """Format unit prices with all useful sub-penny precision."""
+    try:
+        rendered = f"{float(value):,.7f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return "—"
+    if "." not in rendered:
+        rendered += ".00"
+    elif len(rendered.rsplit(".", 1)[1]) < 2:
+        rendered += "0"
+    return f"£{rendered}"
+
+
+def _append_terms(quotation: bytes) -> bytes:
+    if not TERMS_PATH.exists():
+        return quotation
+    writer = PdfWriter()
+    for page in PdfReader(BytesIO(quotation)).pages:
+        writer.add_page(page)
+    for page in PdfReader(str(TERMS_PATH)).pages:
+        writer.add_page(page)
+    combined = BytesIO()
+    writer.write(combined)
+    return combined.getvalue()
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -145,16 +174,6 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             spaceAfter=2,
         )
     )
-    styles.add(
-        ParagraphStyle(
-            name="Disclaimer",
-            parent=styles["Italic"],
-            fontSize=7.5,
-            leading=9,
-            textColor=colors.HexColor("#565C5C"),
-        )
-    )
-
     def paragraph(value: Any, style_name: str = "CellValue") -> Paragraph:
         return Paragraph(_display(value), styles[style_name])
 
@@ -202,7 +221,9 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         ("Order / agreement quantity", f"{_number(record.get('order_quantity')):,.0f} units"),
         ("Equivalent pallets", f"{_number(record.get('order_pallets')):,.0f}"),
     ]
-    commercial_terms: list[str] = []
+    commercial_terms: list[str] = [
+        "This quotation is subject to the attached Solidus General Terms and Conditions of Sale and Delivery, which form part of this quotation."
+    ]
     if fulfilment_type == "MTC":
         agreement_months = _number(record.get("agreement_term_months"), 12)
         calloff_pallets = _number(record.get("delivery_pallets_per_calloff"))
@@ -313,7 +334,7 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         [
             [paragraph("PRICE", "SectionLabel"), ""],
             [paragraph("Per 1,000", "CellLabel"), paragraph(_money(record.get("selling_price_per_1000")), "CardValue")],
-            [paragraph("Per item", "CellLabel"), paragraph(_money(record.get("selling_price_per_item")), "CardValue")],
+            [paragraph("Per item", "CellLabel"), paragraph(_unit_money(record.get("selling_price_per_item")), "CardValue")],
         ],
         colWidths=[45 * mm, 42 * mm],
         style=[
@@ -398,26 +419,25 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ),
         ]
     )
-    notes = str(record.get("notes", "") or "").strip()
-    if notes:
-        story.extend(
-            [
-                Spacer(1, 4 * mm),
-                section("Notes"),
-                Table(
-                    [[Paragraph(html.escape(notes), styles["CellValue"])]],
-                    colWidths=[180 * mm],
-                    style=[
-                        ("BACKGROUND", (0, 0), (-1, -1), PALE),
-                        ("BOX", (0, 0), (-1, -1), 0.3, GREY),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 7),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                        ("TOPPADDING", (0, 0), (-1, -1), 6),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                    ],
-                ),
-            ]
-        )
+    notes = str(record.get("notes", "") or "").strip() or "No additional notes."
+    notes_table = Table(
+        [[Paragraph(html.escape(notes), styles["CellValue"])]],
+        colWidths=[180 * mm],
+        style=[
+            ("BACKGROUND", (0, 0), (-1, -1), PALE),
+            ("BOX", (0, 0), (-1, -1), 0.3, GREY),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ],
+    )
+    story.extend(
+        [
+            Spacer(1, 4 * mm),
+            KeepTogether([section("Notes"), notes_table]),
+        ]
+    )
     story.extend(
         [
             Spacer(1, 4 * mm),
@@ -427,11 +447,6 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
                 Paragraph(f"- {html.escape(term)}", styles["Terms"])
                 for term in commercial_terms
             ],
-            Spacer(1, 3 * mm),
-            Paragraph(
-                "This quotation is generated from the costing tool and remains subject to final commercial approval.",
-                styles["Disclaimer"],
-            ),
         ]
     )
 
@@ -442,14 +457,18 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         canvas.line(15 * mm, 12 * mm, A4[0] - 15 * mm, 12 * mm)
         canvas.setFillColor(colors.HexColor("#666C6C"))
         canvas.setFont("Helvetica", 7)
-        canvas.drawString(15 * mm, 8 * mm, "Solidus | Customer quotation")
+        canvas.drawString(
+            15 * mm,
+            8 * mm,
+            "Solidus | Customer quotation | Subject to final commercial approval",
+        )
         canvas.drawRightString(
             A4[0] - 15 * mm, 8 * mm, f"Page {canvas.getPageNumber()}"
         )
         canvas.restoreState()
 
     document.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
-    return buffer.getvalue()
+    return _append_terms(buffer.getvalue())
 
 
 def history_pdf(frame: pd.DataFrame) -> bytes:
@@ -473,6 +492,7 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
         "pricing_base_per_1000",
         "selling_price_per_1000",
         "spread_percent",
+        "spread_per_machine_hour",
     ]
     available = [column for column in columns if column in frame.columns]
     headings = [column.replace("_", " ").title() for column in available]

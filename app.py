@@ -11,6 +11,7 @@ import streamlit as st
 from src.auth import require_user, sign_out_button
 from src.calculations import (
     calculate_cost,
+    operational_spread_metrics,
     price_from_spread_percent,
     spread_percent_from_price,
     validate_details,
@@ -121,6 +122,8 @@ def default_draft() -> dict[str, Any]:
         "units_out": 1.0,
         "material_cost_source": "",
         "manual_adjustment_per_1000": 0.0,
+        "machine_hours_per_1000": 0.0,
+        "machine_time_source": "No BOM machine-time profile",
         "delivery_postcode": "",
         "delivery_method": "Haulier",
         "transport_service": "Economy",
@@ -140,6 +143,34 @@ def draft_number(key: str, fallback: float = 0.0) -> float:
         return float(st.session_state.draft.get(key, fallback) or fallback)
     except (TypeError, ValueError):
         return fallback
+
+
+def format_unit_price(value: Any) -> str:
+    """Show enough decimal places to preserve sub-penny unit pricing."""
+    try:
+        rendered = f"{float(value):,.7f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return "—"
+    if "." not in rendered:
+        rendered += ".00"
+    elif len(rendered.rsplit(".", 1)[1]) < 2:
+        rendered += "0"
+    return f"£{rendered}"
+
+
+def with_operational_spread(pricing: dict[str, float]) -> dict[str, float]:
+    metrics = operational_spread_metrics(
+        pricing["spread_value_per_1000"],
+        draft_number("order_quantity"),
+        float(
+            st.session_state.get("breakdown", {}).get(
+                "machine_hours_per_1000",
+                draft_number("machine_hours_per_1000"),
+            )
+            or 0
+        ),
+    )
+    return {**pricing, **metrics}
 
 
 def reset_downstream() -> None:
@@ -197,7 +228,7 @@ def show_cost_breakdown(breakdown: dict[str, float]) -> None:
         "Pricing base / 1,000", f"£{breakdown['pricing_base_per_1000']:,.2f}"
     )
     metric_columns[1].metric(
-        "Pricing base / item", f"£{breakdown['pricing_base_per_item']:,.4f}"
+        "Pricing base / item", format_unit_price(breakdown["pricing_base_per_item"])
     )
     metric_columns[2].metric("Pallets", f"{breakdown['pallet_count']:,.0f}")
     metric_columns[3].metric(
@@ -987,6 +1018,7 @@ def sync_selling_from_spread() -> None:
             float(st.session_state.breakdown["pricing_base_per_1000"]),
             float(st.session_state.spread_percent_input),
         )
+        pricing = with_operational_spread(pricing)
         st.session_state.selling_price_input = pricing["selling_price_per_1000"]
         st.session_state.pricing = pricing
         st.session_state.draft["spread_percent"] = pricing["spread_percent"]
@@ -1001,6 +1033,7 @@ def sync_spread_from_selling_price() -> None:
             float(st.session_state.breakdown["pricing_base_per_1000"]),
             float(st.session_state.selling_price_input),
         )
+        pricing = with_operational_spread(pricing)
         st.session_state.spread_percent_input = pricing["spread_percent"]
         st.session_state.pricing = pricing
         st.session_state.draft["spread_percent"] = pricing["spread_percent"]
@@ -1018,7 +1051,10 @@ def render_pricing() -> None:
     )
 
     pricing_base = float(breakdown["pricing_base_per_1000"])
-    if st.session_state.get("pricing_base_for_inputs") != pricing_base:
+    if (
+        st.session_state.get("pricing_base_for_inputs") != pricing_base
+        or not st.session_state.get("pricing")
+    ):
         starting_spread = float(
             st.session_state.get("pricing", {}).get(
                 "spread_percent", draft_number("spread_percent", 30)
@@ -1028,6 +1064,7 @@ def render_pricing() -> None:
             pricing = price_from_spread_percent(pricing_base, starting_spread)
         except ValueError:
             pricing = price_from_spread_percent(pricing_base, 0.0)
+        pricing = with_operational_spread(pricing)
         st.session_state.pricing_base_for_inputs = pricing_base
         st.session_state.spread_percent_input = pricing["spread_percent"]
         st.session_state.selling_price_input = pricing[
@@ -1065,12 +1102,36 @@ def render_pricing() -> None:
             "Selling price / 1,000", f"£{pricing['selling_price_per_1000']:,.2f}"
         )
         columns[1].metric(
-            "Selling price / item", f"£{pricing['selling_price_per_item']:,.4f}"
+            "Selling price / item", format_unit_price(pricing["selling_price_per_item"])
         )
         columns[2].metric("Spread", f"{pricing['spread_percent']:,.2f}%")
         columns[3].metric(
             "Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}"
         )
+        st.markdown("#### Operational spread")
+        if pricing.get("total_machine_hours", 0) > 0:
+            operational = st.columns(3)
+            operational[0].metric(
+                "Spread / machine hour",
+                f"£{pricing['spread_per_machine_hour']:,.2f}",
+            )
+            operational[1].metric(
+                "Machine hours for quote",
+                f"{pricing['total_machine_hours']:,.2f}",
+            )
+            operational[2].metric(
+                "Total spread for quote",
+                f"£{pricing['total_spread_value']:,.2f}",
+            )
+            st.caption(
+                "Machine time source: "
+                f"{st.session_state.draft.get('machine_time_source', 'BOM operation speeds')}. "
+                "Machine and labour remain excluded from the pricing base."
+            )
+        else:
+            st.info(
+                "Spread per machine hour is unavailable because this costing has no BOM machine-time profile."
+            )
         if pricing["spread_percent"] < 0:
             st.warning("The selected selling price produces a negative spread.")
         if st.button("Continue to save and print", type="primary"):
@@ -1186,6 +1247,7 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         "pricing_base_per_1000",
         "selling_price_per_1000",
         "spread_percent",
+        "spread_per_machine_hour",
         "costing_id",
     ]
     st.dataframe(

@@ -19,7 +19,9 @@ spread on selling price. Machine and labour are deliberately not included.
 4. Review the automatic material calculation and delivery quote.
 5. Change either spread percentage or selling price; the other value updates
    immediately.
-6. Save a new revision and download a customer quotation, costing CSV or
+6. Review spread per machine hour, calculated from the BOM operation speeds
+   without adding machine or labour to the pricing base.
+7. Save a new revision and download a customer quotation, costing CSV or
    indicative Sage stock-item import.
 
 For an existing item, the technical specification stays collapsed by default.
@@ -48,6 +50,14 @@ percentage of selling price:
 `spread % = (selling price − pricing base) ÷ selling price × 100`
 
 `selling price = pricing base ÷ (1 − spread %)`
+
+The operational spread indicator is separate from pricing:
+
+`spread per machine hour = total cash spread ÷ quoted BOM machine hours`
+
+It includes the available top-level operation speeds and rolled-child machine
+time. If a new item has no comparable BOM, the indicator remains unavailable
+rather than asking the user to guess a production time.
 
 ## Run it locally
 
@@ -116,6 +126,11 @@ basis, postcode, booking window and call-off profile. Haulier and service detail
 is kept in the commercial terms. For MTC, any holding rate entered is shown as
 £ per pallet per week; otherwise the paperwork says a rate may be agreed in the
 final contract.
+
+Per-item prices retain the decimal places needed for sub-penny pricing. The
+notes section is always included, and the supplied Solidus General Terms and
+Conditions of Sale and Delivery are appended behind every quotation and
+referenced in its commercial terms.
 
 The included quotation artwork is the official Solidus brand header published
 with the company's 2023 brand identity announcement.

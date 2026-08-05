@@ -71,8 +71,12 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
         "materials_cost_per_1000": 90.0,
         "manual_adjustment_per_1000": 0.0,
         "transport_cost_per_1000": 10.0,
+        "machine_hours_per_1000": 0.5,
+        "total_machine_hours": 5.0,
     }
     app.run()
+
+    assert _widget(app.metric, "Spread / machine hour")
 
     pricing_base = app.session_state["breakdown"]["pricing_base_per_1000"]
     _widget(app.number_input, "Spread (%)").set_value(40).run()

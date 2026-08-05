@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
+
+from pypdf import PdfReader
+
 from src.exports import quote_pdf, sage_stock_import_csv
 
 
@@ -19,8 +23,8 @@ def test_quote_and_sage_exports() -> None:
         "delivery_pallets_per_calloff": 1,
         "estimated_delivery_count": 10,
         "pallet_holding_charge_per_pallet_per_week": 3,
-        "selling_price_per_1000": 750,
-        "selling_price_per_item": 0.75,
+        "selling_price_per_1000": 123.4567,
+        "selling_price_per_item": 0.1234567,
         "delivery_method": "Haulier",
         "transport_vendor": "Joda",
         "transport_service": "Economy",
@@ -39,12 +43,22 @@ def test_quote_and_sage_exports() -> None:
         "board_code": "4-15614",
         "number_of_colours": 3,
         "fsc": "FSC Mix",
+        "notes": "Customer artwork approval is required before manufacture.",
     }
 
     pdf = quote_pdf(record)
     csv = sage_stock_import_csv(record).decode("utf-8-sig")
+    pages = PdfReader(BytesIO(pdf)).pages
+    quote_text = pages[0].extract_text()
+    terms_text = "\n".join(page.extract_text() or "" for page in pages[1:])
 
     assert pdf.startswith(b"%PDF")
+    assert len(pages) == 4
+    assert "0.1234567" in quote_text
+    assert "NOTES" in quote_text
+    assert "Customer artwork approval is required" in quote_text
+    assert "attached Solidus General Terms and Conditions" in quote_text
+    assert "General Terms and Condition of Sale" in terms_text
     assert "Stock item code" in csv
     assert "BOX-TEST" in csv
     assert "AnalysisName\\18" in csv
