@@ -53,6 +53,10 @@ percentage of selling price:
 
 Python 3.12 is recommended to match Streamlit Community Cloud.
 
+The Streamlit and Starlette versions are deliberately pinned in
+`requirements.txt`. Keep those pins together: newer Starlette releases can
+change the server middleware interface before Streamlit has adopted it.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate

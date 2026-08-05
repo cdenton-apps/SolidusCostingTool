@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from streamlit.testing.v1 import AppTest
+
+
+APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 
 
 def _widget(group, label: str):
@@ -9,7 +14,7 @@ def _widget(group, label: str):
 
 
 def test_new_item_reaches_pricing_stage() -> None:
-    app = AppTest.from_file("app.py", default_timeout=10).run()
+    app = AppTest.from_file(APP_PATH, default_timeout=10).run()
     _widget(app.radio, "What would you like to cost?").set_value("New item").run()
     _widget(app.button, "Create a new costing").click().run()
 
@@ -42,7 +47,7 @@ def test_new_item_reaches_pricing_stage() -> None:
 
 
 def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
-    app = AppTest.from_file("app.py", default_timeout=10)
+    app = AppTest.from_file(APP_PATH, default_timeout=10)
     app.session_state["step"] = 3
     app.session_state["draft"] = {
         "customer_name": "Pricing test",
@@ -82,7 +87,7 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
 
 
 def test_existing_item_specification_is_collapsed() -> None:
-    app = AppTest.from_file("app.py", default_timeout=10).run()
+    app = AppTest.from_file(APP_PATH, default_timeout=10).run()
     _widget(app.button, "Use this item").click().run()
 
     specification = next(
@@ -95,7 +100,7 @@ def test_existing_item_specification_is_collapsed() -> None:
 
 
 def test_mtc_can_be_entered_in_pallets() -> None:
-    app = AppTest.from_file("app.py", default_timeout=10).run()
+    app = AppTest.from_file(APP_PATH, default_timeout=10).run()
     _widget(app.radio, "What would you like to cost?").set_value("New item").run()
     _widget(app.button, "Create a new costing").click().run()
 
