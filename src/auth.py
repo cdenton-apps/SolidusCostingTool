@@ -12,8 +12,10 @@ import streamlit as st
 
 @dataclass(frozen=True)
 class AuthenticatedUser:
+    username: str
     email: str
     name: str
+    can_create_new: bool = False
 
 
 def make_password_hash(password: str, iterations: int = 600_000) -> str:
@@ -65,6 +67,14 @@ def _secret_section(name: str) -> dict[str, Any]:
         return {}
 
 
+def _secret_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _identity_allowed(email: str, config: dict[str, Any]) -> bool:
     email = email.lower().strip()
     allowed_emails = {str(v).lower() for v in config.get("allowed_emails", [])}
@@ -94,12 +104,27 @@ def require_user() -> AuthenticatedUser:
             if st.button("Sign out"):
                 st.logout()
             st.stop()
-        return AuthenticatedUser(email=email, name=name)
+        new_item_emails = {
+            str(value).lower().strip()
+            for value in config.get("new_item_emails", [])
+        }
+        can_create_new = email.lower().strip() in new_item_emails
+        return AuthenticatedUser(
+            username=email,
+            email=email,
+            name=name,
+            can_create_new=can_create_new,
+        )
 
     if mode == "password":
         if st.session_state.get("authenticated_user"):
             stored = st.session_state.authenticated_user
-            return AuthenticatedUser(email=stored["email"], name=stored["name"])
+            return AuthenticatedUser(
+                username=str(stored.get("username", stored["email"])),
+                email=stored["email"],
+                name=stored["name"],
+                can_create_new=_secret_bool(stored.get("can_create_new")),
+            )
 
         users = _secret_section("users")
         st.markdown("## Solidus")
@@ -120,9 +145,12 @@ def require_user() -> AuthenticatedUser:
             )
             entry = dict(users.get(matched_key, {})) if matched_key else {}
             if entry and _verify_configured_password(password, entry):
+                can_create_new = _secret_bool(entry.get("can_create_new"))
                 st.session_state.authenticated_user = {
+                    "username": str(matched_key),
                     "email": str(entry.get("email", matched_key)),
                     "name": str(entry.get("name", matched_key)),
+                    "can_create_new": can_create_new,
                 }
                 st.rerun()
             st.error("The username or password was not recognised.")
@@ -131,7 +159,12 @@ def require_user() -> AuthenticatedUser:
     if mode == "demo":
         # Demo mode must be explicitly configured and is only for development.
         st.warning("Demo mode: authentication is not enabled.", icon="⚠️")
-        return AuthenticatedUser(email="demo@local", name="Demo user")
+        return AuthenticatedUser(
+            username="demo",
+            email="demo@local",
+            name="Demo user",
+            can_create_new=True,
+        )
 
     st.error("Authentication is configured with an unsupported mode.")
     st.stop()

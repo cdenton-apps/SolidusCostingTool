@@ -112,7 +112,7 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         "material_base_per_1000": round(material_base, 4),
         "transport_cost_per_1000": round(transport_cost_per_1000, 4),
         "pricing_base_per_1000": round(pricing_base, 4),
-        "pricing_base_per_item": round(pricing_base / 1_000, 7),
+        "pricing_base_per_item": round(pricing_base / 1_000, 5),
         "machine_hours_per_1000": round(machine_hours_per_1000, 6),
         "total_machine_hours": round(total_machine_hours, 4),
     }
@@ -156,7 +156,7 @@ def price_from_spread_percent(
         "spread_percent": round(spread_percent, 4),
         "spread_value_per_1000": round(spread_value_per_1000, 4),
         "selling_price_per_1000": round(selling_price, 4),
-        "selling_price_per_item": round(selling_price / 1_000, 7),
+        "selling_price_per_item": round(selling_price / 1_000, 5),
     }
 
 
@@ -175,5 +175,5 @@ def spread_percent_from_price(
         "spread_percent": round(spread_percent, 4),
         "spread_value_per_1000": round(spread_value_per_1000, 4),
         "selling_price_per_1000": round(selling_price, 4),
-        "selling_price_per_item": round(selling_price / 1_000, 7),
+        "selling_price_per_item": round(selling_price / 1_000, 5),
     }

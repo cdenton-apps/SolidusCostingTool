@@ -54,7 +54,8 @@ def test_quote_and_sage_exports() -> None:
 
     assert pdf.startswith(b"%PDF")
     assert len(pages) == 4
-    assert "0.1234567" in quote_text
+    assert "0.12346" in quote_text
+    assert "0.1234567" not in quote_text
     assert "NOTES" in quote_text
     assert "Customer artwork approval is required" in quote_text
     assert "attached Solidus General Terms and Conditions" in quote_text

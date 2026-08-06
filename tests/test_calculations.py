@@ -90,7 +90,7 @@ def test_spread_and_price_are_reversible() -> None:
     assert price["spread_value_per_1000"] == pytest.approx(60.1714)
     assert price["selling_price_per_1000"] == pytest.approx(200.5714)
     assert spread["spread_percent"] == pytest.approx(30, abs=0.001)
-    assert price["selling_price_per_item"] == pytest.approx(0.2005714)
+    assert price["selling_price_per_item"] == pytest.approx(0.20057)
 
 
 def test_spread_per_hour_uses_time_without_changing_price() -> None:

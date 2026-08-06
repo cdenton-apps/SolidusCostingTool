@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
 from src.repository import (
     COST_INPUT_COLUMNS,
     CsvRepository,
+    RepositoryBusyError,
     SPECIFICATION_COLUMNS,
     data_directory,
 )
@@ -27,7 +29,7 @@ from src.transport import HaulierRateTable, TransportLookupError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-STAGES = ["1 · Select", "2 · Order", "3 · Costs", "4 · Price", "5 · Save"]
+STAGES = ["Product", "Order", "Costs", "Price", "Quote"]
 
 st.set_page_config(
     page_title="Solidus Costing Tool",
@@ -46,23 +48,32 @@ st.markdown(
         --solidus-grey: #d4dedd;
         --solidus-ink: #000000;
     }
-    .block-container { padding-top: 1.5rem; padding-bottom: 3rem; max-width: 1280px; }
+    .block-container { padding-top: 1.25rem; padding-bottom: 3rem; max-width: 1180px; }
     h1, h2, h3 { color: var(--solidus-ink); letter-spacing: -0.025em; }
+    [data-testid="stSidebar"] { border-right: 1px solid var(--solidus-grey); }
+    [data-testid="stVerticalBlockBorderWrapper"] { border-color: var(--solidus-grey); border-radius: 16px; }
     div[data-testid="stMetric"] { background: #ffffff; border: 1px solid var(--solidus-grey);
-        border-top: 5px solid var(--solidus-yellow); border-radius: 12px; padding: 12px 16px; }
+        border-top: 4px solid var(--solidus-yellow); border-radius: 14px; padding: 12px 16px;
+        box-shadow: 0 3px 12px rgba(0,0,0,.035); }
     div[data-testid="stForm"] { border-color: var(--solidus-grey); border-radius: 14px; }
     .status-card { padding: 1rem 1.1rem; border-radius: 12px; background: var(--solidus-mist);
         border-left: 5px solid var(--solidus-yellow); margin: .5rem 0 1rem; }
     .small-note { color: #4a5050; font-size: .9rem; }
     .brand-banner { display: flex; align-items: center; justify-content: space-between;
-        gap: 1rem; padding: .8rem 1rem; margin: 0 0 1.1rem; background: var(--solidus-mist);
-        border-radius: 14px; border-right: 12px solid var(--solidus-yellow); }
+        gap: 1rem; padding: 1rem 1.15rem; margin: 0 0 .8rem; background: linear-gradient(105deg, #fff 0%, var(--solidus-mist) 70%);
+        border-radius: 16px; border: 1px solid var(--solidus-grey); border-right: 12px solid var(--solidus-yellow);
+        box-shadow: 0 5px 18px rgba(0,0,0,.04); }
     .brand-name { font-size: 2.2rem; line-height: 1; font-weight: 800; letter-spacing: -.06em; }
     .brand-tagline { font-size: .9rem; font-weight: 700; margin-top: .35rem; }
     .brand-tool { font-size: 1rem; font-weight: 700; background: var(--solidus-yellow);
         padding: .55rem .8rem; border-radius: 999px; white-space: nowrap; }
+    .access-pill { display: inline-block; font-size: .78rem; font-weight: 700;
+        padding: .28rem .62rem; border-radius: 999px; background: var(--solidus-mist);
+        border: 1px solid var(--solidus-grey); margin-bottom: .5rem; }
     .stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"] {
-        background: var(--solidus-yellow); color: var(--solidus-ink); border-color: var(--solidus-gold); }
+        background: var(--solidus-yellow); color: var(--solidus-ink); border-color: var(--solidus-gold);
+        border-radius: 10px; font-weight: 700; }
+    .stButton > button, .stDownloadButton > button { border-radius: 10px; }
     .stButton > button[kind="primary"]:hover { background: var(--solidus-gold); color: var(--solidus-ink); }
     div[data-testid="stProgressBar"] > div > div { background-color: var(--solidus-yellow); }
     @media (max-width: 700px) { .block-container { padding: 1rem; } }
@@ -146,16 +157,11 @@ def draft_number(key: str, fallback: float = 0.0) -> float:
 
 
 def format_unit_price(value: Any) -> str:
-    """Show enough decimal places to preserve sub-penny unit pricing."""
+    """Show every per-item amount to the agreed five decimal places."""
     try:
-        rendered = f"{float(value):,.7f}".rstrip("0").rstrip(".")
+        return f"£{float(value):,.5f}"
     except (TypeError, ValueError):
         return "—"
-    if "." not in rendered:
-        rendered += ".00"
-    elif len(rendered.rsplit(".", 1)[1]) < 2:
-        rendered += "0"
-    return f"£{rendered}"
 
 
 def with_operational_spread(pricing: dict[str, float]) -> dict[str, float]:
@@ -184,6 +190,9 @@ def reset_downstream() -> None:
     st.session_state.pop("selling_price_input", None)
     st.session_state.pop("fulfilment_type_input", None)
     st.session_state.pop("quantity_input_mode_input", None)
+    st.session_state.pop("quote_reference", None)
+    st.session_state.pop("customer_contact", None)
+    st.session_state.pop("quote_notes", None)
 
 
 def navigate_to(step: int) -> None:
@@ -250,38 +259,84 @@ def show_cost_breakdown(breakdown: dict[str, float]) -> None:
     )
 
 
-def render_select(repository: CsvRepository) -> None:
-    st.subheader("Start a costing")
-    mode = st.radio(
-        "What would you like to cost?",
-        ["Existing item", "New item"],
-        horizontal=True,
+def render_select(repository: CsvRepository, can_create_new: bool) -> None:
+    heading, access = st.columns([4, 1])
+    heading.subheader("Choose a product")
+    access.markdown(
+        '<div class="access-pill">'
+        + ("Product creator" if can_create_new else "Existing products")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Select a product, then enter only the customer, quantity and delivery details needed for this quotation."
     )
 
-    if mode == "Existing item":
+    mode = "Existing product"
+    if can_create_new:
+        mode = st.radio(
+            "Costing route",
+            ["Existing product", "New product"],
+            horizontal=True,
+        )
+
+    if mode == "Existing product":
         catalog = repository.load_catalog()
         if catalog.empty:
-            st.info("No current-item feed has been loaded yet. Start a new item instead.")
+            message = "No current-product feed has been loaded yet."
+            if can_create_new:
+                message += " Choose New product above to create one."
+            else:
+                message += " Please ask a product creator to add one."
+            st.info(message)
             return
         catalog = catalog.sort_values("item_code").reset_index(drop=True)
         labels = {
-            index: f"{row['item_code']} — {row.get('description', '')}"
+            index: (
+                f"{row['item_code']} — "
+                f"{str(row.get('description', ''))[:100]}"
+            )
             for index, row in catalog.iterrows()
         }
         selected_index = st.selectbox(
-            "Find an item",
+            "Search existing products",
             options=list(labels),
             format_func=labels.get,
+            index=None,
             placeholder="Search by item code or description",
         )
+        if selected_index is None:
+            st.info("Start typing an item code or description to select a product.")
+            return
         selected = clean_record(catalog.loc[selected_index].to_dict())
         selected_material_total = float(
             selected.get("materials_cost_per_1000", 0) or 0
         )
-        st.write(
-            f"**{selected.get('item_code', '')}** - {selected.get('description', '')}"
-        )
-        with st.expander("View product specification and material calculation"):
+        with st.container(border=True):
+            st.markdown(f"### {selected.get('item_code', '')}")
+            st.write(str(selected.get("description", "")))
+            summary = st.columns(4)
+            summary[0].metric(
+                "GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"
+            )
+            summary[1].metric(
+                "Pallet quantity",
+                f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
+            )
+            summary[2].metric(
+                "Material / 1,000",
+                f"£{selected_material_total:,.2f}"
+                if float(selected.get("bom_available", 0) or 0)
+                else "No BOM",
+            )
+            summary[3].metric(
+                "Size",
+                f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
+                f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
+                f"{float(selected.get('height_mm', 0) or 0):,.0f} mm",
+            )
+
+        with st.expander("Product and material details"):
             columns = st.columns(5)
             columns[0].metric(
                 "Product group", str(selected.get("product_group", "—"))
@@ -338,10 +393,7 @@ def render_select(repository: CsvRepository) -> None:
                         "tonnes_per_1000": st.column_config.NumberColumn(format="%.4f"),
                     },
                 )
-        st.caption(
-            "You can use this item as the basis of a new costing and alter any field. Saving always creates a new revision."
-        )
-        if st.button("Use this item", type="primary"):
+        if st.button("Start costing", type="primary", width="stretch"):
             draft = default_draft()
             draft.update(
                 {key: selected.get(key, draft.get(key)) for key in SPECIFICATION_COLUMNS}
@@ -356,15 +408,18 @@ def render_select(repository: CsvRepository) -> None:
             reset_downstream()
             navigate_to(1)
     else:
-        st.markdown(
-            '<div class="status-card"><strong>New item</strong><br>'
-            "Enter the technical specification, cost it, then create a quote and an indicative Sage import row.</div>",
-            unsafe_allow_html=True,
-        )
-        if st.button("Create a new costing", type="primary"):
-            st.session_state.draft = default_draft()
-            reset_downstream()
-            navigate_to(1)
+        with st.container(border=True):
+            st.markdown("### Create a new product")
+            st.write(
+                "Enter a technical specification, derive the board and component cost, then create a quotation and draft Sage item row."
+            )
+            st.caption(
+                "This route is limited to authorised product creators."
+            )
+            if st.button("Create new product", type="primary", width="stretch"):
+                st.session_state.draft = default_draft()
+                reset_downstream()
+                navigate_to(1)
 
 
 def render_specification() -> None:
@@ -1149,11 +1204,18 @@ def current_record() -> dict[str, Any]:
     }
 
 
-def render_save(repository: CsvRepository, user_email: str, user_name: str) -> None:
+def render_save(
+    repository: CsvRepository,
+    user_email: str,
+    user_name: str,
+    can_create_new: bool,
+) -> None:
     st.subheader("Save, quote and export")
     draft = st.session_state.draft
     st.session_state.setdefault(
-        "quote_reference", f"Q-{datetime.now():%Y%m%d}-{str(draft['item_code'])[-6:]}"
+        "quote_reference",
+        f"Q-{datetime.now():%Y%m%d}-{str(draft['item_code'])[-6:]}-"
+        f"{uuid.uuid4().hex[:4].upper()}",
     )
     st.session_state.setdefault("customer_contact", "")
     st.session_state.setdefault("quote_notes", "")
@@ -1175,16 +1237,21 @@ def render_save(repository: CsvRepository, user_email: str, user_name: str) -> N
 
     if st.button("Save as a new revision", type="primary", width="stretch"):
         record["source_item_code"] = draft.get("source_item_code", "")
-        saved = repository.save_costing(
-            record, user_email=user_email, user_name=user_name
-        )
-        st.session_state.last_saved = saved
-        st.success(
-            f"Saved {saved['costing_id']} — {saved['item_code']} revision {saved['revision']}."
-        )
+        try:
+            saved = repository.save_costing(
+                record, user_email=user_email, user_name=user_name
+            )
+        except RepositoryBusyError as exc:
+            st.warning(str(exc))
+        else:
+            st.session_state.last_saved = saved
+            st.success(
+                f"Saved safely as {saved['costing_id']} — "
+                f"{saved['item_code']} revision {saved['revision']}."
+            )
 
     st.markdown("#### Downloads")
-    download_columns = st.columns(3)
+    download_columns = st.columns(3 if can_create_new else 2)
     download_columns[0].download_button(
         "Customer quote PDF",
         data=quote_pdf(record),
@@ -1192,52 +1259,76 @@ def render_save(repository: CsvRepository, user_email: str, user_name: str) -> N
         mime="application/pdf",
         width="stretch",
     )
-    download_columns[1].download_button(
-        "Indicative Sage item CSV",
-        data=sage_stock_import_csv(record),
-        file_name=f"{record['item_code']}-sage-import.csv",
-        mime="text/csv",
-        width="stretch",
-    )
     one_row = pd.DataFrame([record]).to_csv(index=False).encode("utf-8-sig")
-    download_columns[2].download_button(
+    costing_column = 2 if can_create_new else 1
+    download_columns[costing_column].download_button(
         "Costing CSV",
         data=one_row,
         file_name=f"{record['item_code']}-costing.csv",
         mime="text/csv",
         width="stretch",
     )
-    st.info(
-        "The Sage export headings are a safe prototype. They must be mapped to the exact Sage 200 import template before production use."
+    if can_create_new:
+        download_columns[1].download_button(
+            "Indicative Sage item CSV",
+            data=sage_stock_import_csv(record),
+            file_name=f"{record['item_code']}-sage-import.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+        st.info(
+            "The Sage export headings are a safe prototype. They must be mapped to the exact Sage 200 import template before production use."
+        )
+
+
+def load_saved_costing(record: dict[str, Any]) -> None:
+    draft = default_draft()
+    draft.update(
+        {
+            key: record.get(key, draft.get(key))
+            for key in [*SPECIFICATION_COLUMNS, *COST_INPUT_COLUMNS]
+        }
     )
+    if "spread_percent" in record:
+        draft["spread_percent"] = record["spread_percent"]
+    draft["source_item_code"] = (
+        record.get("source_item_code") or record.get("item_code") or ""
+    )
+
+    st.session_state.draft = clean_record(draft)
+    reset_downstream()
+    st.session_state.customer_contact = str(record.get("customer_contact", "") or "")
+    st.session_state.quote_notes = str(record.get("notes", "") or "")
+    st.session_state.workflow_notice = (
+        f"Loaded {record.get('costing_id', 'saved costing')} revision "
+        f"{int(float(record.get('revision', 0) or 0))}. "
+        "Review the details and save again to create the next revision."
+    )
+    st.session_state.main_navigation = "Costing workflow"
+    st.session_state.step = 1
 
 
 def render_history(repository: CsvRepository, current_user: str) -> None:
-    st.header("Costing history")
-    history = repository.load_history()
+    st.header("My costings")
+    st.caption(
+        "Only costings saved under your signed-in account are shown here. "
+        "Open one to amend it and create a new revision."
+    )
+    history = repository.load_user_history(current_user)
     if history.empty:
-        st.info("No costings have been saved yet.")
+        st.info("You have not saved any costings yet.")
         return
 
-    filters = st.columns(2)
-    user_options = ["All users", *sorted(history["created_by"].dropna().unique())]
-    default_user = current_user if current_user in user_options else "All users"
-    selected_user = filters[0].selectbox(
-        "Created by", user_options, index=user_options.index(default_user)
-    )
-    item_options = ["All items", *sorted(history["item_code"].dropna().unique())]
-    selected_item = filters[1].selectbox("Item", item_options)
+    item_options = ["All products", *sorted(history["item_code"].dropna().unique())]
+    selected_item = st.selectbox("Filter by product", item_options)
 
     filtered = history.copy()
-    if selected_user != "All users":
-        filtered = filtered[filtered["created_by"] == selected_user]
-    if selected_item != "All items":
+    if selected_item != "All products":
         filtered = filtered[filtered["item_code"] == selected_item]
     filtered = filtered.sort_values("created_at_utc", ascending=False)
 
     visible_columns = [
         "created_at_utc",
-        "created_by_name",
         "item_code",
         "revision",
         "customer_name",
@@ -1261,21 +1352,60 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
             "order_quantity": st.column_config.NumberColumn(format="%.0f"),
         },
     )
-    columns = st.columns(2)
-    columns[0].download_button(
-        "Download filtered history CSV",
-        data=filtered.to_csv(index=False).encode("utf-8-sig"),
-        file_name="costing-history.csv",
-        mime="text/csv",
-        width="stretch",
+
+    labels = {
+        str(row["costing_id"]): (
+            f"{row['item_code']} · revision {int(float(row['revision']))} · "
+            f"{row.get('customer_name', '')} · {str(row['created_at_utc'])[:16]}"
+        )
+        for _, row in filtered.iterrows()
+    }
+    selected_id = st.selectbox(
+        "Choose a costing to reopen",
+        options=list(labels),
+        format_func=labels.get,
     )
-    columns[1].download_button(
-        "Print-friendly history PDF",
-        data=history_pdf(filtered),
-        file_name="costing-history.pdf",
-        mime="application/pdf",
-        width="stretch",
+    selected_record = clean_record(
+        filtered.loc[filtered["costing_id"].astype(str) == selected_id].iloc[0].to_dict()
     )
+    with st.container(border=True):
+        summary = st.columns(4)
+        summary[0].metric("Product", str(selected_record.get("item_code", "")))
+        summary[1].metric(
+            "Revision", f"{float(selected_record.get('revision', 0)):,.0f}"
+        )
+        summary[2].metric(
+            "Quantity", f"{float(selected_record.get('order_quantity', 0)):,.0f}"
+        )
+        summary[3].metric(
+            "Selling / item",
+            format_unit_price(selected_record.get("selling_price_per_item")),
+        )
+        st.write(str(selected_record.get("description", "")))
+        st.button(
+            "Load and amend this costing",
+            type="primary",
+            width="stretch",
+            on_click=load_saved_costing,
+            args=(selected_record,),
+        )
+
+    with st.expander("Export my filtered history"):
+        columns = st.columns(2)
+        columns[0].download_button(
+            "Download CSV",
+            data=filtered.to_csv(index=False).encode("utf-8-sig"),
+            file_name="my-costing-history.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+        columns[1].download_button(
+            "Print-friendly PDF",
+            data=history_pdf(filtered),
+            file_name="my-costing-history.pdf",
+            mime="application/pdf",
+            width="stretch",
+        )
 
 
 def render_workflow(
@@ -1283,6 +1413,7 @@ def render_workflow(
     rate_table: HaulierRateTable,
     user_email: str,
     user_name: str,
+    can_create_new: bool,
 ) -> None:
     st.markdown(
         '<div class="brand-banner"><div><div class="brand-name">Solidus</div>'
@@ -1290,12 +1421,13 @@ def render_workflow(
         '<div class="brand-tool">Spread Costing Tool</div></div>',
         unsafe_allow_html=True,
     )
-    st.caption(
-        "Create auditable material-and-spread costings, quotes and stock-item export drafts."
-    )
+    st.caption("Create clear, auditable spread costings and customer quotations.")
+    workflow_notice = st.session_state.pop("workflow_notice", None)
+    if workflow_notice:
+        st.success(workflow_notice)
     stage_navigation()
     if st.session_state.step == 0:
-        render_select(repository)
+        render_select(repository, can_create_new)
     elif st.session_state.step == 1:
         render_specification()
     elif st.session_state.step == 2:
@@ -1303,7 +1435,7 @@ def render_workflow(
     elif st.session_state.step == 3:
         render_pricing()
     else:
-        render_save(repository, user_email, user_name)
+        render_save(repository, user_email, user_name, can_create_new)
 
 
 def main() -> None:
@@ -1312,21 +1444,46 @@ def main() -> None:
     rate_table = HaulierRateTable(repository.haulier_path)
     st.session_state.setdefault("step", 0)
 
+    draft = st.session_state.get("draft", {})
+    if (
+        not user.can_create_new
+        and draft
+        and not str(draft.get("source_item_code", "")).strip()
+    ):
+        st.session_state.pop("draft", None)
+        reset_downstream()
+        st.session_state.step = 0
+        st.warning(
+            "Your account can cost existing products only. Select a product to continue."
+        )
+
     st.sidebar.markdown("## Solidus")
     st.sidebar.caption("Your circular packaging partner")
     st.sidebar.markdown("### Spread Costing Tool")
     st.sidebar.caption(f"Signed in as {user.name}")
-    page = st.sidebar.radio("Navigation", ["Costing workflow", "History"])
-    st.sidebar.divider()
     st.sidebar.caption(
-        "Inputs: current items, BOMs, board stock, April 2026 mill prices and haulier rates\n\nOutput: append-only saved_costings.csv"
+        "Access: "
+        + ("existing and new products" if user.can_create_new else "existing products")
     )
+    page = st.sidebar.radio(
+        "Navigation",
+        ["Costing workflow", "My costings"],
+        key="main_navigation",
+    )
+    st.sidebar.divider()
+    st.sidebar.caption("Each signed-in user has a separate working session.")
     sign_out_button()
 
-    if page == "History":
+    if page == "My costings":
         render_history(repository, user.email)
     else:
-        render_workflow(repository, rate_table, user.email, user.name)
+        render_workflow(
+            repository,
+            rate_table,
+            user.email,
+            user.name,
+            user.can_create_new,
+        )
 
 
 if __name__ == "__main__":

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from shutil import copy2
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from src.repository import CsvRepository
+
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
+PROJECT_DATA = APP_PATH.parent / "data"
 
 
 def _widget(group, label: str):
@@ -21,8 +25,8 @@ def _demo_app() -> AppTest:
 
 def test_new_item_reaches_pricing_stage() -> None:
     app = _demo_app().run()
-    _widget(app.radio, "What would you like to cost?").set_value("New item").run()
-    _widget(app.button, "Create a new costing").click().run()
+    _widget(app.radio, "Costing route").set_value("New product").run()
+    _widget(app.button, "Create new product").click().run()
 
     _widget(app.text_input, "Customer *").set_value("App Test Customer")
     _widget(app.text_input, "Item code *").set_value("APP-TEST-001")
@@ -98,7 +102,8 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
 
 def test_existing_item_specification_is_collapsed() -> None:
     app = _demo_app().run()
-    _widget(app.button, "Use this item").click().run()
+    _widget(app.selectbox, "Search existing products").set_value(0).run()
+    _widget(app.button, "Start costing").click().run()
 
     specification = next(
         item
@@ -111,8 +116,8 @@ def test_existing_item_specification_is_collapsed() -> None:
 
 def test_mtc_can_be_entered_in_pallets() -> None:
     app = _demo_app().run()
-    _widget(app.radio, "What would you like to cost?").set_value("New item").run()
-    _widget(app.button, "Create a new costing").click().run()
+    _widget(app.radio, "Costing route").set_value("New product").run()
+    _widget(app.button, "Create new product").click().run()
 
     _widget(app.text_input, "Customer *").set_value("MTC Test Customer")
     _widget(app.text_input, "Item code *").set_value("MTC-TEST-001")
@@ -138,3 +143,64 @@ def test_mtc_can_be_entered_in_pallets() -> None:
     assert app.session_state["draft"]["order_quantity"] == 10_000
     assert app.session_state["draft"]["order_pallets"] == 10
     assert app.session_state["draft"]["estimated_delivery_count"] == 10
+
+
+def test_user_can_reopen_only_their_own_saved_costing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for source in PROJECT_DATA.glob("*.csv"):
+        copy2(source, tmp_path / source.name)
+    repository = CsvRepository(tmp_path)
+    mine = repository.save_costing(
+        {
+            "item_code": "HISTORY-MINE",
+            "source_item_code": "HISTORY-MINE",
+            "customer_name": "History Customer",
+            "customer_contact": "Alex Example",
+            "description": "A saved product to amend",
+            "material": "Solid board",
+            "board_gsm": 1000,
+            "length_mm": 500,
+            "width_mm": 400,
+            "height_mm": 100,
+            "pallet_quantity": 1000,
+            "order_quantity": 10000,
+            "delivery_postcode": "BD20 0AA",
+            "spread_percent": 32,
+            "notes": "Keep this note",
+        },
+        user_email="standard@example.com",
+        user_name="Standard User",
+    )
+    theirs = repository.save_costing(
+        {"item_code": "HISTORY-THEIRS", "customer_name": "Private Customer"},
+        user_email="other@example.com",
+        user_name="Other User",
+    )
+    monkeypatch.setenv("COSTING_DATA_DIR", str(tmp_path))
+
+    app = AppTest.from_file(APP_PATH, default_timeout=10)
+    app.secrets["app_auth"] = {"mode": "password"}
+    app.session_state["authenticated_user"] = {
+        "username": "standard",
+        "email": "standard@example.com",
+        "name": "Standard User",
+        "can_create_new": False,
+    }
+    app.run()
+    _widget(app.sidebar.radio, "Navigation").set_value("My costings").run()
+
+    history_selector = _widget(app.selectbox, "Choose a costing to reopen")
+    assert any("HISTORY-MINE" in option for option in history_selector.options)
+    assert all("HISTORY-THEIRS" not in option for option in history_selector.options)
+    history_selector.set_value(mine["costing_id"]).run()
+    _widget(app.button, "Load and amend this costing").click().run()
+
+    assert app.session_state["main_navigation"] == "Costing workflow"
+    assert app.session_state["step"] == 1
+    assert app.session_state["draft"]["customer_name"] == "History Customer"
+    assert app.session_state["draft"]["source_item_code"] == "HISTORY-MINE"
+    assert app.session_state["quote_notes"] == "Keep this note"
+    assert app.session_state["customer_contact"] == "Alex Example"
+    assert "quote_reference" not in app.session_state
+    assert "Order and fulfilment" in [item.value for item in app.subheader]

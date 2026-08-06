@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from filelock import FileLock
+from filelock import FileLock, Timeout
+
+
+class RepositoryBusyError(RuntimeError):
+    """Raised when another user's save holds the costing-history lock."""
 
 
 SPECIFICATION_COLUMNS = [
@@ -627,6 +631,15 @@ class CsvRepository:
                 history[column] = None
         return history[HISTORY_COLUMNS]
 
+    def load_user_history(self, user_email: str) -> pd.DataFrame:
+        """Return only revisions created by the signed-in user."""
+        history = self.load_history()
+        if history.empty:
+            return history
+        owner = str(user_email).strip().casefold()
+        created_by = history["created_by"].fillna("").astype(str).str.strip().str.casefold()
+        return history.loc[created_by.eq(owner)].copy()
+
     def load_catalog(self) -> pd.DataFrame:
         """Return the feed plus the latest saved revision for each item code."""
         feed = self.load_current_items().copy()
@@ -657,29 +670,34 @@ class CsvRepository:
         user_email: str,
         user_name: str,
     ) -> dict[str, Any]:
-        lock = FileLock(str(self.history_path) + ".lock", timeout=10)
-        with lock:
-            history = self.load_history()
-            item_code = str(record.get("item_code", "")).strip()
-            revisions = pd.to_numeric(
-                history.loc[history["item_code"] == item_code, "revision"],
-                errors="coerce",
-            )
-            revision = int(revisions.max()) + 1 if not revisions.empty else 1
-            now = datetime.now(timezone.utc)
-            saved = {
-                **record,
-                "costing_id": f"C-{now:%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
-                "revision": revision,
-                "created_at_utc": now.isoformat(timespec="seconds"),
-                "created_by": user_email,
-                "created_by_name": user_name,
-            }
-            row = pd.DataFrame(
-                [{column: saved.get(column, "") for column in HISTORY_COLUMNS}]
-            )
-            updated = pd.concat([history, row], ignore_index=True)
-            self._atomic_csv_write(updated, self.history_path)
+        lock = FileLock(str(self.history_path) + ".lock", timeout=30)
+        try:
+            with lock:
+                history = self.load_history()
+                item_code = str(record.get("item_code", "")).strip()
+                revisions = pd.to_numeric(
+                    history.loc[history["item_code"] == item_code, "revision"],
+                    errors="coerce",
+                )
+                revision = int(revisions.max()) + 1 if not revisions.empty else 1
+                now = datetime.now(timezone.utc)
+                saved = {
+                    **record,
+                    "costing_id": f"C-{now:%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
+                    "revision": revision,
+                    "created_at_utc": now.isoformat(timespec="seconds"),
+                    "created_by": user_email,
+                    "created_by_name": user_name,
+                }
+                row = pd.DataFrame(
+                    [{column: saved.get(column, "") for column in HISTORY_COLUMNS}]
+                )
+                updated = pd.concat([history, row], ignore_index=True)
+                self._atomic_csv_write(updated, self.history_path)
+        except Timeout as exc:
+            raise RepositoryBusyError(
+                "Another user is saving a costing. Please try again in a moment."
+            ) from exc
         return saved
 
     @staticmethod

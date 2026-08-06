@@ -1,5 +1,12 @@
 # Solidus Costing Tool
 
+This is a Streamlit app for building consistent packaging costings from the
+Solidus item, BOM, board-price and haulier data supplied with the project.
+
+The aim is simple: choose or describe a product, add the commercial order
+details, let the app calculate material and delivery, then test the effect of
+spread on selling price. Machine and labour are deliberately not included.
+
 ## What a user does
 
 1. Choose an existing item or start a new one.
@@ -82,6 +89,28 @@ same TOML content there, replace the example name/email/password, and save. The
 key after `[users.` is the username used on the login screen. Add another
 `[users.username]` block for each authorised user.
 
+User access is controlled in the same block:
+
+```toml
+[users.productcreator]
+name = "Product Creator"
+email = "creator@example.com"
+password = "REPLACE_ME"
+can_create_new = true
+
+[users.standarduser]
+name = "Standard User"
+email = "standard@example.com"
+password = "REPLACE_ME"
+can_create_new = false
+```
+
+The new-product permission defaults to `false`. Standard users see only the
+existing-product route. Product creators can also create new products and
+receive the draft Sage item export. Every user has a private **My costings**
+view containing only revisions saved under their own login email; these can be
+loaded, amended, recalculated and saved as the next revision.
+
 For stronger password storage, remove the plain `password` entry and use
 `python scripts/generate_password_hash.py` to create a `password_hash` instead.
 If both are supplied, the hash takes precedence.
@@ -113,6 +142,19 @@ python scripts/import_workbooks.py \
 
 Set `COSTING_DATA_DIR` if live data and saved costings should sit outside the Git
 checkout or on a persistent mounted folder.
+
+## Multiple users
+
+Streamlit keeps each signed-in user's working form in a separate session. CSV
+saves are protected by a shared file lock, assigned unique costing and quotation
+references, and written atomically, so simultaneous saves on one running app do
+not overwrite one another.
+
+The Streamlit Community Cloud filesystem is not permanent storage. It can be
+replaced when the app reboots or redeploys. Before relying on this as the live
+costing history for multiple users, move saved revisions to shared persistent
+storage such as the company's SQL platform. The current repository layer keeps
+that database migration contained to one part of the app.
 
 ## Transport behaviour
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +38,48 @@ def test_saves_append_only_revisions(tmp_path: Path) -> None:
     assert len(history) == 2
     assert list(history["created_by_name"]) == ["User One", "User Two"]
     assert list(pd.to_numeric(history["selling_price_per_1000"])) == [150, 160]
+
+
+def test_simultaneous_users_receive_distinct_revisions(tmp_path: Path) -> None:
+    repository = CsvRepository(tmp_path)
+
+    def save(index: int) -> dict:
+        return repository.save_costing(
+            {
+                "item_code": "SHARED-001",
+                "description": "Shared item",
+                "customer_name": f"Customer {index}",
+                "selling_price_per_1000": 150 + index,
+            },
+            user_email=f"user{index}@example.com",
+            user_name=f"User {index}",
+        )
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        saved = list(pool.map(save, range(6)))
+
+    history = repository.load_history()
+    assert sorted(item["revision"] for item in saved) == [1, 2, 3, 4, 5, 6]
+    assert len({item["costing_id"] for item in saved}) == 6
+    assert len(history) == 6
+
+
+def test_user_history_is_private_and_case_insensitive(tmp_path: Path) -> None:
+    repository = CsvRepository(tmp_path)
+    repository.save_costing(
+        {"item_code": "MINE-001", "customer_name": "My customer"},
+        user_email="Connor@Example.com",
+        user_name="Connor",
+    )
+    repository.save_costing(
+        {"item_code": "THEIRS-001", "customer_name": "Other customer"},
+        user_email="other@example.com",
+        user_name="Other User",
+    )
+
+    mine = repository.load_user_history("connor@example.com")
+    assert list(mine["item_code"]) == ["MINE-001"]
+    assert set(mine["created_by"]) == {"Connor@Example.com"}
 
 
 def test_saved_item_appears_in_catalog(tmp_path: Path) -> None:

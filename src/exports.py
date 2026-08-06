@@ -40,16 +40,11 @@ def _money(value: Any) -> str:
 
 
 def _unit_money(value: Any) -> str:
-    """Format unit prices with all useful sub-penny precision."""
+    """Format every per-item price to the agreed five decimal places."""
     try:
-        rendered = f"{float(value):,.7f}".rstrip("0").rstrip(".")
+        return f"£{float(value):,.5f}"
     except (TypeError, ValueError):
         return "—"
-    if "." not in rendered:
-        rendered += ".00"
-    elif len(rendered.rsplit(".", 1)[1]) < 2:
-        rendered += "0"
-    return f"£{rendered}"
 
 
 def _append_terms(quotation: bytes) -> bytes:
