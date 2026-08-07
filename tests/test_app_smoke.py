@@ -102,11 +102,10 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
     assert _widget(
         app.number_input, "Selling price per 1,000 (£)"
     ).value == pytest.approx(142.8571)
-    assert _widget(app.metric, "Spread / machine hour")
-    assert _widget(app.metric, "Material spread / 1,000")
-    machine_time = _widget(app.metric, "Machine time for quote")
-    assert "5.00 h" in machine_time.value
-    assert "5 hr 0 min" in machine_time.value
+    rendered_cards = "\n".join(item.value for item in app.markdown)
+    assert "Spread / machine hour" in rendered_cards
+    assert "Material spread / 1,000" in rendered_cards
+    assert "5.00 h · 5 hr 0 min" in rendered_cards
     assert any(
         item.label == "View machine hours calculation" for item in app.expander
     )
@@ -144,6 +143,14 @@ def test_header_clearance_and_product_details_allow_wrapping() -> None:
     assert "padding: 4.25rem 1rem 2rem !important" in source
     assert 'class="detail-grid"' in source
     assert "overflow-wrap: anywhere" in source
+
+
+def test_user_facing_copy_avoids_development_language() -> None:
+    copy = (APP_PATH.read_text(encoding="utf-8") + (APP_PATH.parent / "README.md").read_text(encoding="utf-8")).lower()
+
+    assert "the aim is simple" not in copy
+    assert "file you supplied" not in copy
+    assert "costing data supplied" not in copy
 
 
 def test_mtc_can_be_entered_in_pallets() -> None:

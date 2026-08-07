@@ -45,7 +45,7 @@ def test_app_is_locked_when_no_users_are_configured() -> None:
     app = AppTest.from_file(APP_PATH, default_timeout=10).run()
 
     assert any(
-        "No users have been added" in item.value for item in app.error
+        "No users are set up" in item.value for item in app.error
     )
     assert not app.radio
 

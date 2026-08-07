@@ -1,7 +1,7 @@
 # Solidus Costing Tool
 
-This is the working Streamlit costing app for Solidus. It uses the supplied
-stock list, BOMs, board prices and haulier rates.
+This is the Solidus Streamlit costing app. It uses the current stock list, BOMs,
+board prices and haulier rates.
 
 Choose a product, add the customer and order details, and the app works out
 material and delivery. You can then change the spread or selling price and see
@@ -10,7 +10,7 @@ the other figure update. Machine and labour are not added to the price.
 ## What a user does
 
 1. Choose an existing BOM-costed item or, if your login allows it, start a new
-   one. Products without a costing BOM are left out of the picker for now.
+   one. Products without a costing BOM are not shown in the picker.
 2. Enter the customer, delivery postcode and order quantity. Quantity can be
    entered as units or pallets.
 3. Choose the fulfilment type:
@@ -40,7 +40,7 @@ change is needed.
 - New items use a selected priced board, units out per sheet and an optional
   comparable BOM for the other components. There is no normal free-typed
   material-cost field.
-- Delivery is quoted from the supplied Joda and McDowells matrix. For MTC, each
+- Delivery is quoted from the Joda and McDowells rate matrix. For MTC, each
   planned pallet call-off is costed, so ten one-pallet deliveries cost
   differently from one ten-pallet delivery.
 
@@ -156,7 +156,7 @@ python scripts/import_workbooks.py \
 
 The stock CSV is the same 72-column layout used by the Sage stock export and
 import. If `--stock-csv` is left out, the script uses the `Stock Item Info`
-sheet in the costing workbook instead. Items without a supplied costing BOM
+sheet in the costing workbook instead. Items without a costing BOM
 remain in the source feed but are hidden from the app until a usable costing is
 available.
 
@@ -164,7 +164,7 @@ The full BOM export currently gives the app costings for 581 of the 1,305 BOX
 stock items. If `--bom-workbook` is left out, the script uses the `BOM Info`
 sheet in the costing workbook.
 
-Machine time uses `EffectiveQuantityPerRun` (column Q in the supplied BOM
+Machine time uses `EffectiveQuantityPerRun` (column Q in the BOM
 export) whenever it is present and positive. `SystemQuantityPerRun` is only the
 fallback when the effective quantity is blank.
 
@@ -185,7 +185,7 @@ that database migration contained to one part of the app.
 
 ## Transport behaviour
 
-- Economy and Next Day use the supplied postcode matrix.
+- Economy and Next Day use the postcode matrix in `haulier_rates.csv`.
 - `Cheapest available` compares Joda and McDowells wherever both have a rate.
 - A delivery above 26 pallets is split into additional vehicle loads.
 - An MTC agreement is split into the planned pallet call-offs before rates are
@@ -203,7 +203,7 @@ is kept in the commercial terms. For MTC, any holding rate entered is shown as
 final contract.
 
 Per-item prices retain the decimal places needed for sub-penny pricing. The
-notes section is always included, and the supplied Solidus General Terms and
+notes section is always included, and the Solidus General Terms and
 Conditions of Sale and Delivery are appended behind every quotation and
 referenced in its commercial terms.
 
@@ -241,5 +241,5 @@ exports and the Streamlit workflow.
 The business should still confirm surcharge/VAT treatment, permissions for
 overrides, approval thresholds, the treatment of unmatched board prices and
 the Sage account defaults for each manufacturing site. The Sage download now
-uses the exact 72-column layout in the supplied export/import file, but it
+uses the standard 72-column Sage stock export/import layout, but it
 should still be checked before importing live records.

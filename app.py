@@ -298,16 +298,13 @@ def stage_navigation() -> None:
 
 
 def show_cost_breakdown(breakdown: dict[str, float]) -> None:
-    metric_columns = st.columns(4)
-    metric_columns[0].metric(
-        "Pricing base / 1,000", f"£{breakdown['pricing_base_per_1000']:,.2f}"
-    )
-    metric_columns[1].metric(
-        "Pricing base / item", format_unit_price(breakdown["pricing_base_per_item"])
-    )
-    metric_columns[2].metric("Pallets", f"{breakdown['pallet_count']:,.0f}")
-    metric_columns[3].metric(
-        "Net kg / 1,000", f"{breakdown['net_weight_kg_per_1000']:,.2f}"
+    show_detail_cards(
+        [
+            ("Pricing base / 1,000", f"£{breakdown['pricing_base_per_1000']:,.2f}"),
+            ("Pricing base / item", format_unit_price(breakdown["pricing_base_per_item"])),
+            ("Pallets", f"{breakdown['pallet_count']:,.0f}"),
+            ("Net kg / 1,000", f"{breakdown['net_weight_kg_per_1000']:,.2f}"),
+        ]
     )
     rows = [
         ("Calculated materials", breakdown["materials_cost_per_1000"]),
@@ -334,7 +331,7 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
         + "</div>",
         unsafe_allow_html=True,
     )
-    st.caption("Pick the product you want to cost. You can search by code or description.")
+    st.caption("Search by product code or description.")
 
     mode = "Existing product"
     if can_create_new:
@@ -453,8 +450,7 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
         )
         if not has_material_cost:
             st.warning(
-                "This item is in the stock list, but its costing BOM was not in the "
-                "costing data supplied. There is no material cost to use yet."
+                "No costing BOM is available for this item, so it cannot be costed yet."
             )
         if st.button(
             "Start costing",
@@ -479,8 +475,8 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
         with st.container(border=True):
             st.markdown("### Create a new product")
             st.write(
-                "Use this when the product is not already in the list. You will need "
-                "the product spec and board details."
+                "For products not already in the list. Have the product specification "
+                "and board details ready."
             )
             if st.button("Create new product", type="primary", width="stretch"):
                 st.session_state.draft = default_draft()
@@ -497,7 +493,7 @@ def render_specification() -> None:
             '<div class="status-card"><strong>'
             f"{str(draft.get('item_code', ''))}</strong> — "
             f"{str(draft.get('description', ''))}<br>"
-            "We have filled in the saved product details. Open them below only if something needs changing.</div>",
+            "Product details loaded. Open them below if anything needs changing.</div>",
             unsafe_allow_html=True,
         )
 
@@ -767,11 +763,11 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
             material_result["summary"].get("materials_cost_per_1000", 0) or 0
         )
         st.success(
-            f"Materials calculated automatically from the BOM and board data: £{imported_total:,.2f} per 1,000."
+            f"Material cost from the BOM and board prices: £{imported_total:,.2f} per 1,000."
         )
     else:
         st.info(
-            "This item has no BOM. Choose a priced board and a component template; the app will calculate the material value."
+            "Choose the board and, if needed, a comparable BOM for the other components."
         )
         board_catalog = repository.load_priced_board_catalog().copy()
         required_gsm = draft_number("board_gsm")
@@ -859,26 +855,28 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
 
     st.markdown("#### Included pricing components")
     st.caption(
-        "Board is priced from the April 2026 mill list wherever an unambiguous match exists. Other components come from the BOM. Machine and labour are excluded."
+        "Board prices come from the April 2026 mill list when the board code matches. "
+        "Other components come from the BOM. Machine and labour are not included."
     )
     if material_result is not None:
         material_summary = material_result["summary"]
         material_lines = material_result["lines"]
-        metrics = st.columns(4)
-        metrics[0].metric(
-            "Board / 1,000", f"£{float(material_summary['board_cost_per_1000']):,.2f}"
-        )
-        metrics[1].metric(
-            "Other components / 1,000",
-            f"£{float(material_summary['other_components_cost_per_1000']):,.2f}",
-        )
-        metrics[2].metric(
-            "Total materials / 1,000",
-            f"£{float(material_summary['materials_cost_per_1000']):,.2f}",
-        )
-        metrics[3].metric(
-            "Board rate",
-            f"£{float(material_summary['board_price_per_tonne']):,.2f} / tonne",
+        show_detail_cards(
+            [
+                ("Board / 1,000", f"£{float(material_summary['board_cost_per_1000']):,.2f}"),
+                (
+                    "Other components / 1,000",
+                    f"£{float(material_summary['other_components_cost_per_1000']):,.2f}",
+                ),
+                (
+                    "Total materials / 1,000",
+                    f"£{float(material_summary['materials_cost_per_1000']):,.2f}",
+                ),
+                (
+                    "Board rate",
+                    f"£{float(material_summary['board_price_per_tonne']):,.2f} / tonne",
+                ),
+            ]
         )
         st.caption(
             f"{material_summary.get('board_article_code') or material_summary.get('board_item_code', 'Board')} · "
@@ -1226,7 +1224,8 @@ def render_pricing(repository: CsvRepository) -> None:
     breakdown = st.session_state.breakdown
     show_cost_breakdown(breakdown)
     st.info(
-        "Spread is a gross percentage of selling price: (selling price − pricing base) ÷ selling price. Change either field and the other updates immediately."
+        "Spread = (selling price − pricing base) ÷ selling price. "
+        "Change either figure to recalculate the other."
     )
 
     pricing_base = float(breakdown["pricing_base_per_1000"])
@@ -1300,49 +1299,41 @@ def render_pricing(repository: CsvRepository) -> None:
 
     pricing = st.session_state.get("pricing")
     if pricing:
-        columns = st.columns(4)
-        columns[0].metric(
-            "Selling price / 1,000", f"£{pricing['selling_price_per_1000']:,.2f}"
-        )
-        columns[1].metric(
-            "Selling price / item", format_unit_price(pricing["selling_price_per_item"])
-        )
-        columns[2].metric("Spread", f"{pricing['spread_percent']:,.2f}%")
-        columns[3].metric(
-            "Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}"
+        show_detail_cards(
+            [
+                ("Selling price / 1,000", f"£{pricing['selling_price_per_1000']:,.2f}"),
+                ("Selling price / item", format_unit_price(pricing["selling_price_per_item"])),
+                ("Spread", f"{pricing['spread_percent']:,.2f}%"),
+                ("Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}"),
+            ]
         )
         st.markdown("#### Material-only operational spread")
         if pricing.get("total_machine_hours", 0) > 0:
-            operational = st.columns(4)
-            operational[0].metric(
-                "Spread / machine hour",
-                f"£{pricing['spread_per_machine_hour']:,.2f}",
-            )
-            operational[1].metric(
-                "Machine time for quote",
-                f"{pricing['total_machine_hours']:,.2f} h · "
-                f"{format_machine_duration(pricing['total_machine_hours'])}",
-            )
-            operational[2].metric(
-                "Material spread / 1,000",
-                f"£{pricing['material_spread_value_per_1000']:,.2f}",
-            )
-            operational[3].metric(
-                "Material spread for quote",
-                f"£{pricing['total_spread_value']:,.2f}",
+            show_detail_cards(
+                [
+                    ("Spread / machine hour", f"£{pricing['spread_per_machine_hour']:,.2f}"),
+                    (
+                        "Machine time for quote",
+                        f"{pricing['total_machine_hours']:,.2f} h · "
+                        f"{format_machine_duration(pricing['total_machine_hours'])}",
+                    ),
+                    (
+                        "Material spread / 1,000",
+                        f"£{pricing['material_spread_value_per_1000']:,.2f}",
+                    ),
+                    ("Material spread for quote", f"£{pricing['total_spread_value']:,.2f}"),
+                ]
             )
             st.caption(
-                f"The selected {pricing['spread_percent']:,.2f}% spread is applied to "
-                f"materials of £{float(breakdown['materials_cost_per_1000']):,.2f} per 1,000 "
-                "for this operational measure. Transport and the commercial adjustment are "
-                "excluded; customer pricing still uses the full pricing base. Machine time source: "
-                f"{st.session_state.draft.get('machine_time_source', 'BOM operation speeds')}. "
-                "Machine and labour remain excluded from the pricing base."
+                f"Spread/hour uses materials only: £{float(breakdown['materials_cost_per_1000']):,.2f} "
+                f"per 1,000 at {pricing['spread_percent']:,.2f}%. Delivery and the commercial "
+                "adjustment are left out. Machine time: "
+                f"{st.session_state.draft.get('machine_time_source', 'BOM operation speeds')}."
             )
             show_machine_time_calculation(repository, pricing)
         else:
             st.info(
-                "Spread per machine hour is unavailable because this costing has no BOM machine-time profile."
+                "No machine time is available for this BOM, so spread/hour cannot be calculated."
             )
         if pricing["spread_percent"] < 0:
             st.warning("The selected selling price produces a negative spread.")
@@ -1384,14 +1375,15 @@ def render_save(
     st.text_area("Quote notes", key="quote_notes", height=100)
 
     record = current_record()
-    columns = st.columns(5)
-    columns[0].metric("Item", str(record["item_code"]))
-    columns[1].metric("Quantity", f"{float(record['order_quantity']):,.0f}")
-    columns[2].metric("Fulfilment", str(record.get("fulfilment_type", "MTO")))
-    columns[3].metric(
-        "Pricing base / 1,000", f"£{record['pricing_base_per_1000']:,.2f}"
+    show_detail_cards(
+        [
+            ("Item", record["item_code"]),
+            ("Quantity", f"{float(record['order_quantity']):,.0f}"),
+            ("Fulfilment", record.get("fulfilment_type", "MTO")),
+            ("Pricing base / 1,000", f"£{record['pricing_base_per_1000']:,.2f}"),
+            ("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}"),
+        ]
     )
-    columns[4].metric("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}")
 
     if st.button("Save as a new revision", type="primary", width="stretch"):
         record["source_item_code"] = draft.get("source_item_code", "")
@@ -1438,8 +1430,8 @@ def render_save(
             width="stretch",
         )
         st.info(
-            "This uses the same 72 columns as the Sage stock export/import file you supplied. "
-            "Check the accounts and product details before importing it."
+            "The Sage download uses the standard 72-column stock import layout. "
+            "Check the account and product fields before importing."
         )
 
 
@@ -1530,17 +1522,16 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         filtered.loc[filtered["costing_id"].astype(str) == selected_id].iloc[0].to_dict()
     )
     with st.container(border=True):
-        summary = st.columns(4)
-        summary[0].metric("Product", str(selected_record.get("item_code", "")))
-        summary[1].metric(
-            "Revision", f"{float(selected_record.get('revision', 0)):,.0f}"
-        )
-        summary[2].metric(
-            "Quantity", f"{float(selected_record.get('order_quantity', 0)):,.0f}"
-        )
-        summary[3].metric(
-            "Selling / item",
-            format_unit_price(selected_record.get("selling_price_per_item")),
+        show_detail_cards(
+            [
+                ("Product", selected_record.get("item_code", "")),
+                ("Revision", f"{float(selected_record.get('revision', 0)):,.0f}"),
+                ("Quantity", f"{float(selected_record.get('order_quantity', 0)):,.0f}"),
+                (
+                    "Selling / item",
+                    format_unit_price(selected_record.get("selling_price_per_item")),
+                ),
+            ]
         )
         st.write(str(selected_record.get("description", "")))
         st.button(
@@ -1653,7 +1644,7 @@ def render_workflow(
         '<div class="brand-tool">Spread Costing Tool</div></div>',
         unsafe_allow_html=True,
     )
-    st.caption("Choose a product and work through the costing.")
+    st.caption("Select a product to start.")
     workflow_notice = st.session_state.pop("workflow_notice", None)
     if workflow_notice:
         st.success(workflow_notice)

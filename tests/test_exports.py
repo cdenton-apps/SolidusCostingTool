@@ -41,7 +41,7 @@ def test_quote_and_sage_exports() -> None:
         "pallet_quantity": 1000,
         "board_width_mm": 620,
         "board_length_mm": 850,
-        "board_code": "4-15614",
+        "board_code": "4-15614/",
         "number_of_colours": 3,
         "fsc": "FSC Mix",
         "notes": "Customer artwork approval is required before manufacture.",
@@ -51,6 +51,7 @@ def test_quote_and_sage_exports() -> None:
     csv = sage_stock_import_csv(record).decode("utf-8-sig")
     pages = PdfReader(BytesIO(pdf)).pages
     quote_text = pages[0].extract_text()
+    normalised_quote_text = " ".join(quote_text.split())
     terms_text = "\n".join(page.extract_text() or "" for page in pages[1:])
 
     assert pdf.startswith(b"%PDF")
@@ -59,10 +60,15 @@ def test_quote_and_sage_exports() -> None:
     assert "0.1234567" not in quote_text
     assert "NOTES" in quote_text
     assert "Customer artwork approval is required" in quote_text
+    assert "4-15614/" not in quote_text
+    assert "4-15614" in quote_text
     assert "attached Solidus General Terms and Conditions" in quote_text
     assert (
-        "This quotation is generated from the costing tool and remains subject to final commercial approval."
-        in quote_text
+        "THIS QUOTATION IS GENERATED FROM THE COSTING TOOL AND REMAINS SUBJECT TO FINAL COMMERCIAL APPROVAL."
+        in normalised_quote_text
+    )
+    assert quote_text.index("COMMERCIAL TERMS") < quote_text.index(
+        "THIS QUOTATION IS GENERATED"
     )
     assert "General Terms and Condition of Sale" in terms_text
     assert "Stock item code" in csv

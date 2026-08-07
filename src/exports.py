@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -232,6 +232,17 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             spaceAfter=2,
         )
     )
+    styles.add(
+        ParagraphStyle(
+            name="ApprovalNotice",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=11,
+            leading=14,
+            alignment=TA_CENTER,
+            textColor=INK,
+        )
+    )
     def paragraph(value: Any, style_name: str = "CellValue") -> Paragraph:
         return Paragraph(_display(value), styles[style_name])
 
@@ -349,11 +360,12 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
     ) or "Not specified"
     net_mass = _number(record.get("net_mass_kg"))
     net_mass_display = f"{net_mass:,.4f} kg" if net_mass > 0 else "Not specified"
+    board_code_display = str(record.get("board_code", "") or "").strip().rstrip("/")
     technical_items = [
         ("Finished size", finished_size),
         ("Material / GSM", material_grade),
         ("Board size", board_size),
-        ("Board code", record.get("board_code")),
+        ("Board code", board_code_display),
         ("Pallet quantity", _whole_number(record.get("pallet_quantity"))),
         ("Pallet size", record.get("pallet_size")),
         ("Print colours", _whole_number(record.get("number_of_colours"))),
@@ -490,17 +502,44 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ],
     )
+    approval_notice = Table(
+        [
+            [
+                Paragraph(
+                    "THIS QUOTATION IS GENERATED FROM THE COSTING TOOL AND REMAINS "
+                    "SUBJECT TO FINAL COMMERCIAL APPROVAL.",
+                    styles["ApprovalNotice"],
+                )
+            ]
+        ],
+        colWidths=[180 * mm],
+        style=[
+            ("BACKGROUND", (0, 0), (-1, -1), YELLOW),
+            ("BOX", (0, 0), (-1, -1), 1.2, INK),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ],
+    )
     story.extend(
         [
-            Spacer(1, 4 * mm),
+            Spacer(1, 3 * mm),
             KeepTogether([section("Notes"), notes_table]),
         ]
     )
     story.extend(
         [
-            Spacer(1, 4 * mm),
-            section("Commercial terms"),
-            Spacer(1, 2 * mm),
+            Spacer(1, 3 * mm),
+            KeepTogether(
+                [
+                    section("Commercial terms"),
+                    Spacer(1, 2 * mm),
+                    approval_notice,
+                ]
+            ),
+            Spacer(1, 1 * mm),
             *[
                 Paragraph(f"- {html.escape(term)}", styles["Terms"])
                 for term in commercial_terms
@@ -515,11 +554,6 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         canvas.line(15 * mm, 12 * mm, A4[0] - 15 * mm, 12 * mm)
         canvas.setFillColor(colors.HexColor("#666C6C"))
         canvas.setFont("Helvetica", 7)
-        canvas.drawString(
-            15 * mm,
-            8 * mm,
-            "This quotation is generated from the costing tool and remains subject to final commercial approval.",
-        )
         canvas.drawRightString(
             A4[0] - 15 * mm, 8 * mm, f"Page {canvas.getPageNumber()}"
         )

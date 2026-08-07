@@ -140,7 +140,7 @@ def require_user() -> AuthenticatedUser:
         st.caption("Sign in to continue.")
         if not users:
             st.error(
-                "No users have been added yet. Please ask whoever manages the app to add one."
+                "No users are set up. Add a user in Streamlit Secrets."
             )
             st.stop()
         with st.form("login_form"):
