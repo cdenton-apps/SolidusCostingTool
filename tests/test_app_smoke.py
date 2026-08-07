@@ -169,11 +169,13 @@ def test_user_can_reopen_only_their_own_saved_costing(
             "spread_percent": 32,
             "notes": "Keep this note",
         },
+        user_username="standard",
         user_email="standard@example.com",
         user_name="Standard User",
     )
     theirs = repository.save_costing(
         {"item_code": "HISTORY-THEIRS", "customer_name": "Private Customer"},
+        user_username="otheruser",
         user_email="other@example.com",
         user_name="Other User",
     )
@@ -186,6 +188,7 @@ def test_user_can_reopen_only_their_own_saved_costing(
         "email": "standard@example.com",
         "name": "Standard User",
         "can_create_new": False,
+        "can_view_history": False,
     }
     app.run()
     _widget(app.sidebar.radio, "Navigation").set_value("My costings").run()
@@ -204,3 +207,42 @@ def test_user_can_reopen_only_their_own_saved_costing(
     assert app.session_state["customer_contact"] == "Alex Example"
     assert "quote_reference" not in app.session_state
     assert "Order and fulfilment" in [item.value for item in app.subheader]
+
+
+def test_team_history_permission_shows_saved_usernames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for source in PROJECT_DATA.glob("*.csv"):
+        copy2(source, tmp_path / source.name)
+    repository = CsvRepository(tmp_path)
+    repository.save_costing(
+        {"item_code": "TEAM-ONE", "customer_name": "Customer One"},
+        user_username="connor",
+        user_email="connor@example.com",
+        user_name="Connor Denton",
+    )
+    repository.save_costing(
+        {"item_code": "TEAM-TWO", "customer_name": "Customer Two"},
+        user_username="ben",
+        user_email="ben@example.com",
+        user_name="Ben Barraclough",
+    )
+    monkeypatch.setenv("COSTING_DATA_DIR", str(tmp_path))
+
+    app = AppTest.from_file(APP_PATH, default_timeout=10)
+    app.secrets["app_auth"] = {"mode": "password"}
+    app.session_state["authenticated_user"] = {
+        "username": "manager",
+        "email": "manager@example.com",
+        "name": "History Manager",
+        "can_create_new": False,
+        "can_view_history": True,
+    }
+    app.run()
+    navigation = _widget(app.sidebar.radio, "Navigation")
+    assert "Team history" in navigation.options
+    navigation.set_value("Team history").run()
+
+    table = app.dataframe[0].value
+    assert set(table["created_by_username"]) >= {"connor", "ben"}
+    assert all(item.label != "Load and amend this costing" for item in app.button)

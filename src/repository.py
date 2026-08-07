@@ -117,6 +117,7 @@ HISTORY_COLUMNS = [
     "source_item_code",
     "created_at_utc",
     "created_by",
+    "created_by_username",
     "created_by_name",
     "quote_reference",
     "customer_contact",
@@ -148,6 +149,7 @@ class CsvRepository:
         self.board_items_path = self.data_dir / "board_items.csv"
         self.board_prices_path = self.data_dir / "board_prices.csv"
         self.haulier_path = self.data_dir / "haulier_rates.csv"
+        self.material_summary_path = self.data_dir / "material_summaries.csv"
         self.history_path = self.data_dir / "saved_costings.csv"
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -466,7 +468,7 @@ class CsvRepository:
     def machine_time_summary(self, item_code: str) -> dict[str, Any]:
         return self._machine_time_from_frames(item_code, self.load_bom_lines())
 
-    def load_material_summary(self) -> pd.DataFrame:
+    def _calculate_material_summary(self) -> pd.DataFrame:
         bom = self.load_bom_lines()
         boards = self.load_board_items()
         if bom.empty:
@@ -476,6 +478,17 @@ class CsvRepository:
             result = self._material_breakdown_from_frames(item_code, bom, boards)
             summaries.append({"item_code": item_code, **result["summary"]})
         return pd.DataFrame(summaries)
+
+    def rebuild_material_summary(self) -> pd.DataFrame:
+        """Recalculate the material feed after a BOM or board-price import."""
+        summary = self._calculate_material_summary()
+        self._atomic_csv_write(summary, self.material_summary_path)
+        return summary
+
+    def load_material_summary(self) -> pd.DataFrame:
+        if self.material_summary_path.exists():
+            return pd.read_csv(self.material_summary_path)
+        return self._calculate_material_summary()
 
     def load_priced_board_catalog(self) -> pd.DataFrame:
         boards = self.load_board_items().copy()
@@ -629,6 +642,12 @@ class CsvRepository:
         for column in HISTORY_COLUMNS:
             if column not in history:
                 history[column] = None
+        # Older rows pre-date username tracking. Keep them readable by showing
+        # the email identity that was already recorded for the audit trail.
+        username = history["created_by_username"].fillna("").astype(str).str.strip()
+        history.loc[username.eq(""), "created_by_username"] = history.loc[
+            username.eq(""), "created_by"
+        ]
         return history[HISTORY_COLUMNS]
 
     def load_user_history(self, user_email: str) -> pd.DataFrame:
@@ -643,7 +662,7 @@ class CsvRepository:
     def load_catalog(self) -> pd.DataFrame:
         """Return the feed plus the latest saved revision for each item code."""
         feed = self.load_current_items().copy()
-        feed["source_type"] = "Current-item feed"
+        feed["source_type"] = "Stock list"
 
         history = self.load_history()
         if history.empty:
@@ -667,6 +686,7 @@ class CsvRepository:
         self,
         record: dict[str, Any],
         *,
+        user_username: str | None = None,
         user_email: str,
         user_name: str,
     ) -> dict[str, Any]:
@@ -687,6 +707,7 @@ class CsvRepository:
                     "revision": revision,
                     "created_at_utc": now.isoformat(timespec="seconds"),
                     "created_by": user_email,
+                    "created_by_username": user_username or user_email,
                     "created_by_name": user_name,
                 }
                 row = pd.DataFrame(

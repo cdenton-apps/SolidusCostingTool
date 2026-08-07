@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import csv as csv_module
 from io import BytesIO
 
 from pypdf import PdfReader
 
-from src.exports import quote_pdf, sage_stock_import_csv
+from src.exports import SAGE_STOCK_COLUMNS, quote_pdf, sage_stock_import_csv
 
 
 def test_quote_and_sage_exports() -> None:
@@ -68,3 +69,10 @@ def test_quote_and_sage_exports() -> None:
     assert "BOX-TEST" in csv
     assert "AnalysisName\\18" in csv
     assert "MTC" in csv
+    rows = list(csv_module.reader(csv.splitlines()))
+    assert rows[0] == SAGE_STOCK_COLUMNS
+    assert len(rows[0]) == 72
+    exported = dict(zip(rows[0], rows[1], strict=True))
+    assert exported["Asset of stock - account number"] == "10260361"
+    assert exported["Revenue - account number"] == "10210065"
+    assert exported["AnalysisName\\20"] == "Market Segment"

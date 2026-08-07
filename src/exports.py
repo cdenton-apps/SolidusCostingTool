@@ -31,6 +31,69 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BRAND_HEADER_PATH = PROJECT_ROOT / "assets" / "solidus-brand-header.jpg"
 TERMS_PATH = PROJECT_ROOT / "assets" / "solidus-terms-and-conditions.pdf"
 
+SAGE_STOCK_COLUMNS = [
+    "Stock item code",
+    "Stock item name",
+    "Product group",
+    "Tax code",
+    "Stock item description",
+    "Manufacturer's name",
+    "Manufacturer's part number",
+    "Commodity code",
+    "Net mass",
+    "Stock take days",
+    "Allow Sales order",
+    "Asset of stock - account number",
+    "Asset of stock - cost centre",
+    "Asset of stock - department",
+    "Revenue - account number",
+    "Revenue - cost centre",
+    "Revenue - department",
+    "Supplier",
+    "Supplier lead time",
+    "Supplier lead time unit",
+    "Supplier minimum quantity",
+    "Supplier usual order quantity",
+    "Supplier part number",
+    "Alternative item",
+    "Alternative item name",
+    "Barcode",
+    *[
+        heading
+        for index in range(1, 21)
+        for heading in (f"AnalysisName\\{index}", f"AnalysisValue\\{index}")
+    ],
+    "Accrued receipts - account number",
+    "Accrued receipts - cost centre",
+    "Accrued receipts - department",
+    "Issues - account number",
+    "Issues - cost centre",
+    "Issues - department",
+]
+
+SAGE_ANALYSIS_FIELDS = [
+    ("Legacy Code", "legacy_code", ""),
+    ("Doublestack", "double_stack", "N"),
+    ("Pallet Size", "pallet_size", ""),
+    ("MRP Type", "mrp_type", "MTO"),
+    ("Length", "length_mm", ""),
+    ("Width", "width_mm", ""),
+    ("Height", "height_mm", ""),
+    ("Grade / Gram", "board_gsm", ""),
+    ("Boardwidth/Reel Width", "board_width_mm", ""),
+    ("Boardlength/Chop", "board_length_mm", ""),
+    ("BundleQty / Reel Core ID", "bundle_quantity", ""),
+    ("Bundles Per Layer / Bundle Type", "bundles_per_layer", ""),
+    ("Layers Per Pallet", "layers_per_pallet", ""),
+    ("Pallet Height", "pallet_height_mm", ""),
+    ("Product State", "product_state", "FG Box"),
+    ("Number Of Colours", "number_of_colours", ""),
+    ("FSC", "fsc", ""),
+    ("Pallet Qty", "pallet_quantity", ""),
+    ("Board Code", "board_code", ""),
+    ("Market Segment", "market_segment", ""),
+]
+
 
 def _money(value: Any) -> str:
     try:
@@ -475,11 +538,12 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
         leftMargin=10 * mm,
         topMargin=10 * mm,
         bottomMargin=10 * mm,
-        title="Costing audit history",
+        title="Costing history",
     )
     styles = getSampleStyleSheet()
     columns = [
         "created_at_utc",
+        "created_by_username",
         "created_by_name",
         "item_code",
         "revision",
@@ -490,12 +554,19 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
         "spread_per_machine_hour",
     ]
     available = [column for column in columns if column in frame.columns]
-    headings = [column.replace("_", " ").title() for column in available]
+    heading_labels = {
+        "created_by_username": "Username",
+        "created_by_name": "Name",
+    }
+    headings = [
+        heading_labels.get(column, column.replace("_", " ").title())
+        for column in available
+    ]
     rows = [headings]
     for _, row in frame[available].iterrows():
         rows.append([str(row[column])[:38] for column in available])
     story = [
-        Paragraph("Solidus costing audit history", styles["Title"]),
+        Paragraph("Solidus costing history", styles["Title"]),
         Spacer(1, 4 * mm),
     ]
     table = Table(rows, repeatRows=1)
@@ -518,43 +589,63 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
 
 
 def sage_stock_import_csv(record: dict[str, Any]) -> bytes:
-    """Create an indicative Sage row using headings present in the supplied item feed."""
-    analysis = [
-        ("Legacy Code", record.get("legacy_code", "")),
-        ("Doublestack", record.get("double_stack", "N")),
-        ("Pallet Size", record.get("pallet_size", "")),
-        ("MRP Type", record.get("fulfilment_type") or record.get("mrp_type", "MTO")),
-        ("Length", record.get("length_mm", "")),
-        ("Width", record.get("width_mm", "")),
-        ("Height", record.get("height_mm", "")),
-        ("Grade / Gram", record.get("board_gsm", "")),
-        ("Boardwidth/Reel Width", record.get("board_width_mm", "")),
-        ("Boardlength/Chop", record.get("board_length_mm", "")),
-        ("BundleQty / Reel Core ID", record.get("bundle_quantity", "")),
-        ("Bundles Per Layer / Bundle Type", record.get("bundles_per_layer", "")),
-        ("Layers Per Pallet", record.get("layers_per_pallet", "")),
-        ("Pallet Height", record.get("pallet_height_mm", "")),
-        ("Product State", record.get("product_state", "FG Box")),
-        ("Number Of Colours", record.get("number_of_colours", "")),
-        ("FSC", record.get("fsc", "")),
-        ("Pallet Qty", record.get("pallet_quantity", "")),
-        ("Board Code", record.get("board_code", "")),
-        ("Market Segment", record.get("market_segment", "")),
-    ]
-    row: dict[str, Any] = {
+    """Create one row in the exact supplied Sage stock export/import layout."""
+    site = str(record.get("manufacturing_site", "") or "").strip()
+    site_accounts = {
+        "101": {
+            "Asset of stock - account number": "10260361",
+            "Asset of stock - cost centre": "201",
+            "Asset of stock - department": "101",
+            "Revenue - account number": "10210065",
+            "Revenue - cost centre": "301",
+            "Revenue - department": "101",
+        },
+        "102": {
+            "Asset of stock - account number": "10260361",
+            "Asset of stock - cost centre": "201",
+            "Asset of stock - department": "101",
+            "Revenue - account number": "10210065",
+            "Revenue - cost centre": "301",
+            "Revenue - department": "101",
+        },
+        "103": {
+            "Asset of stock - account number": "10260441",
+            "Asset of stock - cost centre": "201",
+            "Asset of stock - department": "103",
+            "Revenue - account number": "10210055",
+            "Revenue - cost centre": "301",
+            "Revenue - department": "103",
+        },
+    }
+    row: dict[str, Any] = {column: "" for column in SAGE_STOCK_COLUMNS}
+    row.update({
         "Stock item code": record.get("item_code", ""),
         "Stock item name": record.get("item_name") or record.get("description", ""),
         "Product group": record.get("product_group", ""),
         "Tax code": 1,
         "Stock item description": record.get("description", ""),
-        "Manufacturer's name": record.get("manufacturing_site", ""),
+        "Manufacturer's name": site,
         "Net mass": record.get("net_mass_kg", ""),
+        "Stock take days": 0,
         "Allow Sales order": 1,
-    }
-    for index, (name, value) in enumerate(analysis, start=1):
+        "Supplier lead time": 0,
+        "Supplier lead time unit": 0,
+        "Supplier minimum quantity": "0.00000",
+        "Supplier usual order quantity": "0.00000",
+        "Accrued receipts - account number": "10020003",
+        "Accrued receipts - department": "101",
+        "Issues - account number": "10260031",
+        "Issues - cost centre": "201",
+        "Issues - department": "101",
+        **site_accounts.get(site, {}),
+    })
+    for index, (name, field, default) in enumerate(SAGE_ANALYSIS_FIELDS, start=1):
+        value = record.get(field)
+        if field == "mrp_type" and not str(value or "").strip():
+            value = record.get("fulfilment_type", default)
+        elif value is None:
+            value = default
         row[f"AnalysisName\\{index}"] = name
         row[f"AnalysisValue\\{index}"] = value
-    frame = pd.DataFrame(
-        [row]
-    )
+    frame = pd.DataFrame([row], columns=SAGE_STOCK_COLUMNS)
     return frame.to_csv(index=False).encode("utf-8-sig")

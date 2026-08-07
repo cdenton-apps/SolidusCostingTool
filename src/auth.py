@@ -16,6 +16,7 @@ class AuthenticatedUser:
     email: str
     name: str
     can_create_new: bool = False
+    can_view_history: bool = False
 
 
 def make_password_hash(password: str, iterations: int = 600_000) -> str:
@@ -100,7 +101,7 @@ def require_user() -> AuthenticatedUser:
         email = str(getattr(st.user, "email", ""))
         name = str(getattr(st.user, "name", email))
         if not _identity_allowed(email, config):
-            st.error("Your account is not authorised to use this app.")
+            st.error("This account does not have access to the app.")
             if st.button("Sign out"):
                 st.logout()
             st.stop()
@@ -108,12 +109,18 @@ def require_user() -> AuthenticatedUser:
             str(value).lower().strip()
             for value in config.get("new_item_emails", [])
         }
+        history_emails = {
+            str(value).lower().strip()
+            for value in config.get("history_emails", [])
+        }
         can_create_new = email.lower().strip() in new_item_emails
+        can_view_history = email.lower().strip() in history_emails
         return AuthenticatedUser(
             username=email,
             email=email,
             name=name,
             can_create_new=can_create_new,
+            can_view_history=can_view_history,
         )
 
     if mode == "password":
@@ -124,6 +131,7 @@ def require_user() -> AuthenticatedUser:
                 email=stored["email"],
                 name=stored["name"],
                 can_create_new=_secret_bool(stored.get("can_create_new")),
+                can_view_history=_secret_bool(stored.get("can_view_history")),
             )
 
         users = _secret_section("users")
@@ -132,7 +140,7 @@ def require_user() -> AuthenticatedUser:
         st.caption("Sign in to continue.")
         if not users:
             st.error(
-                "Login has not been configured. Please ask the app administrator to add an authorised user."
+                "No users have been added yet. Please ask whoever manages the app to add one."
             )
             st.stop()
         with st.form("login_form"):
@@ -146,11 +154,13 @@ def require_user() -> AuthenticatedUser:
             entry = dict(users.get(matched_key, {})) if matched_key else {}
             if entry and _verify_configured_password(password, entry):
                 can_create_new = _secret_bool(entry.get("can_create_new"))
+                can_view_history = _secret_bool(entry.get("can_view_history"))
                 st.session_state.authenticated_user = {
                     "username": str(matched_key),
                     "email": str(entry.get("email", matched_key)),
                     "name": str(entry.get("name", matched_key)),
                     "can_create_new": can_create_new,
+                    "can_view_history": can_view_history,
                 }
                 st.rerun()
             st.error("The username or password was not recognised.")
@@ -164,9 +174,10 @@ def require_user() -> AuthenticatedUser:
             email="demo@local",
             name="Demo user",
             can_create_new=True,
+            can_view_history=True,
         )
 
-    st.error("Authentication is configured with an unsupported mode.")
+    st.error("The login mode in Secrets is not supported.")
     st.stop()
 
 

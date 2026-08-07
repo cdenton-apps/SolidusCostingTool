@@ -3,10 +3,18 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.repository import CsvRepository
 
 
 ARTICLE_PATTERN = re.compile(r"(?:SHT\d+(?:/[A-Z])?|[234]-\d+)", re.IGNORECASE)
@@ -166,8 +174,15 @@ def resolve_price(board: dict[str, Any], prices: pd.DataFrame) -> dict[str, Any]
     }
 
 
-def prepare_stock(path: Path, bom_codes: set[str], prices: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    source = pd.read_excel(path, sheet_name="Stock Item Info", dtype=object)
+def prepare_stock(
+    path: Path,
+    bom_codes: set[str],
+    prices: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if path.suffix.lower() == ".csv":
+        source = pd.read_csv(path, dtype=object, keep_default_na=False)
+    else:
+        source = pd.read_excel(path, sheet_name="Stock Item Info", dtype=object)
     finished: list[dict[str, Any]] = []
     boards: list[dict[str, Any]] = []
 
@@ -205,9 +220,9 @@ def prepare_stock(path: Path, bom_codes: set[str], prices: pd.DataFrame) -> tupl
             "board_code": clean(analysis.get("Board Code")),
             "market_segment": clean(analysis.get("Market Segment")),
         }
-        if code.startswith("BOX"):
+        if code.upper().startswith("BOX"):
             finished.append({**common, "bom_available": int(code in bom_codes)})
-        elif code.startswith("BRD"):
+        elif code.upper().startswith("BRD"):
             board = {
                 "board_item_code": code,
                 "board_item_name": common["item_name"],
@@ -231,7 +246,9 @@ def prepare_stock(path: Path, bom_codes: set[str], prices: pd.DataFrame) -> tupl
 
 
 def prepare_bom(path: Path) -> pd.DataFrame:
-    source = pd.read_excel(path, sheet_name="BOM Info", dtype=object)
+    workbook = pd.ExcelFile(path)
+    sheet_name = "BOM Info" if "BOM Info" in workbook.sheet_names else workbook.sheet_names[0]
+    source = pd.read_excel(workbook, sheet_name=sheet_name, dtype=object)
     source.columns = [
         re.sub(r"[^a-z0-9]+", "_", str(column).strip().lower()).strip("_")
         for column in source.columns
@@ -242,15 +259,27 @@ def prepare_bom(path: Path) -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert supplied costing workbooks to app CSV feeds.")
     parser.add_argument("--costing-workbook", required=True, type=Path)
+    parser.add_argument(
+        "--bom-workbook",
+        type=Path,
+        help="Optional full BOM export workbook. The first sheet is used when there is no BOM Info sheet.",
+    )
+    parser.add_argument(
+        "--stock-csv",
+        type=Path,
+        help="Optional newer Sage stock export/import CSV to use instead of the workbook stock sheet.",
+    )
     parser.add_argument("--board-prices", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     prices = prepare_prices(args.board_prices)
-    bom = prepare_bom(args.costing_workbook)
+    bom = prepare_bom(args.bom_workbook or args.costing_workbook)
     finished, boards = prepare_stock(
-        args.costing_workbook, set(bom["bomcode"].astype(str)), prices
+        args.stock_csv or args.costing_workbook,
+        set(bom["bomcode"].astype(str)),
+        prices,
     )
     bom = bom.rename(
         columns={
@@ -284,12 +313,13 @@ def main() -> None:
     boards.to_csv(args.output_dir / "board_items.csv", index=False)
     prices.to_csv(args.output_dir / "board_prices.csv", index=False)
     bom.to_csv(args.output_dir / "bom_costs.csv", index=False)
+    material_summaries = CsvRepository(args.output_dir).rebuild_material_summary()
 
     priced = int(pd.to_numeric(boards["price_per_tonne"], errors="coerce").notna().sum())
     print(
         f"Wrote {len(finished)} finished items, {len(boards)} board items "
         f"({priced} with an unambiguous Apr-26 rate), {len(prices)} price rows "
-        f"and {len(bom)} BOM lines."
+        f"and {len(bom)} BOM lines. Built {len(material_summaries)} material summaries."
     )
 
 

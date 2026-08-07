@@ -48,7 +48,7 @@ st.markdown(
         --solidus-grey: #d4dedd;
         --solidus-ink: #000000;
     }
-    .block-container { padding-top: 1.25rem; padding-bottom: 3rem; max-width: 1180px; }
+    .block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1180px; }
     h1, h2, h3 { color: var(--solidus-ink); letter-spacing: -0.025em; }
     [data-testid="stSidebar"] { border-right: 1px solid var(--solidus-grey); }
     [data-testid="stVerticalBlockBorderWrapper"] { border-color: var(--solidus-grey); border-radius: 16px; }
@@ -60,10 +60,11 @@ st.markdown(
         border-left: 5px solid var(--solidus-yellow); margin: .5rem 0 1rem; }
     .small-note { color: #4a5050; font-size: .9rem; }
     .brand-banner { display: flex; align-items: center; justify-content: space-between;
-        gap: 1rem; padding: 1rem 1.15rem; margin: 0 0 .8rem; background: linear-gradient(105deg, #fff 0%, var(--solidus-mist) 70%);
-        border-radius: 16px; border: 1px solid var(--solidus-grey); border-right: 12px solid var(--solidus-yellow);
+        gap: 1rem; padding: 1.15rem 1.25rem; margin: .4rem 0 .8rem; background: linear-gradient(105deg, #fbfcfb 0%, var(--solidus-mist) 70%);
+        border-radius: 16px; border: 2px solid #bcc8c7; border-right: 12px solid var(--solidus-yellow);
+        box-sizing: border-box; overflow: visible;
         box-shadow: 0 5px 18px rgba(0,0,0,.04); }
-    .brand-name { font-size: 2.2rem; line-height: 1; font-weight: 800; letter-spacing: -.06em; }
+    .brand-name { font-size: 2.2rem; line-height: 1.2; font-weight: 800; letter-spacing: -.06em; padding-top: .1rem; }
     .brand-tagline { font-size: .9rem; font-weight: 700; margin-top: .35rem; }
     .brand-tool { font-size: 1rem; font-weight: 700; background: var(--solidus-yellow);
         padding: .55rem .8rem; border-radius: 999px; white-space: nowrap; }
@@ -264,13 +265,11 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
     heading.subheader("Choose a product")
     access.markdown(
         '<div class="access-pill">'
-        + ("Product creator" if can_create_new else "Existing products")
+        + ("Can add new products" if can_create_new else "Existing products only")
         + "</div>",
         unsafe_allow_html=True,
     )
-    st.caption(
-        "Select a product, then enter only the customer, quantity and delivery details needed for this quotation."
-    )
+    st.caption("Pick the product you want to cost. You can search by code or description.")
 
     mode = "Existing product"
     if can_create_new:
@@ -283,11 +282,11 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
     if mode == "Existing product":
         catalog = repository.load_catalog()
         if catalog.empty:
-            message = "No current-product feed has been loaded yet."
+            message = "There are no products in the stock list yet."
             if can_create_new:
-                message += " Choose New product above to create one."
+                message += " You can add one using New product above."
             else:
-                message += " Please ask a product creator to add one."
+                message += " Please ask someone with new-product access to add one."
             st.info(message)
             return
         catalog = catalog.sort_values("item_code").reset_index(drop=True)
@@ -306,7 +305,7 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
             placeholder="Search by item code or description",
         )
         if selected_index is None:
-            st.info("Start typing an item code or description to select a product.")
+            st.info("Search for the item you need above.")
             return
         selected = clean_record(catalog.loc[selected_index].to_dict())
         selected_material_total = float(
@@ -327,7 +326,7 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
                 "Material / 1,000",
                 f"£{selected_material_total:,.2f}"
                 if float(selected.get("bom_available", 0) or 0)
-                else "No BOM",
+                else "No costing BOM",
             )
             summary[3].metric(
                 "Size",
@@ -352,9 +351,9 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
                 "Calculated material / 1,000",
                 f"£{selected_material_total:,.2f}"
                 if float(selected.get("bom_available", 0) or 0)
-                else "No BOM",
+                else "No costing BOM",
             )
-            columns[4].metric("Source", str(selected.get("source_type", "Feed")))
+            columns[4].metric("From", str(selected.get("source_type", "Stock list")))
             st.caption(
                 f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
                 f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
@@ -393,7 +392,21 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
                         "tonnes_per_1000": st.column_config.NumberColumn(format="%.4f"),
                     },
                 )
-        if st.button("Start costing", type="primary", width="stretch"):
+        has_material_cost = bool(
+            float(selected.get("bom_available", 0) or 0)
+            or selected_material_total > 0
+        )
+        if not has_material_cost:
+            st.warning(
+                "This item is in the stock list, but its costing BOM was not in the "
+                "costing data supplied. There is no material cost to use yet."
+            )
+        if st.button(
+            "Start costing",
+            type="primary",
+            width="stretch",
+            disabled=not has_material_cost,
+        ):
             draft = default_draft()
             draft.update(
                 {key: selected.get(key, draft.get(key)) for key in SPECIFICATION_COLUMNS}
@@ -411,10 +424,8 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
         with st.container(border=True):
             st.markdown("### Create a new product")
             st.write(
-                "Enter a technical specification, derive the board and component cost, then create a quotation and draft Sage item row."
-            )
-            st.caption(
-                "This route is limited to authorised product creators."
+                "Use this when the product is not already in the list. You will need "
+                "the product spec and board details."
             )
             if st.button("Create new product", type="primary", width="stretch"):
                 st.session_state.draft = default_draft()
@@ -431,7 +442,7 @@ def render_specification() -> None:
             '<div class="status-card"><strong>'
             f"{str(draft.get('item_code', ''))}</strong> — "
             f"{str(draft.get('description', ''))}<br>"
-            "The saved product specification will be used unless you open and amend it below.</div>",
+            "We have filled in the saved product details. Open them below only if something needs changing.</div>",
             unsafe_allow_html=True,
         )
 
@@ -1206,6 +1217,7 @@ def current_record() -> dict[str, Any]:
 
 def render_save(
     repository: CsvRepository,
+    user_username: str,
     user_email: str,
     user_name: str,
     can_create_new: bool,
@@ -1239,14 +1251,17 @@ def render_save(
         record["source_item_code"] = draft.get("source_item_code", "")
         try:
             saved = repository.save_costing(
-                record, user_email=user_email, user_name=user_name
+                record,
+                user_username=user_username,
+                user_email=user_email,
+                user_name=user_name,
             )
         except RepositoryBusyError as exc:
             st.warning(str(exc))
         else:
             st.session_state.last_saved = saved
             st.success(
-                f"Saved safely as {saved['costing_id']} — "
+                f"Saved as {saved['costing_id']} — "
                 f"{saved['item_code']} revision {saved['revision']}."
             )
 
@@ -1270,14 +1285,15 @@ def render_save(
     )
     if can_create_new:
         download_columns[1].download_button(
-            "Indicative Sage item CSV",
+            "Sage stock import CSV",
             data=sage_stock_import_csv(record),
             file_name=f"{record['item_code']}-sage-import.csv",
             mime="text/csv",
             width="stretch",
         )
         st.info(
-            "The Sage export headings are a safe prototype. They must be mapped to the exact Sage 200 import template before production use."
+            "This uses the same 72 columns as the Sage stock export/import file you supplied. "
+            "Check the accounts and product details before importing it."
         )
 
 
@@ -1302,7 +1318,7 @@ def load_saved_costing(record: dict[str, Any]) -> None:
     st.session_state.workflow_notice = (
         f"Loaded {record.get('costing_id', 'saved costing')} revision "
         f"{int(float(record.get('revision', 0) or 0))}. "
-        "Review the details and save again to create the next revision."
+        "Check the details, make your changes and save when you are done."
     )
     st.session_state.main_navigation = "Costing workflow"
     st.session_state.step = 1
@@ -1310,10 +1326,7 @@ def load_saved_costing(record: dict[str, Any]) -> None:
 
 def render_history(repository: CsvRepository, current_user: str) -> None:
     st.header("My costings")
-    st.caption(
-        "Only costings saved under your signed-in account are shown here. "
-        "Open one to amend it and create a new revision."
-    )
+    st.caption("These are the costings you have saved. Open one if you need to change it.")
     history = repository.load_user_history(current_user)
     if history.empty:
         st.info("You have not saved any costings yet.")
@@ -1329,6 +1342,7 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
 
     visible_columns = [
         "created_at_utc",
+        "created_by_username",
         "item_code",
         "revision",
         "customer_name",
@@ -1346,6 +1360,7 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         hide_index=True,
         width="stretch",
         column_config={
+            "created_by_username": st.column_config.TextColumn("Username"),
             "pricing_base_per_1000": st.column_config.NumberColumn(format="£%.2f"),
             "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
             "spread_percent": st.column_config.NumberColumn(format="%.2f%%"),
@@ -1390,7 +1405,7 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
             args=(selected_record,),
         )
 
-    with st.expander("Export my filtered history"):
+    with st.expander("Download this list"):
         columns = st.columns(2)
         columns[0].download_button(
             "Download CSV",
@@ -1408,9 +1423,80 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         )
 
 
+def render_team_history(repository: CsvRepository) -> None:
+    st.header("Team history")
+    st.caption("This shows every saved costing and the username that saved it.")
+    history = repository.load_history()
+    if history.empty:
+        st.info("No costings have been saved yet.")
+        return
+
+    history["created_by_username"] = (
+        history["created_by_username"].fillna("").astype(str)
+    )
+    usernames = sorted(
+        value for value in history["created_by_username"].unique() if value
+    )
+    left, right = st.columns(2)
+    selected_user = left.selectbox("Filter by username", ["All users", *usernames])
+    products = sorted(value for value in history["item_code"].dropna().unique() if value)
+    selected_item = right.selectbox("Filter by product", ["All products", *products])
+
+    filtered = history.copy()
+    if selected_user != "All users":
+        filtered = filtered[filtered["created_by_username"] == selected_user]
+    if selected_item != "All products":
+        filtered = filtered[filtered["item_code"] == selected_item]
+    filtered = filtered.sort_values("created_at_utc", ascending=False)
+
+    visible_columns = [
+        "created_at_utc",
+        "created_by_username",
+        "created_by_name",
+        "item_code",
+        "revision",
+        "customer_name",
+        "fulfilment_type",
+        "order_quantity",
+        "selling_price_per_1000",
+        "spread_percent",
+        "costing_id",
+    ]
+    st.dataframe(
+        filtered[visible_columns],
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "created_by_username": st.column_config.TextColumn("Username"),
+            "created_by_name": st.column_config.TextColumn("Name"),
+            "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
+            "spread_percent": st.column_config.NumberColumn(format="%.2f%%"),
+            "order_quantity": st.column_config.NumberColumn(format="%.0f"),
+        },
+    )
+    st.caption("Team history is view-only. Each user can reopen their own work from My costings.")
+    with st.expander("Download this view"):
+        columns = st.columns(2)
+        columns[0].download_button(
+            "Download CSV",
+            data=filtered.to_csv(index=False).encode("utf-8-sig"),
+            file_name="team-costing-history.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+        columns[1].download_button(
+            "Print-friendly PDF",
+            data=history_pdf(filtered),
+            file_name="team-costing-history.pdf",
+            mime="application/pdf",
+            width="stretch",
+        )
+
+
 def render_workflow(
     repository: CsvRepository,
     rate_table: HaulierRateTable,
+    user_username: str,
     user_email: str,
     user_name: str,
     can_create_new: bool,
@@ -1421,7 +1507,7 @@ def render_workflow(
         '<div class="brand-tool">Spread Costing Tool</div></div>',
         unsafe_allow_html=True,
     )
-    st.caption("Create clear, auditable spread costings and customer quotations.")
+    st.caption("Choose a product and work through the costing.")
     workflow_notice = st.session_state.pop("workflow_notice", None)
     if workflow_notice:
         st.success(workflow_notice)
@@ -1435,7 +1521,7 @@ def render_workflow(
     elif st.session_state.step == 3:
         render_pricing()
     else:
-        render_save(repository, user_email, user_name, can_create_new)
+        render_save(repository, user_username, user_email, user_name, can_create_new)
 
 
 def main() -> None:
@@ -1460,26 +1546,32 @@ def main() -> None:
     st.sidebar.markdown("## Solidus")
     st.sidebar.caption("Your circular packaging partner")
     st.sidebar.markdown("### Spread Costing Tool")
-    st.sidebar.caption(f"Signed in as {user.name}")
+    st.sidebar.caption(f"Signed in as {user.name} (@{user.username})")
     st.sidebar.caption(
         "Access: "
         + ("existing and new products" if user.can_create_new else "existing products")
     )
+    navigation = ["Costing workflow", "My costings"]
+    if user.can_view_history:
+        navigation.append("Team history")
     page = st.sidebar.radio(
         "Navigation",
-        ["Costing workflow", "My costings"],
+        navigation,
         key="main_navigation",
     )
     st.sidebar.divider()
-    st.sidebar.caption("Each signed-in user has a separate working session.")
+    st.sidebar.caption("Your work here is separate from other users.")
     sign_out_button()
 
     if page == "My costings":
         render_history(repository, user.email)
+    elif page == "Team history":
+        render_team_history(repository)
     else:
         render_workflow(
             repository,
             rate_table,
+            user.username,
             user.email,
             user.name,
             user.can_create_new,

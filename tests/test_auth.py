@@ -45,7 +45,7 @@ def test_app_is_locked_when_no_users_are_configured() -> None:
     app = AppTest.from_file(APP_PATH, default_timeout=10).run()
 
     assert any(
-        "Login has not been configured" in item.value for item in app.error
+        "No users have been added" in item.value for item in app.error
     )
     assert not app.radio
 
@@ -59,6 +59,7 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
             "email": "connor@example.com",
             "password": "correct-horse-battery-staple",
             "can_create_new": True,
+            "can_view_history": True,
         }
     }
     app.run()
@@ -79,8 +80,10 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
         "email": "connor@example.com",
         "name": "Connor Denton",
         "can_create_new": True,
+        "can_view_history": True,
     }
     assert _widget(app.radio, "Costing route")
+    assert "Team history" in _widget(app.sidebar.radio, "Navigation").options
     assert any(
         "Signed in as Connor Denton" in item.value
         for item in app.sidebar.caption
@@ -99,12 +102,14 @@ def test_standard_user_sees_existing_products_only() -> None:
         "email": "standard@example.com",
         "name": "Standard User",
         "can_create_new": False,
+        "can_view_history": False,
     }
     app.run()
 
     assert _widget(app.selectbox, "Search existing products")
     assert all(item.label != "Costing route" for item in app.radio)
     assert _widget(app.sidebar.radio, "Navigation")
+    assert "Team history" not in _widget(app.sidebar.radio, "Navigation").options
     assert all(item.label != "Create new product" for item in app.button)
 
 
@@ -116,6 +121,7 @@ def test_standard_user_cannot_resume_a_new_product_draft() -> None:
         "email": "standard@example.com",
         "name": "Standard User",
         "can_create_new": False,
+        "can_view_history": False,
     }
     app.session_state["step"] = 1
     app.session_state["draft"] = {

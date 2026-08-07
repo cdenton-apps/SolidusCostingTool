@@ -1,11 +1,11 @@
 # Solidus Costing Tool
 
-This is a Streamlit app for building consistent packaging costings from the
-Solidus item, BOM, board-price and haulier data supplied with the project.
+This is the working Streamlit costing app for Solidus. It uses the supplied
+stock list, BOMs, board prices and haulier rates.
 
-The aim is simple: choose or describe a product, add the commercial order
-details, let the app calculate material and delivery, then test the effect of
-spread on selling price. Machine and labour are deliberately not included.
+Choose a product, add the customer and order details, and the app works out
+material and delivery. You can then change the spread or selling price and see
+the other figure update. Machine and labour are not added to the price.
 
 ## What a user does
 
@@ -21,8 +21,8 @@ spread on selling price. Machine and labour are deliberately not included.
    immediately.
 6. Review spread per machine hour, calculated from the BOM operation speeds
    without adding machine or labour to the pricing base.
-7. Save a new revision and download a customer quotation, costing CSV or
-   indicative Sage stock-item import.
+7. Save a new revision and download a customer quotation, costing CSV or Sage
+   stock-item import row.
 
 For an existing item, the technical specification stays collapsed by default.
 It is still available through **View or amend product specification** when a
@@ -74,9 +74,9 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app is locked until at least one password user is configured. For a basic
-internal setup, the chosen password can be stored directly in Streamlit's
-private Secrets. It must never be committed to GitHub.
+The app will not open until at least one user has been added. For a basic
+internal setup, you can put the chosen password directly in Streamlit Secrets.
+Do not put the real password in GitHub.
 
 For local use:
 
@@ -87,7 +87,7 @@ For local use:
 For Streamlit Community Cloud, open the app's **Settings > Secrets**, paste the
 same TOML content there, replace the example name/email/password, and save. The
 key after `[users.` is the username used on the login screen. Add another
-`[users.username]` block for each authorised user.
+`[users.username]` block for each person who needs access.
 
 User access is controlled in the same block:
 
@@ -97,19 +97,21 @@ name = "Product Creator"
 email = "creator@example.com"
 password = "REPLACE_ME"
 can_create_new = true
+can_view_history = true
 
 [users.standarduser]
 name = "Standard User"
 email = "standard@example.com"
 password = "REPLACE_ME"
 can_create_new = false
+can_view_history = false
 ```
 
-The new-product permission defaults to `false`. Standard users see only the
-existing-product route. Product creators can also create new products and
-receive the draft Sage item export. Every user has a private **My costings**
-view containing only revisions saved under their own login email; these can be
-loaded, amended, recalculated and saved as the next revision.
+Both permissions default to `false`. `can_create_new` adds the new-product
+route and Sage import download. `can_view_history` adds a read-only **Team
+history** page, including the login username and name saved against each
+costing. Everyone still has **My costings**, which only shows their own work and
+lets them reopen it.
 
 For stronger password storage, remove the plain `password` entry and use
 `python scripts/generate_password_hash.py` to create a `password_hash` instead.
@@ -124,10 +126,11 @@ The `data` folder contains the app-ready feeds:
 
 | File | Used for |
 | --- | --- |
-| `current_items.csv` | Existing product and stock information |
+| `current_items.csv` | 1,305 BOX items from the latest stock export, including the 581 with costing BOMs |
 | `board_items.csv` | Board dimensions, GSM, FSC and resolved price match |
 | `board_prices.csv` | April 2026 mill price rows and aliases |
 | `bom_costs.csv` | Material BOM lines and imported audit values |
+| `material_summaries.csv` | Precalculated material and machine-time summary for quick page loading |
 | `haulier_rates.csv` | Postcode, service, vendor and pallet rates |
 | `saved_costings.csv` | Append-only costing revisions |
 
@@ -136,19 +139,30 @@ After replacing the source workbooks, rebuild the app feeds with:
 ```bash
 python scripts/import_workbooks.py \
   --costing-workbook "Costing app test data.xlsx" \
+  --bom-workbook "Costed BOMs 06.08.xlsx" \
+  --stock-csv "stock export 19.06.csv" \
   --board-prices "Mill Price List Comparison Apr 26.XLSX" \
   --output-dir data
 ```
+
+The stock CSV is the same 72-column layout used by the Sage stock export and
+import. If `--stock-csv` is left out, the script uses the `Stock Item Info`
+sheet in the costing workbook instead. Items without a supplied costing BOM
+stay searchable, but the app will not let a user cost them as if material were
+zero.
+
+The full BOM export currently gives the app costings for 581 of the 1,305 BOX
+stock items. If `--bom-workbook` is left out, the script uses the `BOM Info`
+sheet in the costing workbook.
 
 Set `COSTING_DATA_DIR` if live data and saved costings should sit outside the Git
 checkout or on a persistent mounted folder.
 
 ## Multiple users
 
-Streamlit keeps each signed-in user's working form in a separate session. CSV
-saves are protected by a shared file lock, assigned unique costing and quotation
-references, and written atomically, so simultaneous saves on one running app do
-not overwrite one another.
+Each signed-in user gets their own working form. Saves use a shared file lock
+and unique references, so two people saving at the same time on one running app
+do not overwrite one another.
 
 The Streamlit Community Cloud filesystem is not permanent storage. It can be
 replaced when the app reboots or redeploys. Before relying on this as the live
@@ -212,6 +226,7 @@ exports and the Streamlit workflow.
 ## Before production use
 
 The business should still confirm surcharge/VAT treatment, permissions for
-overrides, approval thresholds, the treatment of unmatched board prices and the
-exact Sage 200 import mapping. The prototype Sage CSV is intentionally labelled
-indicative until that mapping is signed off.
+overrides, approval thresholds, the treatment of unmatched board prices and
+the Sage account defaults for each manufacturing site. The Sage download now
+uses the exact 72-column layout in the supplied export/import file, but it
+should still be checked before importing live records.
