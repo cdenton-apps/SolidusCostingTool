@@ -66,8 +66,7 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
     """Calculate the material-led pricing base per 1,000 units.
 
     Machine and labour values may still exist in the source BOM extract, but the
-    commercial model deliberately excludes them. Manual adjustments and transport
-    are treated as pass-throughs before the spread is applied.
+    pricing base excludes them. Transport is added at cost before spread.
     """
     errors = validate_details(values)
     if errors:
@@ -91,8 +90,7 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         )
 
     materials = _number(values, "materials_cost_per_1000")
-    manual_adjustment = _number(values, "manual_adjustment_per_1000")
-    material_base = materials + manual_adjustment
+    material_base = materials
 
     delivery_method = str(values.get("delivery_method", "Haulier"))
     transport_total = (
@@ -108,7 +106,6 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         "pallet_count": float(pallet_count),
         "transport_total": round(transport_total, 4),
         "materials_cost_per_1000": round(materials, 4),
-        "manual_adjustment_per_1000": round(manual_adjustment, 4),
         "material_base_per_1000": round(material_base, 4),
         "transport_cost_per_1000": round(transport_cost_per_1000, 4),
         "pricing_base_per_1000": round(pricing_base, 4),

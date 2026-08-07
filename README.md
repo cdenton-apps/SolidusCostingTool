@@ -39,13 +39,13 @@ change is needed.
   explicitly removing rolled machine and labour values.
 - New items use a selected priced board, units out per sheet and an optional
   comparable BOM for the other components. There is no normal free-typed
-  material-cost field.
+  material-cost field. If the board code is already known, **Fill board details
+  from code** brings across its GSM, size and matched mill price.
 - Delivery is quoted from the Joda and McDowells rate matrix. For MTC, each
   planned pallet call-off is costed, so ten one-pallet deliveries cost
   differently from one ten-pallet delivery.
 
-The commercial pricing base is material plus any approved commercial
-adjustment and delivery pass-through. Spread is a gross
+The commercial pricing base is material plus delivery. Spread is a gross
 percentage of selling price:
 
 `spread % = (selling price − pricing base) ÷ selling price × 100`
@@ -53,8 +53,8 @@ percentage of selling price:
 `selling price = pricing base ÷ (1 − spread %)`
 
 The operational spread indicator is separate from customer pricing. It applies
-the selected spread percentage to material cost only, so transport distance and
-commercial adjustments cannot inflate the operational result:
+the selected spread percentage to material cost only, so transport distance
+cannot inflate the operational result:
 
 `spread per machine hour = material-only spread ÷ quoted BOM machine hours`
 
@@ -107,6 +107,7 @@ email = "creator@example.com"
 password = "REPLACE_ME"
 can_create_new = true
 can_view_history = true
+is_admin = true
 
 [users.standarduser]
 name = "Standard User"
@@ -114,13 +115,20 @@ email = "standard@example.com"
 password = "REPLACE_ME"
 can_create_new = false
 can_view_history = false
+is_admin = false
 ```
 
-Both permissions default to `false`. `can_create_new` adds the new-product
+All three permissions default to `false`. `can_create_new` adds the new-product
 route and Sage import download. `can_view_history` adds a read-only **Team
 history** page, including the login username and name saved against each
 costing. Everyone still has **My costings**, which only shows their own work and
-lets them reopen it.
+lets them reopen it. `is_admin` adds **User activity**, including current
+sessions, approximate active time, saved-work totals and forced sign-out.
+
+Set `session_timeout_minutes = 60` under `[app_auth]` to change the inactivity
+limit. The minimum is five minutes. Forced sign-out is checked every 30 seconds
+for password sessions. For OIDC, list admin accounts in `admin_emails` and use
+the identity provider as the main place to revoke account access.
 
 For stronger password storage, remove the plain `password` entry and use
 `python scripts/generate_password_hash.py` to create a `password_hash` instead.
@@ -176,6 +184,12 @@ checkout or on a persistent mounted folder.
 Each signed-in user gets their own working form. Saves use a shared file lock
 and unique references, so two people saving at the same time on one running app
 do not overwrite one another.
+
+The admin session register is intentionally lightweight. Active time counts
+short gaps between user actions rather than the whole time a browser tab is
+open. The register is held in `data/active_sessions.csv`, is ignored by Git and
+can reset when Streamlit restarts the app. It is useful for day-to-day visibility,
+but it is not a permanent security or HR audit log.
 
 The Streamlit Community Cloud filesystem is not permanent storage. It can be
 replaced when the app reboots or redeploys. Before relying on this as the live

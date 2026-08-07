@@ -40,6 +40,10 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.button, "Save order details").click().run()
 
     assert all("tooling" not in widget.label.lower() for widget in app.number_input)
+    assert all(
+        "commercial adjustment" not in widget.label.lower()
+        for widget in app.number_input
+    )
 
     _widget(app.selectbox, "Board item *").set_value(
         "BRD001/101/LPB/1000G/BW"
@@ -54,6 +58,25 @@ def test_new_item_reaches_pricing_stage() -> None:
     assert "Set spread or selling price" in [item.value for item in app.subheader]
     assert _widget(app.number_input, "Spread (%)")
     assert _widget(app.number_input, "Selling price per 1,000 (£)")
+
+
+def test_new_item_can_fill_board_details_from_known_code() -> None:
+    app = _demo_app().run()
+    _widget(app.radio, "Costing route").set_value("New product").run()
+    _widget(app.button, "Create new product").click().run()
+
+    _widget(app.text_input, "Board code").set_value("4-15614/").run()
+    _widget(app.button, "Fill board details from code").click().run()
+
+    assert _widget(app.text_input, "Board code").value == "4-15614"
+    assert _widget(app.number_input, "Grade / GSM *").value == pytest.approx(1000)
+    assert _widget(
+        app.number_input, "Board width / reel width (mm)"
+    ).value == pytest.approx(1358)
+    assert _widget(
+        app.number_input, "Board length / chop (mm)"
+    ).value == pytest.approx(878)
+    assert app.session_state["draft"]["board_price_per_tonne"] == pytest.approx(794)
 
 
 def test_spread_and_selling_price_inputs_stay_in_sync() -> None:

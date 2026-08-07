@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from src.auth import require_user, sign_out_button
+from src.auth import require_user, session_timeout_minutes, sign_out_button
 from src.calculations import (
     calculate_cost,
     operational_spread_metrics,
@@ -108,6 +108,89 @@ def clean_record(values: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _utc_now() -> pd.Timestamp:
+    return pd.Timestamp.now(tz="UTC")
+
+
+def _sign_out_local_session(repository: CsvRepository, message: str) -> None:
+    repository.end_session(st.session_state.get("app_session_id", ""))
+    st.session_state.pop("authenticated_user", None)
+    st.session_state.pop("app_session_id", None)
+    st.session_state.pop("app_signed_in_at", None)
+    st.session_state.pop("app_last_activity_at", None)
+    st.session_state.pop("app_active_seconds", None)
+    st.session_state["login_notice"] = message
+    if bool(getattr(st.user, "is_logged_in", False)):
+        st.logout()
+    st.rerun()
+
+
+def track_user_session(
+    repository: CsvRepository,
+    user: Any,
+    current_page: str,
+) -> str:
+    """Record an approximate active-use total for this browser session."""
+    now = _utc_now()
+    session_id = st.session_state.setdefault("app_session_id", uuid.uuid4().hex)
+    if repository.session_forced_logout(session_id):
+        _sign_out_local_session(repository, "An administrator signed you out.")
+
+    signed_in = st.session_state.setdefault("app_signed_in_at", now.isoformat())
+    previous_text = st.session_state.get("app_last_activity_at")
+    previous = pd.to_datetime(previous_text, utc=True, errors="coerce")
+    active_seconds = float(st.session_state.get("app_active_seconds", 0) or 0)
+    if pd.notna(previous):
+        elapsed = max(0.0, float((now - previous).total_seconds()))
+        if elapsed > session_timeout_minutes() * 60:
+            _sign_out_local_session(
+                repository,
+                "You were signed out after a period of inactivity.",
+            )
+        # Long gaps are idle time. Short gaps normally represent continued use.
+        if elapsed <= 300:
+            active_seconds += elapsed
+    st.session_state.app_last_activity_at = now.isoformat()
+    st.session_state.app_active_seconds = active_seconds
+    repository.touch_session(
+        {
+            "session_id": session_id,
+            "username": user.username,
+            "name": user.name,
+            "email": user.email,
+            "signed_in_at_utc": signed_in,
+            "last_activity_utc": now.isoformat(),
+            "last_heartbeat_utc": now.isoformat(),
+            "active_seconds": round(active_seconds, 1),
+            "current_page": current_page,
+            "force_logout": 0,
+            "ended_at_utc": "",
+        }
+    )
+    return session_id
+
+
+@st.fragment(run_every="30s")
+def session_heartbeat(repository: CsvRepository, session_id: str) -> None:
+    """Keep the admin view current and apply forced logouts promptly."""
+    if repository.session_forced_logout(session_id):
+        _sign_out_local_session(repository, "An administrator signed you out.")
+    now = _utc_now()
+    last_activity = pd.to_datetime(
+        st.session_state.get("app_last_activity_at"), utc=True, errors="coerce"
+    )
+    if pd.notna(last_activity) and (
+        now - last_activity
+    ).total_seconds() > session_timeout_minutes() * 60:
+        _sign_out_local_session(
+            repository,
+            "You were signed out after a period of inactivity.",
+        )
+    repository.touch_session(
+        {"session_id": session_id, "last_heartbeat_utc": now.isoformat()}
+    )
+
+
 def default_draft() -> dict[str, Any]:
     return {
         "customer_name": "",
@@ -150,7 +233,6 @@ def default_draft() -> dict[str, Any]:
         "component_template_item_code": "",
         "units_out": 1.0,
         "material_cost_source": "",
-        "manual_adjustment_per_1000": 0.0,
         "machine_hours_per_1000": 0.0,
         "machine_time_source": "No BOM machine-time profile",
         "delivery_postcode": "",
@@ -259,6 +341,9 @@ def reset_downstream() -> None:
     st.session_state.pop("quote_reference", None)
     st.session_state.pop("customer_contact", None)
     st.session_state.pop("quote_notes", None)
+    for key in list(st.session_state):
+        if key.startswith("spec_board_") or key in {"spec_fsc", "board_lookup_notice"}:
+            st.session_state.pop(key, None)
 
 
 def navigate_to(step: int) -> None:
@@ -308,7 +393,6 @@ def show_cost_breakdown(breakdown: dict[str, float]) -> None:
     )
     rows = [
         ("Calculated materials", breakdown["materials_cost_per_1000"]),
-        ("Commercial adjustment", breakdown["manual_adjustment_per_1000"]),
         ("Delivery pass-through", breakdown["transport_cost_per_1000"]),
     ]
     table = pd.DataFrame(rows, columns=["Cost element", "Cost per 1,000"])
@@ -484,10 +568,46 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
                 navigate_to(1)
 
 
-def render_specification() -> None:
+def fill_board_details(repository: CsvRepository) -> None:
+    code = str(st.session_state.get("spec_board_code", ""))
+    match = repository.find_board_by_code(
+        code,
+        manufacturing_site=str(st.session_state.draft.get("manufacturing_site", "")),
+    )
+    if match is None:
+        st.session_state.board_lookup_notice = (
+            "error",
+            f"No board details were found for {code.strip() or 'that code'}.",
+        )
+        return
+    st.session_state.spec_board_code = match["board_code"]
+    st.session_state.spec_board_gsm = float(match["board_gsm"])
+    st.session_state.spec_board_width = float(match["board_width_mm"])
+    st.session_state.spec_board_length = float(match["board_length_mm"])
+    st.session_state.spec_fsc = match["fsc"]
+    st.session_state.draft.update(match)
+    price = float(match["board_price_per_tonne"])
+    price_text = f"£{price:,.2f}/tonne" if price > 0 else "no current price"
+    st.session_state.board_lookup_notice = (
+        "success",
+        f"{match['board_item_code']}: {match['board_width_mm']:,.0f} x "
+        f"{match['board_length_mm']:,.0f} mm, {match['board_gsm']:,.0f} GSM, {price_text}.",
+    )
+
+
+def render_specification(repository: CsvRepository) -> None:
     st.subheader("Order and fulfilment")
     draft = st.session_state.draft
     existing_item = bool(str(draft.get("source_item_code", "")).strip())
+    board_widget_defaults = {
+        "spec_board_code": str(draft.get("board_code", "")),
+        "spec_board_gsm": draft_number("board_gsm"),
+        "spec_board_width": draft_number("board_width_mm"),
+        "spec_board_length": draft_number("board_length_mm"),
+        "spec_fsc": str(draft.get("fsc", "")),
+    }
+    for key, value in board_widget_defaults.items():
+        st.session_state.setdefault(key, value)
     if existing_item:
         st.markdown(
             '<div class="status-card"><strong>'
@@ -531,8 +651,8 @@ def render_specification() -> None:
         board_gsm = col3.number_input(
             "Grade / GSM *",
             min_value=0.0,
-            value=draft_number("board_gsm"),
             step=25.0,
+            key="spec_board_gsm",
         )
 
         col1, col2, col3 = st.columns(3)
@@ -574,14 +694,14 @@ def render_specification() -> None:
         board_width_mm = col1.number_input(
             "Board width / reel width (mm)",
             min_value=0.0,
-            value=draft_number("board_width_mm"),
             step=1.0,
+            key="spec_board_width",
         )
         board_length_mm = col2.number_input(
             "Board length / chop (mm)",
             min_value=0.0,
-            value=draft_number("board_length_mm"),
             step=1.0,
+            key="spec_board_length",
         )
         number_of_colours = col3.number_input(
             "Number of colours",
@@ -592,9 +712,18 @@ def render_specification() -> None:
 
         col1, col2 = st.columns(2)
         board_code = col1.text_input(
-            "Board code", value=str(draft.get("board_code", ""))
+            "Board code", key="spec_board_code"
         )
-        fsc = col2.text_input("FSC", value=str(draft.get("fsc", "")))
+        fsc = col2.text_input("FSC", key="spec_fsc")
+        if not existing_item:
+            st.button(
+                "Fill board details from code",
+                on_click=fill_board_details,
+                args=(repository,),
+            )
+            notice = st.session_state.get("board_lookup_notice")
+            if notice:
+                getattr(st, notice[0])(notice[1])
 
     st.markdown("#### Required order details")
     left, right = st.columns(2)
@@ -911,12 +1040,6 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
         material_summary = None
         st.warning("Choose both a board item and an other-component option to continue.")
 
-    manual_adjustment = st.number_input(
-        "Commercial adjustment per 1,000 (£)",
-        value=draft_number("manual_adjustment_per_1000"),
-        step=1.0,
-        help="Use a negative value for a credit or reduction.",
-    )
     st.markdown("#### Transport")
     estimated_pallets = int(draft_number("order_pallets")) or math.ceil(
         draft_number("order_quantity") / draft_number("pallet_quantity", 1)
@@ -1000,7 +1123,6 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
     if calculate and material_summary is not None:
         updated = {
             **material_summary,
-            "manual_adjustment_per_1000": manual_adjustment,
             "delivery_method": delivery_method,
             "transport_service": service,
             "transport_booking": booking,
@@ -1326,8 +1448,7 @@ def render_pricing(repository: CsvRepository) -> None:
             )
             st.caption(
                 f"Spread/hour uses materials only: £{float(breakdown['materials_cost_per_1000']):,.2f} "
-                f"per 1,000 at {pricing['spread_percent']:,.2f}%. Delivery and the commercial "
-                "adjustment are left out. Machine time: "
+                f"per 1,000 at {pricing['spread_percent']:,.2f}%. Delivery is left out. Machine time: "
                 f"{st.session_state.draft.get('machine_time_source', 'BOM operation speeds')}."
             )
             show_machine_time_calculation(repository, pricing)
@@ -1372,9 +1493,10 @@ def render_save(
     left, right = st.columns(2)
     left.text_input("Quote reference", key="quote_reference")
     right.text_input("Customer contact", key="customer_contact")
-    st.text_area("Quote notes", key="quote_notes", height=100)
+    quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
 
     record = current_record()
+    record["notes"] = quote_notes
     show_detail_cards(
         [
             ("Item", record["item_code"]),
@@ -1630,6 +1752,145 @@ def render_team_history(repository: CsvRepository) -> None:
         )
 
 
+def render_admin_activity(repository: CsvRepository, current_session_id: str) -> None:
+    st.header("User activity")
+    st.caption(
+        "Live sessions and saved-costing activity. Times are approximate and use UTC."
+    )
+    sessions = repository.load_sessions().copy()
+    history = repository.load_history().copy()
+    now = _utc_now()
+
+    if sessions.empty:
+        st.info("No sessions have been recorded since the app last started.")
+        return
+
+    for column in [
+        "signed_in_at_utc",
+        "last_activity_utc",
+        "last_heartbeat_utc",
+        "ended_at_utc",
+    ]:
+        sessions[f"_{column}"] = pd.to_datetime(
+            sessions[column], utc=True, errors="coerce"
+        )
+    heartbeat_age = (now - sessions["_last_heartbeat_utc"]).dt.total_seconds()
+    ended = sessions["ended_at_utc"].fillna("").astype(str).str.strip().ne("")
+    forced = pd.to_numeric(sessions["force_logout"], errors="coerce").fillna(0).gt(0)
+    sessions["status"] = "Inactive"
+    sessions.loc[~ended & ~forced & heartbeat_age.le(90), "status"] = "Online"
+    sessions.loc[forced & ~ended, "status"] = "Sign-out requested"
+    sessions.loc[ended, "status"] = "Signed out"
+    sessions["active_minutes"] = (
+        pd.to_numeric(sessions["active_seconds"], errors="coerce").fillna(0) / 60
+    ).round(1)
+    sessions["signed_in"] = sessions["_signed_in_at_utc"].dt.strftime(
+        "%Y-%m-%d %H:%M"
+    )
+    sessions["last_activity"] = sessions["_last_activity_utc"].dt.strftime(
+        "%Y-%m-%d %H:%M"
+    )
+
+    today = now.date()
+    signed_today = sessions["_signed_in_at_utc"].dt.date.eq(today)
+    if history.empty:
+        saved_today = 0
+    else:
+        saved_times = pd.to_datetime(history["created_at_utc"], utc=True, errors="coerce")
+        saved_today = int(saved_times.dt.date.eq(today).sum())
+    show_detail_cards(
+        [
+            ("Online now", str(int(sessions["status"].eq("Online").sum()))),
+            ("Sessions today", str(int(signed_today.sum()))),
+            ("Costings saved today", str(saved_today)),
+            ("Saved costings", str(len(history))),
+        ]
+    )
+
+    st.subheader("Sessions")
+    visible = sessions.sort_values("_last_heartbeat_utc", ascending=False)[
+        [
+            "username",
+            "name",
+            "status",
+            "current_page",
+            "signed_in",
+            "last_activity",
+            "active_minutes",
+        ]
+    ]
+    st.dataframe(
+        visible,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "username": st.column_config.TextColumn("Username"),
+            "name": st.column_config.TextColumn("Name"),
+            "status": st.column_config.TextColumn("Status"),
+            "current_page": st.column_config.TextColumn("Page"),
+            "signed_in": st.column_config.TextColumn("Signed in"),
+            "last_activity": st.column_config.TextColumn("Last activity"),
+            "active_minutes": st.column_config.NumberColumn(
+                "Active minutes", format="%.1f"
+            ),
+        },
+    )
+
+    open_sessions = sessions[
+        ~ended
+        & ~forced
+        & sessions["session_id"].astype(str).ne(str(current_session_id))
+    ].copy()
+    if not open_sessions.empty:
+        labels = {
+            str(row["session_id"]): (
+                f"@{row['username']} · {row['name']} · {row['status']} · "
+                f"{row['last_activity']}"
+            )
+            for _, row in open_sessions.iterrows()
+        }
+        selected_session = st.selectbox(
+            "Session to sign out",
+            list(labels),
+            format_func=labels.get,
+        )
+        if st.button("Force sign out", type="primary"):
+            repository.force_logout_session(selected_session)
+            st.success("Sign-out requested. It should take effect within 30 seconds.")
+            st.rerun()
+    else:
+        st.caption("There are no other open sessions to sign out.")
+
+    st.subheader("Saved work by user")
+    if history.empty:
+        st.info("No costings have been saved yet.")
+    else:
+        work = history.copy()
+        work["created_by_username"] = (
+            work["created_by_username"].fillna("").astype(str)
+        )
+        work["order_quantity"] = pd.to_numeric(
+            work["order_quantity"], errors="coerce"
+        ).fillna(0)
+        summary = (
+            work.groupby("created_by_username", as_index=False)
+            .agg(
+                saved_costings=("costing_id", "count"),
+                products=("item_code", "nunique"),
+                customers=("customer_name", "nunique"),
+                quoted_units=("order_quantity", "sum"),
+                last_saved=("created_at_utc", "max"),
+            )
+            .sort_values("last_saved", ascending=False)
+        )
+        st.dataframe(summary, hide_index=True, width="stretch")
+
+    st.caption(
+        "Active time counts short gaps between actions, not simply an open browser tab. "
+        "The live session list is stored with the app and may reset when Streamlit restarts it."
+    )
+
+
 def render_workflow(
     repository: CsvRepository,
     rate_table: HaulierRateTable,
@@ -1652,7 +1913,7 @@ def render_workflow(
     if st.session_state.step == 0:
         render_select(repository, can_create_new)
     elif st.session_state.step == 1:
-        render_specification()
+        render_specification(repository)
     elif st.session_state.step == 2:
         render_costs(repository, rate_table)
     elif st.session_state.step == 3:
@@ -1689,21 +1950,29 @@ def main() -> None:
         + ("existing and new products" if user.can_create_new else "existing products")
     )
     navigation = ["Costing workflow", "My costings"]
-    if user.can_view_history:
+    if user.can_view_history or user.is_admin:
         navigation.append("Team history")
+    if user.is_admin:
+        navigation.append("User activity")
     page = st.sidebar.radio(
         "Navigation",
         navigation,
         key="main_navigation",
     )
+    current_session_id = track_user_session(repository, user, page)
+    session_heartbeat(repository, current_session_id)
     st.sidebar.divider()
-    st.sidebar.caption("Your work here is separate from other users.")
-    sign_out_button()
+    st.sidebar.caption(
+        f"Signs out after {session_timeout_minutes()} minutes without activity."
+    )
+    sign_out_button(repository)
 
     if page == "My costings":
         render_history(repository, user.email)
     elif page == "Team history":
         render_team_history(repository)
+    elif page == "User activity":
+        render_admin_activity(repository, current_session_id)
     else:
         render_workflow(
             repository,

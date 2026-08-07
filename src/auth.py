@@ -17,6 +17,7 @@ class AuthenticatedUser:
     name: str
     can_create_new: bool = False
     can_view_history: bool = False
+    is_admin: bool = False
 
 
 def make_password_hash(password: str, iterations: int = 600_000) -> str:
@@ -86,6 +87,15 @@ def _identity_allowed(email: str, config: dict[str, Any]) -> bool:
     return email in allowed_emails or domain in allowed_domains
 
 
+def session_timeout_minutes() -> int:
+    """Return the configured inactivity limit, with a safe minimum."""
+    configured = _secret_section("app_auth").get("session_timeout_minutes", 60)
+    try:
+        return max(5, int(configured))
+    except (TypeError, ValueError):
+        return 60
+
+
 def require_user() -> AuthenticatedUser:
     """Authenticate with OIDC, a local password, or explicit demo mode."""
     config = _secret_section("app_auth")
@@ -113,6 +123,10 @@ def require_user() -> AuthenticatedUser:
             str(value).lower().strip()
             for value in config.get("history_emails", [])
         }
+        admin_emails = {
+            str(value).lower().strip()
+            for value in config.get("admin_emails", [])
+        }
         can_create_new = email.lower().strip() in new_item_emails
         can_view_history = email.lower().strip() in history_emails
         return AuthenticatedUser(
@@ -121,6 +135,7 @@ def require_user() -> AuthenticatedUser:
             name=name,
             can_create_new=can_create_new,
             can_view_history=can_view_history,
+            is_admin=email.lower().strip() in admin_emails,
         )
 
     if mode == "password":
@@ -132,12 +147,16 @@ def require_user() -> AuthenticatedUser:
                 name=stored["name"],
                 can_create_new=_secret_bool(stored.get("can_create_new")),
                 can_view_history=_secret_bool(stored.get("can_view_history")),
+                is_admin=_secret_bool(stored.get("is_admin")),
             )
 
         users = _secret_section("users")
+        login_notice = st.session_state.pop("login_notice", None)
         st.markdown("## Solidus")
         st.title("Spread Costing Tool")
         st.caption("Sign in to continue.")
+        if login_notice:
+            st.info(login_notice)
         if not users:
             st.error(
                 "No users are set up. Add a user in Streamlit Secrets."
@@ -155,12 +174,14 @@ def require_user() -> AuthenticatedUser:
             if entry and _verify_configured_password(password, entry):
                 can_create_new = _secret_bool(entry.get("can_create_new"))
                 can_view_history = _secret_bool(entry.get("can_view_history"))
+                is_admin = _secret_bool(entry.get("is_admin"))
                 st.session_state.authenticated_user = {
                     "username": str(matched_key),
                     "email": str(entry.get("email", matched_key)),
                     "name": str(entry.get("name", matched_key)),
                     "can_create_new": can_create_new,
                     "can_view_history": can_view_history,
+                    "is_admin": is_admin,
                 }
                 st.rerun()
             st.error("The username or password was not recognised.")
@@ -175,17 +196,26 @@ def require_user() -> AuthenticatedUser:
             name="Demo user",
             can_create_new=True,
             can_view_history=True,
+            is_admin=True,
         )
 
     st.error("The login mode in Secrets is not supported.")
     st.stop()
 
 
-def sign_out_button() -> None:
+def sign_out_button(repository: Any | None = None) -> None:
     config = _secret_section("app_auth")
     mode = str(config.get("mode", "password")).lower()
     if mode == "oidc" and st.sidebar.button("Sign out"):
+        if repository is not None:
+            repository.end_session(st.session_state.get("app_session_id", ""))
         st.logout()
     if mode == "password" and st.sidebar.button("Sign out"):
+        if repository is not None:
+            repository.end_session(st.session_state.get("app_session_id", ""))
         st.session_state.pop("authenticated_user", None)
+        st.session_state.pop("app_session_id", None)
+        st.session_state.pop("app_signed_in_at", None)
+        st.session_state.pop("app_last_activity_at", None)
+        st.session_state.pop("app_active_seconds", None)
         st.rerun()

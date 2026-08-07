@@ -60,6 +60,7 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
             "password": "correct-horse-battery-staple",
             "can_create_new": True,
             "can_view_history": True,
+            "is_admin": True,
         }
     }
     app.run()
@@ -81,13 +82,20 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
         "name": "Connor Denton",
         "can_create_new": True,
         "can_view_history": True,
+        "is_admin": True,
     }
     assert _widget(app.radio, "Costing route")
-    assert "Team history" in _widget(app.sidebar.radio, "Navigation").options
+    navigation = _widget(app.sidebar.radio, "Navigation")
+    assert "Team history" in navigation.options
+    assert "User activity" in navigation.options
     assert any(
         "Signed in as Connor Denton" in item.value
         for item in app.sidebar.caption
     )
+
+    navigation.set_value("User activity").run()
+    assert "User activity" in [item.value for item in app.header]
+    assert any("Online now" in item.value for item in app.markdown)
 
     _widget(app.sidebar.button, "Sign out").click().run()
     assert "authenticated_user" not in app.session_state

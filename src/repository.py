@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import math
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -14,6 +15,9 @@ from filelock import FileLock, Timeout
 
 class RepositoryBusyError(RuntimeError):
     """Raised when another user's save holds the costing-history lock."""
+
+
+BOARD_CODE_PATTERN = re.compile(r"(?:SHT\d+(?:/[A-Z])?|[234]-\d+)", re.IGNORECASE)
 
 
 SPECIFICATION_COLUMNS = [
@@ -77,7 +81,6 @@ COST_INPUT_COLUMNS = [
     "component_template_item_code",
     "units_out",
     "material_cost_source",
-    "manual_adjustment_per_1000",
     "machine_hours_per_1000",
     "machine_time_source",
 ]
@@ -90,7 +93,6 @@ NUMERIC_COST_INPUT_COLUMNS = [
     "board_cost_per_1000",
     "other_components_cost_per_1000",
     "units_out",
-    "manual_adjustment_per_1000",
     "machine_hours_per_1000",
 ]
 
@@ -128,6 +130,20 @@ HISTORY_COLUMNS = [
     *CALCULATION_COLUMNS,
 ]
 
+SESSION_COLUMNS = [
+    "session_id",
+    "username",
+    "name",
+    "email",
+    "signed_in_at_utc",
+    "last_activity_utc",
+    "last_heartbeat_utc",
+    "active_seconds",
+    "current_page",
+    "force_logout",
+    "ended_at_utc",
+]
+
 BOM_TOTAL_RENAMES = {
     "bom_materials": "imported_bom_materials_per_1000",
     "bom_print_machine": "print_machine_cost_per_1000",
@@ -152,6 +168,7 @@ class CsvRepository:
         self.haulier_path = self.data_dir / "haulier_rates.csv"
         self.material_summary_path = self.data_dir / "material_summaries.csv"
         self.history_path = self.data_dir / "saved_costings.csv"
+        self.sessions_path = self.data_dir / "active_sessions.csv"
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def load_bom_lines(self, item_code: str | None = None) -> pd.DataFrame:
@@ -184,6 +201,72 @@ class CsvRepository:
         if not self.board_prices_path.exists():
             return pd.DataFrame()
         return pd.read_csv(self.board_prices_path)
+
+    def find_board_by_code(
+        self,
+        code: str,
+        *,
+        manufacturing_site: str = "",
+    ) -> dict[str, Any] | None:
+        """Find the best known board row for an article or stock code."""
+        target = str(code or "").strip().rstrip("/").strip().upper()
+        if not target:
+            return None
+        boards = self.load_board_items().copy()
+        if boards.empty:
+            return None
+
+        def aliases(row: pd.Series) -> set[str]:
+            values: set[str] = set()
+            for field in [
+                "board_item_code",
+                "resolved_article_no",
+                "board_code_raw",
+                "legacy_code",
+            ]:
+                text = str(row.get(field, "") or "").strip().rstrip("/").strip().upper()
+                if text and text != "NAN":
+                    values.add(text)
+                    values.update(match.group(0).upper() for match in BOARD_CODE_PATTERN.finditer(text))
+            return values
+
+        boards["_aliases"] = boards.apply(aliases, axis=1)
+        matches = boards[boards["_aliases"].map(lambda values: target in values)].copy()
+        if matches.empty:
+            return None
+        site = str(manufacturing_site or "").strip().split(".")[0]
+        if site:
+            site_matches = matches[
+                matches["manufacturing_site"].fillna("").astype(str).str.split(".").str[0].eq(site)
+            ]
+            if not site_matches.empty:
+                matches = site_matches
+        matches["_priced"] = pd.to_numeric(
+            matches.get("price_per_tonne"), errors="coerce"
+        ).fillna(0).gt(0)
+        matches = matches.sort_values(
+            ["_priced", "board_item_code"], ascending=[False, True]
+        )
+        row = matches.iloc[0]
+        return {
+            "board_item_code": str(row.get("board_item_code", "") or ""),
+            "board_code": str(row.get("resolved_article_no", "") or target).rstrip("/"),
+            "board_gsm": self._positive_number(row.get("resolved_gsm"))
+            or self._positive_number(row.get("board_gsm"))
+            or 0.0,
+            "board_width_mm": self._positive_number(row.get("resolved_width_mm"))
+            or self._positive_number(row.get("board_width_mm"))
+            or 0.0,
+            "board_length_mm": self._positive_number(row.get("resolved_length_mm"))
+            or self._positive_number(row.get("board_length_mm"))
+            or 0.0,
+            "fsc": str(row.get("fsc", "") or ""),
+            "board_price_per_tonne": self._positive_number(row.get("price_per_tonne")) or 0.0,
+            "board_price_period": str(row.get("price_period", "") or ""),
+            "board_price_source": str(row.get("price_source", "") or ""),
+            "board_item_name": str(row.get("board_item_name", "") or ""),
+            "match_count": int(len(matches)),
+        }
 
     @staticmethod
     def _positive_number(value: Any) -> float | None:
@@ -674,7 +757,6 @@ class CsvRepository:
             "transport_booking": "Standard",
             "transport_rate_zone": "",
             "transport_manual_override": 0,
-            "manual_adjustment_per_1000": 0.0,
             "machine_hours_per_1000": 0.0,
             "machine_time_source": "No BOM machine-time profile",
             "spread_percent": 30.0,
@@ -708,6 +790,67 @@ class CsvRepository:
             username.eq(""), "created_by"
         ]
         return history[HISTORY_COLUMNS]
+
+    def load_sessions(self) -> pd.DataFrame:
+        """Load the small runtime session register used by the admin screen."""
+        if not self.sessions_path.exists() or self.sessions_path.stat().st_size == 0:
+            return pd.DataFrame(columns=SESSION_COLUMNS, dtype=object)
+        sessions = pd.read_csv(self.sessions_path, dtype=str, keep_default_na=False)
+        for column in SESSION_COLUMNS:
+            if column not in sessions:
+                sessions[column] = ""
+        return sessions[SESSION_COLUMNS]
+
+    def touch_session(self, values: dict[str, Any]) -> None:
+        session_id = str(values.get("session_id", "") or "").strip()
+        if not session_id:
+            return
+        lock = FileLock(str(self.sessions_path) + ".lock", timeout=10)
+        try:
+            with lock:
+                sessions = self.load_sessions()
+                matches = sessions["session_id"].fillna("").astype(str).eq(session_id)
+                if matches.any():
+                    index = sessions.index[matches][0]
+                    for key, value in values.items():
+                        if key in SESSION_COLUMNS:
+                            sessions.loc[index, key] = value
+                else:
+                    row = {column: values.get(column, "") for column in SESSION_COLUMNS}
+                    if sessions.empty:
+                        sessions = pd.DataFrame([row], columns=SESSION_COLUMNS, dtype=object)
+                    else:
+                        sessions = pd.concat(
+                            [sessions, pd.DataFrame([row])], ignore_index=True
+                        )
+                self._atomic_csv_write(sessions, self.sessions_path)
+        except Timeout as exc:
+            raise RepositoryBusyError(
+                "The session register is busy. Please try again in a moment."
+            ) from exc
+
+    def session_forced_logout(self, session_id: str) -> bool:
+        sessions = self.load_sessions()
+        matches = sessions[
+            sessions["session_id"].fillna("").astype(str).eq(str(session_id))
+        ]
+        if matches.empty:
+            return False
+        flag = pd.to_numeric(matches.iloc[-1]["force_logout"], errors="coerce")
+        return bool(float(flag)) if pd.notna(flag) else False
+
+    def force_logout_session(self, session_id: str) -> None:
+        self.touch_session({"session_id": session_id, "force_logout": 1})
+
+    def end_session(self, session_id: str) -> None:
+        if not str(session_id or "").strip():
+            return
+        self.touch_session(
+            {
+                "session_id": session_id,
+                "ended_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+        )
 
     def load_user_history(self, user_email: str) -> pd.DataFrame:
         """Return only revisions created by the signed-in user."""

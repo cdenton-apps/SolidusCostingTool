@@ -167,6 +167,20 @@ def test_supplied_item_and_bom_feeds_reconcile() -> None:
     assert item["machine_hours_per_1000"] == pytest.approx(0.375958)
 
 
+def test_board_code_lookup_returns_known_dimensions_and_price() -> None:
+    repository = CsvRepository(PROJECT_DATA)
+
+    board = repository.find_board_by_code("4-15614/", manufacturing_site="101")
+
+    assert board is not None
+    assert board["board_item_code"] == "BRD001/101/LPB/1000G/BW"
+    assert board["board_code"] == "4-15614"
+    assert board["board_width_mm"] == pytest.approx(1358)
+    assert board["board_length_mm"] == pytest.approx(878)
+    assert board["board_gsm"] == pytest.approx(1000)
+    assert board["board_price_per_tonne"] == pytest.approx(794)
+
+
 def test_full_bom_export_adds_costing_for_newer_box_items() -> None:
     repository = CsvRepository(PROJECT_DATA)
     bom = repository.load_bom_lines()
@@ -230,3 +244,37 @@ def test_new_item_materials_are_derived_without_a_typed_cost() -> None:
     assert summary["board_cost_per_1000"] == pytest.approx(473.352628)
     assert summary["other_components_cost_per_1000"] == pytest.approx(15.0376)
     assert summary["machine_hours_per_1000"] == pytest.approx(0.375958)
+
+
+def test_runtime_sessions_can_be_seen_forced_out_and_ended(tmp_path: Path) -> None:
+    repository = CsvRepository(tmp_path)
+    repository.touch_session(
+        {
+            "session_id": "session-one",
+            "username": "connor",
+            "name": "Connor",
+            "signed_in_at_utc": "2026-08-07T09:00:00+00:00",
+            "last_activity_utc": "2026-08-07T09:05:00+00:00",
+            "last_heartbeat_utc": "2026-08-07T09:05:00+00:00",
+            "active_seconds": 240,
+            "current_page": "Costing workflow",
+            "force_logout": 0,
+        }
+    )
+    repository.touch_session(
+        {
+            "session_id": "session-two",
+            "username": "ben",
+            "name": "Ben",
+            "force_logout": 0,
+        }
+    )
+
+    assert set(repository.load_sessions()["username"]) == {"connor", "ben"}
+    assert not repository.session_forced_logout("session-two")
+    repository.force_logout_session("session-two")
+    assert repository.session_forced_logout("session-two")
+
+    repository.end_session("session-one")
+    ended = repository.load_sessions().set_index("session_id").loc["session-one"]
+    assert str(ended["ended_at_utc"]).strip()
