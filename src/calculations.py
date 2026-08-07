@@ -119,30 +119,18 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
 
 
 def operational_spread_metrics(
-    materials_cost_per_1000: float,
-    spread_percent: float,
+    spread_value_per_1000: float,
     order_quantity: float,
     machine_hours_per_1000: float,
 ) -> dict[str, float]:
-    """Return material-only spread measures without changing customer pricing.
-
-    Transport and commercial adjustments deliberately do not contribute to
-    this operational indicator. The selected spread percentage is applied to
-    the material cost alone, so distance cannot inflate spread per hour.
-    """
-    if spread_percent >= 100:
-        raise ValueError("Spread percentage must be less than 100%.")
-    materials = max(0.0, float(materials_cost_per_1000))
-    material_selling_price = materials / (1 - float(spread_percent) / 100)
-    material_spread_per_1000 = material_selling_price - materials
+    """Convert a supplied spread value into quote and hourly measures."""
     order_in_thousands = max(0.0, float(order_quantity)) / 1_000
-    total_spread_value = material_spread_per_1000 * order_in_thousands
+    total_spread_value = float(spread_value_per_1000) * order_in_thousands
     total_machine_hours = max(0.0, float(machine_hours_per_1000)) * order_in_thousands
     spread_per_machine_hour = (
         total_spread_value / total_machine_hours if total_machine_hours > 0 else 0.0
     )
     return {
-        "material_spread_value_per_1000": round(material_spread_per_1000, 4),
         "total_spread_value": round(total_spread_value, 4),
         "total_machine_hours": round(total_machine_hours, 4),
         "spread_per_machine_hour": round(spread_per_machine_hour, 4),

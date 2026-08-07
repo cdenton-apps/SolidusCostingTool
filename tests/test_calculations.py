@@ -95,8 +95,7 @@ def test_spread_and_price_are_reversible() -> None:
 
 def test_spread_per_hour_uses_time_without_changing_price() -> None:
     metrics = operational_spread_metrics(
-        materials_cost_per_1000=140,
-        spread_percent=30,
+        spread_value_per_1000=60,
         order_quantity=10_000,
         machine_hours_per_1000=0.4,
     )
@@ -109,14 +108,15 @@ def test_spread_per_hour_uses_time_without_changing_price() -> None:
 def test_operational_spread_is_not_changed_by_transport() -> None:
     short_distance_customer_price = price_from_spread_percent(150, 30)
     long_distance_customer_price = price_from_spread_percent(300, 30)
-    short_distance = operational_spread_metrics(140, 30, 10_000, 0.4)
-    long_distance = operational_spread_metrics(140, 30, 10_000, 0.4)
+    material_spread = price_from_spread_percent(140, 30)["spread_value_per_1000"]
+    short_distance = operational_spread_metrics(material_spread, 10_000, 0.4)
+    long_distance = operational_spread_metrics(material_spread, 10_000, 0.4)
 
     assert short_distance_customer_price["spread_value_per_1000"] != (
         long_distance_customer_price["spread_value_per_1000"]
     )
     assert short_distance == long_distance
-    assert short_distance["material_spread_value_per_1000"] == pytest.approx(60)
+    assert material_spread == pytest.approx(60)
 
 
 def test_validation_blocks_missing_fields(valid_costing: dict) -> None:

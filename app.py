@@ -196,9 +196,13 @@ def show_detail_cards(items: list[tuple[str, Any]]) -> None:
 
 def with_operational_spread(pricing: dict[str, float]) -> dict[str, float]:
     breakdown = st.session_state.get("breakdown", {})
-    metrics = operational_spread_metrics(
-        float(breakdown.get("materials_cost_per_1000", 0) or 0),
+    materials = float(breakdown.get("materials_cost_per_1000", 0) or 0)
+    material_pricing = price_from_spread_percent(
+        materials,
         pricing["spread_percent"],
+    )
+    metrics = operational_spread_metrics(
+        material_pricing["spread_value_per_1000"],
         draft_number("order_quantity"),
         float(
             breakdown.get(
@@ -208,7 +212,13 @@ def with_operational_spread(pricing: dict[str, float]) -> dict[str, float]:
             or 0
         ),
     )
-    return {**pricing, **metrics}
+    return {
+        **pricing,
+        **metrics,
+        "material_spread_value_per_1000": material_pricing[
+            "spread_value_per_1000"
+        ],
+    }
 
 
 def reset_downstream() -> None:
@@ -1140,6 +1150,8 @@ def show_machine_time_calculation(
         else str(draft.get("component_template_item_code", ""))
     )
     if not bom_code:
+        return
+    if not hasattr(repository, "machine_time_breakdown"):
         return
     details = repository.machine_time_breakdown(bom_code)
     lines = details["lines"]
