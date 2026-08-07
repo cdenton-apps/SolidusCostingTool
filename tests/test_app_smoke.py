@@ -86,10 +86,27 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
         "machine_hours_per_1000": 0.5,
         "total_machine_hours": 5.0,
     }
+    # Reproduce the stale widget state seen after the deployed app update.
+    app.session_state["pricing_base_for_inputs"] = 100.0
+    app.session_state["pricing"] = {
+        "spread_percent": 30.0,
+        "spread_value_per_1000": 42.8571,
+        "selling_price_per_1000": 142.8571,
+        "selling_price_per_item": 0.14286,
+    }
+    app.session_state["spread_percent_input"] = -100_000.0
+    app.session_state["selling_price_input"] = 0.01
     app.run()
 
+    assert _widget(app.number_input, "Spread (%)").value == pytest.approx(30)
+    assert _widget(
+        app.number_input, "Selling price per 1,000 (£)"
+    ).value == pytest.approx(142.8571)
     assert _widget(app.metric, "Spread / machine hour")
     assert _widget(app.metric, "Material spread / 1,000")
+    machine_time = _widget(app.metric, "Machine time for quote")
+    assert "5.00 h" in machine_time.value
+    assert "5 hr 0 min" in machine_time.value
     assert any(
         item.label == "View machine hours calculation" for item in app.expander
     )

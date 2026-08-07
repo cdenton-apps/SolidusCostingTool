@@ -182,6 +182,30 @@ def format_unit_price(value: Any) -> str:
         return "—"
 
 
+def format_machine_duration(hours: Any, *, include_seconds: bool = False) -> str:
+    """Format decimal machine hours as an easy-to-read duration."""
+    try:
+        total_seconds = max(0, round(float(hours) * 3_600))
+    except (TypeError, ValueError):
+        total_seconds = 0
+    if not include_seconds:
+        total_minutes = round(total_seconds / 60)
+        whole_hours, minutes = divmod(total_minutes, 60)
+        return (
+            f"{whole_hours:d} hr {minutes:d} min"
+            if whole_hours
+            else f"{minutes:d} min"
+        )
+    whole_hours, remainder = divmod(total_seconds, 3_600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if whole_hours:
+        parts.append(f"{whole_hours:d} hr")
+    parts.append(f"{minutes:d} min")
+    parts.append(f"{seconds:d} sec")
+    return " ".join(parts)
+
+
 def show_detail_cards(items: list[tuple[str, Any]]) -> None:
     """Show product facts without Streamlit metric's one-line truncation."""
     cards = "".join(
@@ -1190,8 +1214,10 @@ def show_machine_time_calculation(
         )
         st.caption(
             f"Total: {float(details['summary']['machine_hours_per_1000']):,.6f} hours per 1,000 "
+            f"({format_machine_duration(details['summary']['machine_hours_per_1000'], include_seconds=True)}) "
             f"× {draft_number('order_quantity') / 1_000:,.3f} thousand units "
-            f"= {pricing['total_machine_hours']:,.4f} machine hours for this quote."
+            f"= {pricing['total_machine_hours']:,.4f} machine hours for this quote "
+            f"({format_machine_duration(pricing['total_machine_hours'], include_seconds=True)})."
         )
 
 
@@ -1204,12 +1230,36 @@ def render_pricing(repository: CsvRepository) -> None:
     )
 
     pricing_base = float(breakdown["pricing_base_per_1000"])
+    stored_pricing = st.session_state.get("pricing") or {}
+    try:
+        inputs_match_pricing = (
+            abs(
+                float(st.session_state.get("spread_percent_input"))
+                - float(stored_pricing.get("spread_percent"))
+            )
+            < 0.005
+            and abs(
+                float(st.session_state.get("selling_price_input"))
+                - float(stored_pricing.get("selling_price_per_1000"))
+            )
+            < 0.005
+        )
+    except (TypeError, ValueError):
+        inputs_match_pricing = False
+    pricing_is_complete = {
+        "spread_percent",
+        "selling_price_per_1000",
+        "material_spread_value_per_1000",
+        "spread_per_machine_hour",
+    }.issubset(stored_pricing)
     if (
         st.session_state.get("pricing_base_for_inputs") != pricing_base
-        or not st.session_state.get("pricing")
+        or not stored_pricing
+        or not pricing_is_complete
+        or not inputs_match_pricing
     ):
         starting_spread = float(
-            st.session_state.get("pricing", {}).get(
+            stored_pricing.get(
                 "spread_percent", draft_number("spread_percent", 30)
             )
         )
@@ -1269,8 +1319,9 @@ def render_pricing(repository: CsvRepository) -> None:
                 f"£{pricing['spread_per_machine_hour']:,.2f}",
             )
             operational[1].metric(
-                "Machine hours for quote",
-                f"{pricing['total_machine_hours']:,.2f}",
+                "Machine time for quote",
+                f"{pricing['total_machine_hours']:,.2f} h · "
+                f"{format_machine_duration(pricing['total_machine_hours'])}",
             )
             operational[2].metric(
                 "Material spread / 1,000",

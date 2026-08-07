@@ -65,6 +65,8 @@ rather than asking the user to guess a production time.
 The pricing page includes an expandable machine-hours calculation. It shows
 each operation's run hours, system quantity, effective quantity, quantity source
 and calculated hours per 1,000, followed by the total for the quoted quantity.
+The total is shown as both decimal hours and an hours/minutes duration, with
+seconds retained in the expanded audit for easier checking.
 
 ## Run it locally
 
