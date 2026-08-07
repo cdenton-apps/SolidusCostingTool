@@ -237,8 +237,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             name="ApprovalNotice",
             parent=styles["BodyText"],
             fontName="Helvetica-Bold",
-            fontSize=11,
-            leading=14,
+            fontSize=9,
+            leading=11,
             alignment=TA_CENTER,
             textColor=INK,
         )
@@ -515,11 +515,11 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         colWidths=[180 * mm],
         style=[
             ("BACKGROUND", (0, 0), (-1, -1), YELLOW),
-            ("BOX", (0, 0), (-1, -1), 1.2, INK),
-            ("LEFTPADDING", (0, 0), (-1, -1), 10),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-            ("TOPPADDING", (0, 0), (-1, -1), 8),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("BOX", (0, 0), (-1, -1), 0.7, INK),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ],
     )
