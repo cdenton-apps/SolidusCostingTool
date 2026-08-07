@@ -25,6 +25,11 @@ the other figure update. Machine and labour are not added to the price.
 7. Save a new revision and download a customer quotation, costing CSV or Sage
    stock-item import row.
 
+Downloads only become available after the current revision has been saved. If
+the quotation is changed afterwards, it must be saved as another revision
+before any updated PDF or CSV can be downloaded. This keeps the quotation
+history aligned with the paperwork issued.
+
 For an existing item, the technical specification stays collapsed by default.
 It is still available through **View or amend product specification** when a
 change is needed.

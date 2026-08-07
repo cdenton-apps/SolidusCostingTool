@@ -145,6 +145,73 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
     assert _widget(app.number_input, "Spread (%)").value == pytest.approx(50)
 
 
+def test_exports_require_an_exact_saved_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for source in PROJECT_DATA.glob("*.csv"):
+        copy2(source, tmp_path / source.name)
+    monkeypatch.setenv("COSTING_DATA_DIR", str(tmp_path))
+    app = _demo_app()
+    app.session_state["step"] = 4
+    app.session_state["draft"] = {
+        "customer_name": "Saved quote customer",
+        "item_code": "SAVE-BEFORE-PRINT",
+        "description": "Saved quote test item",
+        "material": "Solid board",
+        "board_gsm": 1000,
+        "length_mm": 500,
+        "width_mm": 400,
+        "height_mm": 100,
+        "pallet_quantity": 1000,
+        "order_quantity": 10000,
+        "order_pallets": 10,
+        "fulfilment_type": "MTO",
+        "delivery_method": "Ex works",
+        "delivery_postcode": "BD20 0AA",
+        "source_item_code": "SAVE-BEFORE-PRINT",
+    }
+    app.session_state["breakdown"] = {
+        "pricing_base_per_1000": 100.0,
+        "pricing_base_per_item": 0.1,
+        "materials_cost_per_1000": 100.0,
+        "pallet_count": 10.0,
+        "transport_total": 0.0,
+        "transport_cost_per_1000": 0.0,
+        "net_weight_kg_per_1000": 500.0,
+    }
+    app.session_state["pricing"] = {
+        "spread_percent": 30.0,
+        "spread_value_per_1000": 42.8571429,
+        "selling_price_per_1000": 142.8571429,
+        "selling_price_per_item": 0.1428571,
+        "material_spread_value_per_1000": 42.8571429,
+        "total_spread_value": 428.571429,
+        "total_machine_hours": 0.0,
+        "spread_per_machine_hour": 0.0,
+    }
+    app.run()
+
+    assert not app.download_button
+    assert any(
+        "Save this revision before downloading" in item.value
+        for item in app.warning
+    )
+
+    _widget(app.button, "Save as a new revision").click().run()
+    assert {button.label for button in app.download_button} == {
+        "Customer quote PDF",
+        "Costing CSV",
+        "Sage stock import CSV",
+    }
+    assert len(CsvRepository(tmp_path).load_history()) == 1
+
+    _widget(app.text_area, "Quote notes").set_value("Changed after saving").run()
+    assert not app.download_button
+    _widget(app.button, "Save as a new revision").click().run()
+    assert len(CsvRepository(tmp_path).load_history()) == 2
+    assert app.download_button
+
+
 def test_existing_item_specification_is_collapsed() -> None:
     app = _demo_app().run()
     _widget(app.selectbox, "Search existing products").set_value(0).run()

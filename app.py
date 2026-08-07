@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+import hashlib
+import json
 import math
 import uuid
 from datetime import datetime
@@ -20,6 +22,7 @@ from src.calculations import (
 )
 from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
 from src.repository import (
+    CALCULATION_COLUMNS,
     COST_INPUT_COLUMNS,
     CsvRepository,
     RepositoryBusyError,
@@ -333,6 +336,7 @@ def reset_downstream() -> None:
     st.session_state.pop("transport_quotes", None)
     st.session_state.pop("material_lines", None)
     st.session_state.pop("last_saved", None)
+    st.session_state.pop("saved_revision_fingerprint", None)
     st.session_state.pop("pricing_base_for_inputs", None)
     st.session_state.pop("spread_percent_input", None)
     st.session_state.pop("selling_price_input", None)
@@ -1473,6 +1477,33 @@ def current_record() -> dict[str, Any]:
     }
 
 
+SAVED_REVISION_FIELDS = [
+    *SPECIFICATION_COLUMNS,
+    *COST_INPUT_COLUMNS,
+    *CALCULATION_COLUMNS,
+    "source_item_code",
+    "quote_reference",
+    "customer_contact",
+    "notes",
+]
+
+
+def saved_revision_fingerprint(record: dict[str, Any]) -> str:
+    """Identify the exact quoteable content represented by a saved revision."""
+    normalised: dict[str, Any] = {}
+    for field in SAVED_REVISION_FIELDS:
+        value = record.get(field, "")
+        if pd.isna(value):
+            value = ""
+        elif hasattr(value, "item"):
+            value = value.item()
+        if isinstance(value, float):
+            value = round(value, 10)
+        normalised[field] = value
+    payload = json.dumps(normalised, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def render_save(
     repository: CsvRepository,
     user_username: str,
@@ -1520,34 +1551,52 @@ def render_save(
             st.warning(str(exc))
         else:
             st.session_state.last_saved = saved
+            st.session_state.saved_revision_fingerprint = (
+                saved_revision_fingerprint(saved)
+            )
             st.success(
                 f"Saved as {saved['costing_id']} — "
                 f"{saved['item_code']} revision {saved['revision']}."
             )
 
     st.markdown("#### Downloads")
+    saved = st.session_state.get("last_saved")
+    current_fingerprint = saved_revision_fingerprint(record)
+    if (
+        not saved
+        or st.session_state.get("saved_revision_fingerprint")
+        != current_fingerprint
+    ):
+        st.warning(
+            "Save this revision before downloading or printing anything. "
+            "If you change the quotation afterwards, save it again so the "
+            "downloaded version is recorded in history."
+        )
+        return
+
+    export_record = dict(saved)
     download_columns = st.columns(3 if can_create_new else 2)
     download_columns[0].download_button(
         "Customer quote PDF",
-        data=quote_pdf(record),
-        file_name=f"{record['quote_reference'] or 'draft-quote'}.pdf",
+        data=quote_pdf(export_record),
+        file_name=f"{export_record['quote_reference'] or 'draft-quote'}.pdf",
         mime="application/pdf",
         width="stretch",
     )
-    one_row = pd.DataFrame([record]).to_csv(index=False).encode("utf-8-sig")
+    one_row = pd.DataFrame([export_record]).to_csv(index=False).encode("utf-8-sig")
     costing_column = 2 if can_create_new else 1
     download_columns[costing_column].download_button(
         "Costing CSV",
         data=one_row,
-        file_name=f"{record['item_code']}-costing.csv",
+        file_name=f"{export_record['item_code']}-costing.csv",
         mime="text/csv",
         width="stretch",
     )
     if can_create_new:
         download_columns[1].download_button(
             "Sage stock import CSV",
-            data=sage_stock_import_csv(record),
-            file_name=f"{record['item_code']}-sage-import.csv",
+            data=sage_stock_import_csv(export_record),
+            file_name=f"{export_record['item_code']}-sage-import.csv",
             mime="text/csv",
             width="stretch",
         )
