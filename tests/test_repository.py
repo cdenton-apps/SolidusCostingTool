@@ -94,13 +94,56 @@ def test_user_history_is_private_and_case_insensitive(tmp_path: Path) -> None:
 def test_saved_item_appears_in_catalog(tmp_path: Path) -> None:
     repository = CsvRepository(tmp_path)
     repository.save_costing(
-        {"item_code": "NEW-001", "description": "New item"},
+        {
+            "item_code": "NEW-001",
+            "description": "New item",
+            "materials_cost_per_1000": 125.0,
+        },
         user_email="one@example.com",
         user_name="User One",
     )
     catalog = repository.load_catalog()
     assert catalog.iloc[0]["item_code"] == "NEW-001"
     assert catalog.iloc[0]["source_type"] == "Saved costing"
+
+
+def test_catalog_hides_stock_items_without_a_costing_bom() -> None:
+    repository = CsvRepository(PROJECT_DATA)
+    catalog = repository.load_catalog()
+    stock_items = catalog[catalog["source_type"] == "Stock list"]
+
+    assert len(stock_items) == 581
+    assert pd.to_numeric(stock_items["bom_available"]).gt(0).all()
+    assert "BOX001/103/YPL/B0070/01/950G" not in set(stock_items["item_code"])
+
+
+def test_machine_time_prefers_effective_quantity_per_run() -> None:
+    bom = pd.DataFrame(
+        [
+            {
+                "bom_code": "SPEED-TEST",
+                "cost_type": "Machine",
+                "is_informational_row": 0,
+                "run_hours": 1.0,
+                "system_quantity_per_run": 10.0,
+                "effective_quantity_per_run": 5.0,
+                "cost_rate": 100.0,
+                "machine_bucket": "Die Cut",
+                "cost_description": "Die cutting",
+            }
+        ]
+    )
+
+    result = CsvRepository._machine_time_from_frames("SPEED-TEST", bom)
+
+    assert result["machine_hours_per_1000"] == pytest.approx(0.2)
+    assert result["machine_time_source"] == "BOM operation speeds"
+
+    details = CsvRepository._machine_time_details_from_frames("SPEED-TEST", bom)
+    line = details["lines"].iloc[0]
+    assert line["effective_quantity_per_run"] == pytest.approx(5)
+    assert line["quantity_source"] == "Column Q — effective quantity"
+    assert line["hours_per_1000"] == pytest.approx(0.2)
 
 
 def test_supplied_item_and_bom_feeds_reconcile() -> None:

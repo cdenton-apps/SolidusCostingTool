@@ -106,6 +106,7 @@ CALCULATION_COLUMNS = [
     "spread_value_per_1000",
     "selling_price_per_1000",
     "selling_price_per_item",
+    "material_spread_value_per_1000",
     "total_machine_hours",
     "total_spread_value",
     "spread_per_machine_hour",
@@ -193,29 +194,27 @@ class CsvRepository:
         return parsed if math.isfinite(parsed) and parsed > 0 else None
 
     @classmethod
-    def _machine_time_from_frames(
+    def _machine_time_details_from_frames(
         cls,
         item_code: str,
         bom: pd.DataFrame,
     ) -> dict[str, Any]:
-        """Calculate machine hours per 1,000 from BOM operation speeds.
+        """Calculate and explain machine hours per 1,000 from BOM speeds.
 
         Direct operations provide run hours and effective output per run. Rolled
         child machine rows do not carry the child speed, so their already-scaled
         machine value is divided by the matching imported machine rate only to
         recover time. No machine value is added to the commercial pricing base.
         """
+        empty_summary = {
+            "machine_hours_per_1000": 0.0,
+            "machine_time_source": "No BOM machine-time profile",
+        }
         if bom.empty or "bom_code" not in bom or "cost_type" not in bom:
-            return {
-                "machine_hours_per_1000": 0.0,
-                "machine_time_source": "No BOM machine-time profile",
-            }
+            return {"summary": empty_summary, "lines": pd.DataFrame()}
         item_lines = bom[bom["bom_code"].astype(str) == str(item_code)].copy()
         if item_lines.empty:
-            return {
-                "machine_hours_per_1000": 0.0,
-                "machine_time_source": "No BOM machine-time profile",
-            }
+            return {"summary": empty_summary, "lines": pd.DataFrame()}
 
         informational = pd.to_numeric(
             item_lines.get("is_informational_row", 0), errors="coerce"
@@ -227,17 +226,48 @@ class CsvRepository:
         run_hours = pd.to_numeric(
             machine_lines.get("run_hours"), errors="coerce"
         )
-        effective_quantity = pd.to_numeric(
+        imported_effective_quantity = pd.to_numeric(
             machine_lines.get("effective_quantity_per_run"), errors="coerce"
-        ).fillna(
-            pd.to_numeric(
-                machine_lines.get("system_quantity_per_run"), errors="coerce"
-            )
+        )
+        system_quantity = pd.to_numeric(
+            machine_lines.get("system_quantity_per_run"), errors="coerce"
+        )
+        effective_quantity = imported_effective_quantity.where(
+            imported_effective_quantity.gt(0), system_quantity
         )
         valid_direct = run_hours.gt(0) & effective_quantity.gt(0)
-        direct_hours = float(
-            (run_hours[valid_direct] / effective_quantity[valid_direct]).sum()
-        )
+        direct_calculated_hours = run_hours[valid_direct] / effective_quantity[valid_direct]
+        direct_hours = float(direct_calculated_hours.sum())
+        detail_rows: list[dict[str, Any]] = []
+        for index in machine_lines.index[valid_direct]:
+            line = machine_lines.loc[index]
+            effective = float(effective_quantity.loc[index])
+            run = float(run_hours.loc[index])
+            used_column_q = bool(imported_effective_quantity.loc[index] > 0)
+            detail_rows.append(
+                {
+                    "line_type": "Direct operation",
+                    "operation": str(
+                        line.get("operation_description")
+                        or line.get("cost_description")
+                        or line.get("process_group")
+                        or "Machine operation"
+                    ),
+                    "machine": str(
+                        line.get("cost_code") or line.get("machine_bucket") or ""
+                    ),
+                    "run_hours": run,
+                    "system_quantity_per_run": system_quantity.loc[index],
+                    "effective_quantity_per_run": effective,
+                    "quantity_source": (
+                        "Column Q — effective quantity"
+                        if used_column_q
+                        else "System quantity fallback"
+                    ),
+                    "calculation": f"{run:.6f} ÷ {effective:.6f}",
+                    "hours_per_1000": float(direct_calculated_hours.loc[index]),
+                }
+            )
 
         all_machine_lines = bom[bom["cost_type"].astype(str).eq("Machine")].copy()
         all_machine_lines["numeric_rate"] = pd.to_numeric(
@@ -280,7 +310,21 @@ class CsvRepository:
             )
             extended = float(extended_value) if pd.notna(extended_value) else 0.0
             if rate > 0 and extended > 0:
-                rolled_hours += extended / rate
+                recovered_hours = extended / rate
+                rolled_hours += recovered_hours
+                detail_rows.append(
+                    {
+                        "line_type": "Rolled child",
+                        "operation": str(line.get("cost_description", "Machine time")),
+                        "machine": bucket or "Matched median machine rate",
+                        "run_hours": None,
+                        "system_quantity_per_run": None,
+                        "effective_quantity_per_run": None,
+                        "quantity_source": "Recovered from rolled machine value",
+                        "calculation": f"£{extended:.6f} ÷ £{rate:.6f}/hour",
+                        "hours_per_1000": recovered_hours,
+                    }
+                )
 
         total_hours = direct_hours + rolled_hours
         if total_hours <= 0:
@@ -290,9 +334,20 @@ class CsvRepository:
         else:
             source = "BOM operation speeds"
         return {
-            "machine_hours_per_1000": round(total_hours, 6),
-            "machine_time_source": source,
+            "summary": {
+                "machine_hours_per_1000": round(total_hours, 6),
+                "machine_time_source": source,
+            },
+            "lines": pd.DataFrame(detail_rows),
         }
+
+    @classmethod
+    def _machine_time_from_frames(
+        cls,
+        item_code: str,
+        bom: pd.DataFrame,
+    ) -> dict[str, Any]:
+        return cls._machine_time_details_from_frames(item_code, bom)["summary"]
 
     @classmethod
     def _board_tonnes_per_1000(
@@ -467,6 +522,10 @@ class CsvRepository:
 
     def machine_time_summary(self, item_code: str) -> dict[str, Any]:
         return self._machine_time_from_frames(item_code, self.load_bom_lines())
+
+    def machine_time_breakdown(self, item_code: str) -> dict[str, Any]:
+        """Return the auditable operation lines behind machine hours."""
+        return self._machine_time_details_from_frames(item_code, self.load_bom_lines())
 
     def _calculate_material_summary(self) -> pd.DataFrame:
         bom = self.load_bom_lines()
@@ -660,8 +719,17 @@ class CsvRepository:
         return history.loc[created_by.eq(owner)].copy()
 
     def load_catalog(self) -> pd.DataFrame:
-        """Return the feed plus the latest saved revision for each item code."""
+        """Return usable BOM-costed feed items and usable saved products."""
         feed = self.load_current_items().copy()
+        feed_bom_values = (
+            feed["bom_available"]
+            if "bom_available" in feed
+            else pd.Series(0, index=feed.index, dtype=float)
+        )
+        feed_bom_available = pd.to_numeric(
+            feed_bom_values, errors="coerce"
+        ).fillna(0)
+        feed = feed.loc[feed_bom_available.gt(0)].copy()
         feed["source_type"] = "Stock list"
 
         history = self.load_history()
@@ -678,6 +746,25 @@ class CsvRepository:
             "spread_percent",
         ]
         latest = latest[[c for c in catalog_columns if c in latest.columns]].copy()
+        latest_bom_values = (
+            latest["bom_available"]
+            if "bom_available" in latest
+            else pd.Series(0, index=latest.index, dtype=float)
+        )
+        latest_material_values = (
+            latest["materials_cost_per_1000"]
+            if "materials_cost_per_1000" in latest
+            else pd.Series(0, index=latest.index, dtype=float)
+        )
+        latest_bom_available = pd.to_numeric(
+            latest_bom_values, errors="coerce"
+        ).fillna(0)
+        latest_material_cost = pd.to_numeric(
+            latest_material_values, errors="coerce"
+        ).fillna(0)
+        latest = latest.loc[
+            latest_bom_available.gt(0) | latest_material_cost.gt(0)
+        ].copy()
         latest["source_type"] = "Saved costing"
         feed = feed[~feed["item_code"].isin(latest["item_code"])]
         return pd.concat([feed, latest], ignore_index=True, sort=False)

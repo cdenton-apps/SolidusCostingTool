@@ -72,6 +72,8 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
         "order_quantity": 10000,
         "delivery_postcode": "BD20 0AA",
         "spread_percent": 30,
+        "bom_available": 1,
+        "source_item_code": "BOX001/101/LPB/1000G/1240P",
     }
     app.session_state["breakdown"] = {
         "pricing_base_per_1000": 100.0,
@@ -87,6 +89,10 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
     app.run()
 
     assert _widget(app.metric, "Spread / machine hour")
+    assert _widget(app.metric, "Material spread / 1,000")
+    assert any(
+        item.label == "View machine hours calculation" for item in app.expander
+    )
 
     pricing_base = app.session_state["breakdown"]["pricing_base_per_1000"]
     _widget(app.number_input, "Spread (%)").set_value(40).run()
@@ -112,6 +118,15 @@ def test_existing_item_specification_is_collapsed() -> None:
     )
     assert specification.proto.expanded is False
     assert "Order and fulfilment" in [item.value for item in app.subheader]
+
+
+def test_header_clearance_and_product_details_allow_wrapping() -> None:
+    source = APP_PATH.read_text(encoding="utf-8")
+
+    assert "padding-top: 4.75rem !important" in source
+    assert "padding: 4.25rem 1rem 2rem !important" in source
+    assert 'class="detail-grid"' in source
+    assert "overflow-wrap: anywhere" in source
 
 
 def test_mtc_can_be_entered_in_pallets() -> None:

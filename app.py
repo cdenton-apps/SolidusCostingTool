@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import math
 import uuid
 from datetime import datetime
@@ -48,26 +49,38 @@ st.markdown(
         --solidus-grey: #d4dedd;
         --solidus-ink: #000000;
     }
-    .block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1180px; }
+    .block-container { padding-top: 4.75rem !important; padding-bottom: 3rem; max-width: 1180px; }
     h1, h2, h3 { color: var(--solidus-ink); letter-spacing: -0.025em; }
     [data-testid="stSidebar"] { border-right: 1px solid var(--solidus-grey); }
     [data-testid="stVerticalBlockBorderWrapper"] { border-color: var(--solidus-grey); border-radius: 16px; }
     div[data-testid="stMetric"] { background: #ffffff; border: 1px solid var(--solidus-grey);
         border-top: 4px solid var(--solidus-yellow); border-radius: 14px; padding: 12px 16px;
         box-shadow: 0 3px 12px rgba(0,0,0,.035); }
+    div[data-testid="stMetricLabel"] p, div[data-testid="stMetricValue"],
+    div[data-testid="stMetricValue"] > div { white-space: normal !important;
+        overflow: visible !important; text-overflow: clip !important; overflow-wrap: anywhere; }
     div[data-testid="stForm"] { border-color: var(--solidus-grey); border-radius: 14px; }
     .status-card { padding: 1rem 1.1rem; border-radius: 12px; background: var(--solidus-mist);
         border-left: 5px solid var(--solidus-yellow); margin: .5rem 0 1rem; }
     .small-note { color: #4a5050; font-size: .9rem; }
     .brand-banner { display: flex; align-items: center; justify-content: space-between;
-        gap: 1rem; padding: 1.15rem 1.25rem; margin: .4rem 0 .8rem; background: linear-gradient(105deg, #fbfcfb 0%, var(--solidus-mist) 70%);
+        flex-wrap: wrap; gap: 1rem; padding: 1.15rem 1.25rem; margin: 0 0 .8rem; background: linear-gradient(105deg, #fbfcfb 0%, var(--solidus-mist) 70%);
         border-radius: 16px; border: 2px solid #bcc8c7; border-right: 12px solid var(--solidus-yellow);
         box-sizing: border-box; overflow: visible;
         box-shadow: 0 5px 18px rgba(0,0,0,.04); }
     .brand-name { font-size: 2.2rem; line-height: 1.2; font-weight: 800; letter-spacing: -.06em; padding-top: .1rem; }
     .brand-tagline { font-size: .9rem; font-weight: 700; margin-top: .35rem; }
     .brand-tool { font-size: 1rem; font-weight: 700; background: var(--solidus-yellow);
-        padding: .55rem .8rem; border-radius: 999px; white-space: nowrap; }
+        padding: .55rem .8rem; border-radius: 999px; white-space: normal; text-align: center; }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+        gap: .75rem; margin: .75rem 0; }
+    .detail-card { min-width: 0; background: #ffffff; border: 1px solid var(--solidus-grey);
+        border-top: 4px solid var(--solidus-yellow); border-radius: 14px; padding: 12px 16px;
+        box-shadow: 0 3px 12px rgba(0,0,0,.035); }
+    .detail-label { color: #4a5050; font-size: .86rem; line-height: 1.25;
+        margin-bottom: .45rem; overflow-wrap: anywhere; }
+    .detail-value { color: var(--solidus-ink); font-size: 1.45rem; line-height: 1.18;
+        overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
     .access-pill { display: inline-block; font-size: .78rem; font-weight: 700;
         padding: .28rem .62rem; border-radius: 999px; background: var(--solidus-mist);
         border: 1px solid var(--solidus-grey); margin-bottom: .5rem; }
@@ -77,7 +90,11 @@ st.markdown(
     .stButton > button, .stDownloadButton > button { border-radius: 10px; }
     .stButton > button[kind="primary"]:hover { background: var(--solidus-gold); color: var(--solidus-ink); }
     div[data-testid="stProgressBar"] > div > div { background-color: var(--solidus-yellow); }
-    @media (max-width: 700px) { .block-container { padding: 1rem; } }
+    @media (max-width: 700px) {
+        .block-container { padding: 4.25rem 1rem 2rem !important; }
+        .brand-name { font-size: 1.9rem; }
+        .detail-grid { grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -165,12 +182,26 @@ def format_unit_price(value: Any) -> str:
         return "—"
 
 
+def show_detail_cards(items: list[tuple[str, Any]]) -> None:
+    """Show product facts without Streamlit metric's one-line truncation."""
+    cards = "".join(
+        '<div class="detail-card">'
+        f'<div class="detail-label">{html.escape(str(label))}</div>'
+        f'<div class="detail-value">{html.escape(str(value))}</div>'
+        "</div>"
+        for label, value in items
+    )
+    st.markdown(f'<div class="detail-grid">{cards}</div>', unsafe_allow_html=True)
+
+
 def with_operational_spread(pricing: dict[str, float]) -> dict[str, float]:
+    breakdown = st.session_state.get("breakdown", {})
     metrics = operational_spread_metrics(
-        pricing["spread_value_per_1000"],
+        float(breakdown.get("materials_cost_per_1000", 0) or 0),
+        pricing["spread_percent"],
         draft_number("order_quantity"),
         float(
-            st.session_state.get("breakdown", {}).get(
+            breakdown.get(
                 "machine_hours_per_1000",
                 draft_number("machine_hours_per_1000"),
             )
@@ -314,46 +345,36 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
         with st.container(border=True):
             st.markdown(f"### {selected.get('item_code', '')}")
             st.write(str(selected.get("description", "")))
-            summary = st.columns(4)
-            summary[0].metric(
-                "GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"
-            )
-            summary[1].metric(
-                "Pallet quantity",
-                f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
-            )
-            summary[2].metric(
-                "Material / 1,000",
-                f"£{selected_material_total:,.2f}"
-                if float(selected.get("bom_available", 0) or 0)
-                else "No costing BOM",
-            )
-            summary[3].metric(
-                "Size",
-                f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
-                f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
-                f"{float(selected.get('height_mm', 0) or 0):,.0f} mm",
+            show_detail_cards(
+                [
+                    ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
+                    (
+                        "Pallet quantity",
+                        f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
+                    ),
+                    ("Material / 1,000", f"£{selected_material_total:,.2f}"),
+                    (
+                        "Size",
+                        f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
+                        f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
+                        f"{float(selected.get('height_mm', 0) or 0):,.0f} mm",
+                    ),
+                ]
             )
 
         with st.expander("Product and material details"):
-            columns = st.columns(5)
-            columns[0].metric(
-                "Product group", str(selected.get("product_group", "—"))
+            show_detail_cards(
+                [
+                    ("Product group", selected.get("product_group", "—")),
+                    ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
+                    (
+                        "Pallet quantity",
+                        f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
+                    ),
+                    ("Calculated material / 1,000", f"£{selected_material_total:,.2f}"),
+                    ("From", selected.get("source_type", "Stock list")),
+                ]
             )
-            columns[1].metric(
-                "GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"
-            )
-            columns[2].metric(
-                "Pallet quantity",
-                f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
-            )
-            columns[3].metric(
-                "Calculated material / 1,000",
-                f"£{selected_material_total:,.2f}"
-                if float(selected.get("bom_available", 0) or 0)
-                else "No costing BOM",
-            )
-            columns[4].metric("From", str(selected.get("source_type", "Stock list")))
             st.caption(
                 f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
                 f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
@@ -1108,7 +1129,61 @@ def sync_spread_from_selling_price() -> None:
         st.session_state.pricing_error = str(exc)
 
 
-def render_pricing() -> None:
+def show_machine_time_calculation(
+    repository: CsvRepository,
+    pricing: dict[str, float],
+) -> None:
+    draft = st.session_state.draft
+    bom_code = (
+        str(draft.get("source_item_code") or draft.get("item_code", ""))
+        if float(draft.get("bom_available", 0) or 0)
+        else str(draft.get("component_template_item_code", ""))
+    )
+    if not bom_code:
+        return
+    details = repository.machine_time_breakdown(bom_code)
+    lines = details["lines"]
+    if lines.empty:
+        return
+
+    with st.expander("View machine hours calculation"):
+        st.caption(
+            f"Machine-time BOM: {bom_code}. For direct operations, hours per 1,000 "
+            "equals run hours divided by effective quantity per run. Column Q is used "
+            "when it is positive; system quantity is the fallback."
+        )
+        visible = lines.rename(
+            columns={
+                "line_type": "Line type",
+                "operation": "Operation",
+                "machine": "Machine / group",
+                "run_hours": "Run hours",
+                "system_quantity_per_run": "System quantity / run",
+                "effective_quantity_per_run": "Effective quantity / run",
+                "quantity_source": "Quantity used",
+                "calculation": "Calculation",
+                "hours_per_1000": "Hours / 1,000",
+            }
+        )
+        st.dataframe(
+            visible,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Run hours": st.column_config.NumberColumn(format="%.6f"),
+                "System quantity / run": st.column_config.NumberColumn(format="%.6f"),
+                "Effective quantity / run": st.column_config.NumberColumn(format="%.6f"),
+                "Hours / 1,000": st.column_config.NumberColumn(format="%.6f"),
+            },
+        )
+        st.caption(
+            f"Total: {float(details['summary']['machine_hours_per_1000']):,.6f} hours per 1,000 "
+            f"× {draft_number('order_quantity') / 1_000:,.3f} thousand units "
+            f"= {pricing['total_machine_hours']:,.4f} machine hours for this quote."
+        )
+
+
+def render_pricing(repository: CsvRepository) -> None:
     st.subheader("Set spread or selling price")
     breakdown = st.session_state.breakdown
     show_cost_breakdown(breakdown)
@@ -1174,9 +1249,9 @@ def render_pricing() -> None:
         columns[3].metric(
             "Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}"
         )
-        st.markdown("#### Operational spread")
+        st.markdown("#### Material-only operational spread")
         if pricing.get("total_machine_hours", 0) > 0:
-            operational = st.columns(3)
+            operational = st.columns(4)
             operational[0].metric(
                 "Spread / machine hour",
                 f"£{pricing['spread_per_machine_hour']:,.2f}",
@@ -1186,14 +1261,22 @@ def render_pricing() -> None:
                 f"{pricing['total_machine_hours']:,.2f}",
             )
             operational[2].metric(
-                "Total spread for quote",
+                "Material spread / 1,000",
+                f"£{pricing['material_spread_value_per_1000']:,.2f}",
+            )
+            operational[3].metric(
+                "Material spread for quote",
                 f"£{pricing['total_spread_value']:,.2f}",
             )
             st.caption(
-                "Machine time source: "
+                f"The selected {pricing['spread_percent']:,.2f}% spread is applied to "
+                f"materials of £{float(breakdown['materials_cost_per_1000']):,.2f} per 1,000 "
+                "for this operational measure. Transport and the commercial adjustment are "
+                "excluded; customer pricing still uses the full pricing base. Machine time source: "
                 f"{st.session_state.draft.get('machine_time_source', 'BOM operation speeds')}. "
                 "Machine and labour remain excluded from the pricing base."
             )
+            show_machine_time_calculation(repository, pricing)
         else:
             st.info(
                 "Spread per machine hour is unavailable because this costing has no BOM machine-time profile."
@@ -1519,7 +1602,7 @@ def render_workflow(
     elif st.session_state.step == 2:
         render_costs(repository, rate_table)
     elif st.session_state.step == 3:
-        render_pricing()
+        render_pricing(repository)
     else:
         render_save(repository, user_username, user_email, user_name, can_create_new)
 

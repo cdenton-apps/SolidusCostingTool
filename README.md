@@ -9,7 +9,8 @@ the other figure update. Machine and labour are not added to the price.
 
 ## What a user does
 
-1. Choose an existing item or start a new one.
+1. Choose an existing BOM-costed item or, if your login allows it, start a new
+   one. Products without a costing BOM are left out of the picker for now.
 2. Enter the customer, delivery postcode and order quantity. Quantity can be
    entered as units or pallets.
 3. Choose the fulfilment type:
@@ -51,13 +52,19 @@ percentage of selling price:
 
 `selling price = pricing base ÷ (1 − spread %)`
 
-The operational spread indicator is separate from pricing:
+The operational spread indicator is separate from customer pricing. It applies
+the selected spread percentage to material cost only, so transport distance and
+commercial adjustments cannot inflate the operational result:
 
-`spread per machine hour = total cash spread ÷ quoted BOM machine hours`
+`spread per machine hour = material-only spread ÷ quoted BOM machine hours`
 
 It includes the available top-level operation speeds and rolled-child machine
 time. If a new item has no comparable BOM, the indicator remains unavailable
 rather than asking the user to guess a production time.
+
+The pricing page includes an expandable machine-hours calculation. It shows
+each operation's run hours, system quantity, effective quantity, quantity source
+and calculated hours per 1,000, followed by the total for the quoted quantity.
 
 ## Run it locally
 
@@ -148,12 +155,16 @@ python scripts/import_workbooks.py \
 The stock CSV is the same 72-column layout used by the Sage stock export and
 import. If `--stock-csv` is left out, the script uses the `Stock Item Info`
 sheet in the costing workbook instead. Items without a supplied costing BOM
-stay searchable, but the app will not let a user cost them as if material were
-zero.
+remain in the source feed but are hidden from the app until a usable costing is
+available.
 
 The full BOM export currently gives the app costings for 581 of the 1,305 BOX
 stock items. If `--bom-workbook` is left out, the script uses the `BOM Info`
 sheet in the costing workbook.
+
+Machine time uses `EffectiveQuantityPerRun` (column Q in the supplied BOM
+export) whenever it is present and positive. `SystemQuantityPerRun` is only the
+fallback when the effective quantity is blank.
 
 Set `COSTING_DATA_DIR` if live data and saved costings should sit outside the Git
 checkout or on a persistent mounted folder.
