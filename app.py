@@ -2277,18 +2277,35 @@ def render_user_management(
         },
     )
 
+    new_user_keys = (
+        "new_user_username",
+        "new_user_name",
+        "new_user_email",
+        "new_user_role",
+        "new_user_can_view_history",
+        "new_user_password",
+    )
+    if st.session_state.pop("clear_new_database_user_form", False):
+        for key in new_user_keys:
+            st.session_state.pop(key, None)
+
     with st.expander("Add a user"):
-        with st.form("new_database_user", clear_on_submit=True):
-            username = st.text_input("Username *")
-            name = st.text_input("Name *")
-            email = st.text_input("Email *")
+        with st.form("new_database_user"):
+            username = st.text_input("Username *", key="new_user_username")
+            name = st.text_input("Name *", key="new_user_name")
+            email = st.text_input("Email *", key="new_user_email")
             role = st.selectbox(
                 "Access level",
                 list(role_names),
                 format_func=role_names.get,
+                key="new_user_role",
             )
-            can_view_history = st.checkbox("Can view team history")
-            password = st.text_input("Temporary password *", type="password")
+            can_view_history = st.checkbox(
+                "Can view team history", key="new_user_can_view_history"
+            )
+            password = st.text_input(
+                "Temporary password *", type="password", key="new_user_password"
+            )
             submitted = st.form_submit_button("Create user", type="primary")
         if submitted:
             if len(password) < 10:
@@ -2310,6 +2327,7 @@ def render_user_management(
                     st.error(str(exc))
                 else:
                     st.success(f"Created @{username}. They must change the password at login.")
+                    st.session_state.clear_new_database_user_form = True
                     st.rerun()
 
     st.markdown("#### Change a user")
