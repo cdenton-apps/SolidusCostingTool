@@ -14,6 +14,8 @@ import streamlit as st
 
 from src.auth import (
     authenticate_admin,
+    configured_users_for_import,
+    make_password_hash,
     require_user,
     session_timeout_minutes,
     sign_out_button,
@@ -1799,6 +1801,7 @@ def render_pricing(
                     approving_admin = authenticate_admin(
                         admin_username,
                         admin_password,
+                        repository,
                     )
                     if not override_reason.strip():
                         st.error("Enter a reason for the override.")
@@ -2204,13 +2207,187 @@ def render_team_history(repository: CsvRepository, is_admin: bool) -> None:
         )
 
 
-def render_admin_activity(repository: CsvRepository, current_session_id: str) -> None:
+def render_user_management(
+    repository: CsvRepository,
+    current_username: str,
+) -> None:
+    st.subheader("Users and access")
+    st.caption(
+        "Users are held in Neon once they have been imported. Passwords are stored "
+        "as one-way hashes."
+    )
+    if not repository.uses_database:
+        st.warning("Connect Neon before managing users here.")
+        return
+
+    secret_users = configured_users_for_import()
+    if secret_users:
+        if st.button("Import missing users from Streamlit Secrets"):
+            try:
+                imported, available = repository.import_app_users(
+                    secret_users,
+                    actor_username=current_username,
+                )
+            except (RepositoryBusyError, ValueError) as exc:
+                st.error(str(exc))
+            else:
+                st.success(
+                    f"Imported {imported} of {available} configured user(s). "
+                    "Existing Neon users were not changed."
+                )
+                st.rerun()
+
+    users = repository.list_app_users()
+    if users.empty:
+        st.info(
+            "There are no Neon users yet. Import the existing Secrets users first "
+            "so the current administrator account is retained."
+        )
+        return
+
+    role_names = {
+        "external": "External — existing products and own history",
+        "creator": "Creator — existing and new products",
+        "admin": "Administrator — full access",
+    }
+    display = users.copy()
+    display["role"] = display["role"].map(role_names).fillna(display["role"])
+    st.dataframe(
+        display[
+            [
+                "username", "name", "email", "role", "can_view_history",
+                "is_active", "must_change_password", "last_login_at_utc",
+            ]
+        ],
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "username": st.column_config.TextColumn("Username"),
+            "name": st.column_config.TextColumn("Name"),
+            "email": st.column_config.TextColumn("Email"),
+            "role": st.column_config.TextColumn("Access"),
+            "can_view_history": st.column_config.CheckboxColumn("Team history"),
+            "is_active": st.column_config.CheckboxColumn("Active"),
+            "must_change_password": st.column_config.CheckboxColumn(
+                "Password change due"
+            ),
+            "last_login_at_utc": st.column_config.DatetimeColumn(
+                "Last login", format="DD/MM/YYYY HH:mm"
+            ),
+        },
+    )
+
+    with st.expander("Add a user"):
+        with st.form("new_database_user", clear_on_submit=True):
+            username = st.text_input("Username *")
+            name = st.text_input("Name *")
+            email = st.text_input("Email *")
+            role = st.selectbox(
+                "Access level",
+                list(role_names),
+                format_func=role_names.get,
+            )
+            can_view_history = st.checkbox("Can view team history")
+            password = st.text_input("Temporary password *", type="password")
+            submitted = st.form_submit_button("Create user", type="primary")
+        if submitted:
+            if len(password) < 10:
+                st.error("Use a temporary password of at least 10 characters.")
+            else:
+                try:
+                    repository.save_app_user(
+                        username=username,
+                        email=email,
+                        name=name,
+                        password_hash=make_password_hash(password),
+                        role=role,
+                        can_view_history=can_view_history,
+                        is_active=True,
+                        must_change_password=True,
+                        actor_username=current_username,
+                    )
+                except (RepositoryBusyError, ValueError) as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(f"Created @{username}. They must change the password at login.")
+                    st.rerun()
+
+    st.markdown("#### Change a user")
+    usernames = users["username"].astype(str).tolist()
+    selected = st.selectbox("User", usernames, key="managed_username")
+    selected_row = users.loc[users["username"].astype(str).eq(selected)].iloc[0]
+    selected_role = str(selected_row.get("role", "external"))
+    role_index = list(role_names).index(selected_role) if selected_role in role_names else 0
+    with st.form("edit_database_user"):
+        edited_name = st.text_input("Name", value=str(selected_row.get("name", "")))
+        edited_email = st.text_input("Email", value=str(selected_row.get("email", "")))
+        edited_role = st.selectbox(
+            "Access level",
+            list(role_names),
+            index=role_index,
+            format_func=role_names.get,
+            key="edited_access_level",
+        )
+        edited_history = st.checkbox(
+            "Can view team history",
+            value=bool(selected_row.get("can_view_history", False)),
+            key="edited_team_history",
+        )
+        edited_active = st.checkbox(
+            "Account active",
+            value=bool(selected_row.get("is_active", True)),
+        )
+        replacement_password = st.text_input(
+            "New temporary password (leave blank to keep the current one)",
+            type="password",
+        )
+        update_submitted = st.form_submit_button("Save user changes")
+    if update_submitted:
+        if selected.casefold() == current_username.casefold() and not edited_active:
+            st.error("You cannot disable the account you are currently using.")
+        elif replacement_password and len(replacement_password) < 10:
+            st.error("Use a temporary password of at least 10 characters.")
+        else:
+            try:
+                repository.save_app_user(
+                    username=selected,
+                    email=edited_email,
+                    name=edited_name,
+                    password_hash=(
+                        make_password_hash(replacement_password)
+                        if replacement_password
+                        else None
+                    ),
+                    role=edited_role,
+                    can_view_history=edited_history,
+                    is_active=edited_active,
+                    must_change_password=bool(replacement_password),
+                    actor_username=current_username,
+                )
+            except (RepositoryBusyError, ValueError) as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"Updated @{selected}.")
+                st.rerun()
+
+    audit = repository.load_app_audit_log()
+    if not audit.empty:
+        with st.expander("Recent user changes"):
+            st.dataframe(audit, hide_index=True, width="stretch")
+
+
+def render_admin_activity(
+    repository: CsvRepository,
+    current_session_id: str,
+    current_username: str,
+) -> None:
     st.header("User activity")
     st.caption(
         "Live sessions and saved-costing activity. Times are approximate and use UTC."
     )
     if repository.uses_database:
         st.success("Saved costings and session activity are using Neon.")
+        render_user_management(repository, current_username)
         with st.expander("Import earlier CSV costing history"):
             st.caption(
                 "This safely copies any revisions still present in saved_costings.csv. "
@@ -2361,8 +2538,40 @@ def render_admin_activity(repository: CsvRepository, current_session_id: str) ->
 
     st.caption(
         "Active time counts short gaps between actions, not simply an open browser tab. "
-        "The live session list is stored with the app and may reset when Streamlit restarts it."
+        "With Neon connected, this activity is retained when Streamlit restarts."
     )
+
+
+def render_required_password_change(
+    repository: CsvRepository,
+    user: Any,
+) -> None:
+    st.markdown("## Solidus")
+    st.title("Choose a new password")
+    st.write("Your administrator gave you a temporary password. Replace it before continuing.")
+    with st.form("required_password_change"):
+        password = st.text_input("New password", type="password")
+        confirmation = st.text_input("Confirm new password", type="password")
+        submitted = st.form_submit_button("Save password", type="primary")
+    if submitted:
+        if len(password) < 10:
+            st.error("Use at least 10 characters.")
+        elif password != confirmation:
+            st.error("The two passwords do not match.")
+        else:
+            try:
+                repository.change_app_user_password(
+                    user.username,
+                    make_password_hash(password),
+                    actor_username=user.username,
+                )
+            except RepositoryBusyError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state.authenticated_user["must_change_password"] = False
+                st.success("Password changed.")
+                st.rerun()
+    st.stop()
 
 
 def render_workflow(
@@ -2411,11 +2620,13 @@ def render_workflow(
 
 
 def main() -> None:
-    user = require_user()
     repository = CsvRepository(
         data_directory(PROJECT_ROOT),
         database_url=configured_database_url(),
     )
+    user = require_user(repository)
+    if user.must_change_password:
+        render_required_password_change(repository, user)
     rate_table = HaulierRateTable(repository.haulier_path)
     st.session_state.setdefault("step", 0)
 
@@ -2471,7 +2682,11 @@ def main() -> None:
         elif page == "Team history":
             render_team_history(repository, user.is_admin)
         elif page == "User activity":
-            render_admin_activity(repository, current_session_id)
+            render_admin_activity(
+                repository,
+                current_session_id,
+                user.username,
+            )
         else:
             render_workflow(
                 repository,

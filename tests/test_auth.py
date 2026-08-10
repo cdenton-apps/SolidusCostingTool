@@ -7,6 +7,7 @@ from streamlit.testing.v1 import AppTest
 from src.auth import (
     _verify_configured_password,
     authenticate_admin,
+    configured_users_for_import,
     make_password_hash,
     verify_password,
 )
@@ -73,6 +74,78 @@ def test_inline_admin_check_requires_valid_admin_credentials(monkeypatch) -> Non
     assert authenticate_admin("standard", "user-password") is None
 
 
+def test_secrets_users_are_prepared_for_safe_database_import(monkeypatch) -> None:
+    sections = {
+        "users": {
+            "creator": {
+                "name": "Product Creator",
+                "email": "creator@example.com",
+                "password": "temporary-password",
+                "can_create_new": True,
+            }
+        }
+    }
+    monkeypatch.setattr(
+        auth_module, "_secret_section", lambda name: sections.get(name, {})
+    )
+
+    imported = configured_users_for_import()
+
+    assert len(imported) == 1
+    assert imported[0]["role"] == "creator"
+    assert imported[0]["must_change_password"] is True
+    assert "temporary-password" not in imported[0]["password_hash"]
+    assert verify_password("temporary-password", imported[0]["password_hash"])
+
+
+def test_malformed_configured_hash_is_not_imported(monkeypatch) -> None:
+    sections = {
+        "users": {
+            "broken": {
+                "name": "Broken Hash",
+                "email": "broken@example.com",
+                "password_hash": "password1",
+            }
+        }
+    }
+    monkeypatch.setattr(
+        auth_module, "_secret_section", lambda name: sections.get(name, {})
+    )
+
+    assert configured_users_for_import() == []
+
+
+def test_database_admin_credentials_take_precedence() -> None:
+    password_hash = make_password_hash("database-admin-password")
+
+    class Repository:
+        def has_app_users(self):
+            return True
+
+        def get_app_user(self, username):
+            if username.casefold() != "manager":
+                return None
+            return {
+                "username": "manager",
+                "name": "Commercial Manager",
+                "email": "manager@example.com",
+                "password_hash": password_hash,
+                "role": "admin",
+                "can_view_history": True,
+                "is_active": True,
+                "must_change_password": False,
+                "session_version": 1,
+            }
+
+    approved = authenticate_admin(
+        "manager", "database-admin-password", Repository()
+    )
+
+    assert approved is not None
+    assert approved.is_admin
+    assert authenticate_admin("manager", "wrong", Repository()) is None
+
+
 def test_app_is_locked_when_no_users_are_configured() -> None:
     app = AppTest.from_file(APP_PATH, default_timeout=10).run()
 
@@ -115,6 +188,9 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
         "can_create_new": True,
         "can_view_history": True,
         "is_admin": True,
+        "role": "admin",
+        "must_change_password": False,
+        "session_version": 1,
     }
     assert _widget(app.radio, "Costing route")
     navigation = _widget(app.sidebar.radio, "Navigation")

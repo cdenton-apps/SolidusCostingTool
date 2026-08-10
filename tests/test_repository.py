@@ -142,6 +142,33 @@ def test_neon_history_reconstructs_saved_record(
     assert list(history["created_by_username"]) == ["connor"]
 
 
+def test_neon_user_creation_writes_user_and_audit_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(repository, "_connect", lambda: _FakeConnection(cursor))
+
+    repository.save_app_user(
+        username="newuser",
+        email="newuser@example.com",
+        name="New User",
+        password_hash="pbkdf2_sha256$600000$salt$digest",
+        role="creator",
+        can_view_history=False,
+        is_active=True,
+        must_change_password=True,
+        actor_username="admin",
+    )
+
+    sql = "\n".join(statement for statement, _ in cursor.executed)
+    assert "INSERT INTO public.app_users" in sql
+    assert "INSERT INTO public.app_audit_log" in sql
+
+
 def test_simultaneous_users_receive_distinct_revisions(tmp_path: Path) -> None:
     repository = CsvRepository(tmp_path)
 

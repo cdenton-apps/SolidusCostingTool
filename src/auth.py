@@ -18,6 +18,9 @@ class AuthenticatedUser:
     can_create_new: bool = False
     can_view_history: bool = False
     is_admin: bool = False
+    role: str = "external"
+    must_change_password: bool = False
+    session_version: int = 1
 
 
 def make_password_hash(password: str, iterations: int = 600_000) -> str:
@@ -77,6 +80,66 @@ def _secret_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _role_permissions(role: str) -> tuple[bool, bool]:
+    role = str(role or "external").strip().lower()
+    return role in {"creator", "admin"}, role == "admin"
+
+
+def _authenticated_user(username: str, entry: dict[str, Any]) -> AuthenticatedUser:
+    role = str(entry.get("role", "")).strip().lower()
+    if not role:
+        role = (
+            "admin"
+            if _secret_bool(entry.get("is_admin"))
+            else "creator"
+            if _secret_bool(entry.get("can_create_new"))
+            else "external"
+        )
+    role_can_create, role_is_admin = _role_permissions(role)
+    return AuthenticatedUser(
+        username=str(username),
+        email=str(entry.get("email", username)),
+        name=str(entry.get("name", username)),
+        can_create_new=role_can_create or _secret_bool(entry.get("can_create_new")),
+        can_view_history=(
+            role_is_admin or _secret_bool(entry.get("can_view_history"))
+        ),
+        is_admin=role_is_admin or _secret_bool(entry.get("is_admin")),
+        role=role,
+        must_change_password=_secret_bool(entry.get("must_change_password")),
+        session_version=int(entry.get("session_version", 1) or 1),
+    )
+
+
+def configured_users_for_import() -> list[dict[str, Any]]:
+    """Return Secrets users with passwords converted to one-way hashes."""
+    configured: list[dict[str, Any]] = []
+    for username, raw_entry in _secret_section("users").items():
+        entry = dict(raw_entry)
+        encoded = str(entry.get("password_hash", "")).strip()
+        valid_encoded = encoded.startswith("pbkdf2_sha256$")
+        imported_from_plain_password = False
+        if not valid_encoded:
+            plain = str(entry.get("password", ""))
+            if not plain:
+                continue
+            encoded = make_password_hash(plain)
+            imported_from_plain_password = True
+        user = _authenticated_user(str(username), entry)
+        configured.append(
+            {
+                "username": user.username,
+                "email": user.email,
+                "name": user.name,
+                "password_hash": encoded,
+                "role": user.role,
+                "can_view_history": user.can_view_history,
+                "must_change_password": imported_from_plain_password,
+            }
+        )
+    return configured
+
+
 def _identity_allowed(email: str, config: dict[str, Any]) -> bool:
     email = email.lower().strip()
     allowed_emails = {str(v).lower() for v in config.get("allowed_emails", [])}
@@ -96,11 +159,26 @@ def session_timeout_minutes() -> int:
         return 60
 
 
-def authenticate_admin(username: str, password: str) -> AuthenticatedUser | None:
+def authenticate_admin(
+    username: str,
+    password: str,
+    repository: Any | None = None,
+) -> AuthenticatedUser | None:
     """Check an administrator's password without changing the signed-in user."""
     config = _secret_section("app_auth")
     if str(config.get("mode", "password")).lower() != "password":
         return None
+    if repository is not None and repository.has_app_users():
+        entry = repository.get_app_user(username)
+        if (
+            not entry
+            or not bool(entry.get("is_active"))
+            or str(entry.get("role", "")).lower() != "admin"
+            or not verify_password(password, str(entry.get("password_hash", "")))
+        ):
+            return None
+        return _authenticated_user(str(entry["username"]), dict(entry))
+
     users = _secret_section("users")
     matched_key = next(
         (
@@ -117,17 +195,10 @@ def authenticate_admin(username: str, password: str) -> AuthenticatedUser | None
         or not _verify_configured_password(password, entry)
     ):
         return None
-    return AuthenticatedUser(
-        username=str(matched_key),
-        email=str(entry.get("email", matched_key)),
-        name=str(entry.get("name", matched_key)),
-        can_create_new=_secret_bool(entry.get("can_create_new")),
-        can_view_history=_secret_bool(entry.get("can_view_history")),
-        is_admin=True,
-    )
+    return _authenticated_user(str(matched_key), entry)
 
 
-def require_user() -> AuthenticatedUser:
+def require_user(repository: Any | None = None) -> AuthenticatedUser:
     """Authenticate with OIDC, a local password, or explicit demo mode."""
     config = _secret_section("app_auth")
     mode = str(config.get("mode", "password")).lower()
@@ -172,25 +243,47 @@ def require_user() -> AuthenticatedUser:
     if mode == "password":
         if st.session_state.get("authenticated_user"):
             stored = st.session_state.authenticated_user
-            return AuthenticatedUser(
-                username=str(stored.get("username", stored["email"])),
-                email=stored["email"],
-                name=stored["name"],
-                can_create_new=_secret_bool(stored.get("can_create_new")),
-                can_view_history=_secret_bool(stored.get("can_view_history")),
-                is_admin=_secret_bool(stored.get("is_admin")),
-            )
+            username = str(stored.get("username", stored["email"]))
+            if repository is not None and repository.has_app_users():
+                entry = repository.get_app_user(username)
+                if (
+                    not entry
+                    or not bool(entry.get("is_active"))
+                    or int(entry.get("session_version", 1) or 1)
+                    != int(stored.get("session_version", 1) or 1)
+                ):
+                    st.session_state.clear()
+                    st.session_state.login_notice = (
+                        "Your account or session has changed. Sign in again."
+                    )
+                    st.rerun()
+                user = _authenticated_user(str(entry["username"]), dict(entry))
+                st.session_state.authenticated_user.update(
+                    {
+                        "email": user.email,
+                        "name": user.name,
+                        "can_create_new": user.can_create_new,
+                        "can_view_history": user.can_view_history,
+                        "is_admin": user.is_admin,
+                        "role": user.role,
+                        "must_change_password": user.must_change_password,
+                        "session_version": user.session_version,
+                    }
+                )
+                return user
+            return _authenticated_user(username, dict(stored))
 
         users = _secret_section("users")
+        database_users = bool(repository is not None and repository.has_app_users())
         login_notice = st.session_state.pop("login_notice", None)
         st.markdown("## Solidus")
         st.title("Spread Costing Tool")
         st.caption("Sign in to continue.")
         if login_notice:
             st.info(login_notice)
-        if not users:
+        if not users and not database_users:
             st.error(
-                "No users are set up. Add a user in Streamlit Secrets."
+                "No users are set up. Ask an administrator to add your account."
             )
             st.stop()
         with st.form("login_form"):
@@ -198,22 +291,43 @@ def require_user() -> AuthenticatedUser:
             password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Sign in", type="primary")
         if submitted:
-            matched_key = next(
-                (key for key in users if key.lower() == username.lower().strip()), None
-            )
-            entry = dict(users.get(matched_key, {})) if matched_key else {}
-            if entry and _verify_configured_password(password, entry):
-                can_create_new = _secret_bool(entry.get("can_create_new"))
-                can_view_history = _secret_bool(entry.get("can_view_history"))
-                is_admin = _secret_bool(entry.get("is_admin"))
+            matched_key = None
+            entry: dict[str, Any] = {}
+            valid = False
+            if database_users:
+                database_entry = repository.get_app_user(username)
+                if database_entry:
+                    entry = dict(database_entry)
+                    matched_key = str(entry["username"])
+                    valid = bool(entry.get("is_active")) and verify_password(
+                        password, str(entry.get("password_hash", ""))
+                    )
+            else:
+                matched_key = next(
+                    (
+                        key
+                        for key in users
+                        if key.lower() == username.lower().strip()
+                    ),
+                    None,
+                )
+                entry = dict(users.get(matched_key, {})) if matched_key else {}
+                valid = bool(entry) and _verify_configured_password(password, entry)
+            if valid and matched_key:
+                user = _authenticated_user(str(matched_key), entry)
                 st.session_state.authenticated_user = {
-                    "username": str(matched_key),
-                    "email": str(entry.get("email", matched_key)),
-                    "name": str(entry.get("name", matched_key)),
-                    "can_create_new": can_create_new,
-                    "can_view_history": can_view_history,
-                    "is_admin": is_admin,
+                    "username": user.username,
+                    "email": user.email,
+                    "name": user.name,
+                    "can_create_new": user.can_create_new,
+                    "can_view_history": user.can_view_history,
+                    "is_admin": user.is_admin,
+                    "role": user.role,
+                    "must_change_password": user.must_change_password,
+                    "session_version": user.session_version,
                 }
+                if database_users:
+                    repository.record_user_login(user.username)
                 st.rerun()
             st.error("The username or password was not recognised.")
         st.stop()

@@ -176,6 +176,8 @@ SESSION_COLUMNS = [
     "ended_at_utc",
 ]
 
+APP_USER_ROLES = {"external", "creator", "admin"}
+
 BOM_TOTAL_RENAMES = {
     "bom_materials": "imported_bom_materials_per_1000",
     "bom_print_machine": "print_machine_cost_per_1000",
@@ -248,6 +250,266 @@ class CsvRepository:
             return fallback
         parsed = pd.to_datetime(value, utc=True, errors="coerce")
         return parsed.to_pydatetime() if pd.notna(parsed) else fallback
+
+    def has_app_users(self) -> bool:
+        """Return whether database-backed login has been populated."""
+        if not self.uses_database:
+            return False
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT EXISTS (SELECT 1 FROM public.app_users) AS present"
+                    )
+                    row = cursor.fetchone()
+            return bool(row and row["present"])
+        except psycopg.errors.UndefinedTable:
+            return False
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The user database could not be checked. Please try again."
+            ) from exc
+
+    def get_app_user(self, username: str) -> dict[str, Any] | None:
+        if not self.uses_database or not str(username or "").strip():
+            return None
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT username, email, name, password_hash, role, "
+                        "can_view_history, is_active, must_change_password, "
+                        "session_version, created_at_utc, updated_at_utc, last_login_at_utc "
+                        "FROM public.app_users WHERE lower(username) = lower(%s)",
+                        (str(username).strip(),),
+                    )
+                    return cursor.fetchone()
+        except psycopg.errors.UndefinedTable:
+            return None
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The user database could not be checked. Please try again."
+            ) from exc
+
+    def list_app_users(self) -> pd.DataFrame:
+        columns = [
+            "username", "email", "name", "role", "can_view_history",
+            "is_active", "must_change_password", "created_at_utc",
+            "updated_at_utc", "last_login_at_utc",
+        ]
+        if not self.uses_database:
+            return pd.DataFrame(columns=columns)
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT username, email, name, role, can_view_history, "
+                        "is_active, must_change_password, created_at_utc, "
+                        "updated_at_utc, last_login_at_utc FROM public.app_users "
+                        "ORDER BY lower(name), lower(username)"
+                    )
+                    rows = cursor.fetchall()
+            return pd.DataFrame(rows, columns=columns)
+        except psycopg.errors.UndefinedTable:
+            return pd.DataFrame(columns=columns)
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The user list could not be loaded. Please try again."
+            ) from exc
+
+    def save_app_user(
+        self,
+        *,
+        username: str,
+        email: str,
+        name: str,
+        password_hash: str | None,
+        role: str,
+        can_view_history: bool,
+        is_active: bool,
+        must_change_password: bool,
+        actor_username: str,
+    ) -> None:
+        """Create or update an app user and retain an audit entry."""
+        if not self.uses_database:
+            raise RepositoryBusyError("Neon must be configured to manage users.")
+        username = str(username or "").strip()
+        email = str(email or "").strip()
+        name = str(name or "").strip()
+        role = str(role or "external").strip().lower()
+        if not username or not email or not name:
+            raise ValueError("Username, name and email are required.")
+        if role not in APP_USER_ROLES:
+            raise ValueError("The selected user role is not supported.")
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT username FROM public.app_users "
+                        "WHERE lower(username) = lower(%s)",
+                        (username,),
+                    )
+                    existing = cursor.fetchone()
+                    if existing:
+                        cursor.execute(
+                            "UPDATE public.app_users SET email = %s, name = %s, "
+                            "role = %s, can_view_history = %s, is_active = %s, "
+                            "must_change_password = CASE WHEN %s IS NULL "
+                            "THEN must_change_password ELSE %s END, "
+                            "password_hash = COALESCE(%s, password_hash), "
+                            "password_changed_at_utc = CASE WHEN %s IS NULL "
+                            "THEN password_changed_at_utc ELSE now() END, "
+                            "session_version = CASE WHEN %s IS NOT NULL "
+                            "OR (is_active AND NOT %s) "
+                            "THEN session_version + 1 ELSE session_version END, "
+                            "updated_at_utc = now() "
+                            "WHERE lower(username) = lower(%s)",
+                            (
+                                email, name, role, bool(can_view_history),
+                                bool(is_active), password_hash,
+                                bool(must_change_password), password_hash,
+                                password_hash, password_hash, bool(is_active), username,
+                            ),
+                        )
+                        action = "user_updated"
+                    else:
+                        if not password_hash:
+                            raise ValueError("A password is required for a new user.")
+                        cursor.execute(
+                            "INSERT INTO public.app_users "
+                            "(username, email, name, password_hash, role, "
+                            "can_view_history, is_active, must_change_password, created_by) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (
+                                username, email, name, password_hash, role,
+                                bool(can_view_history), bool(is_active),
+                                bool(must_change_password), actor_username,
+                            ),
+                        )
+                        action = "user_created"
+                    if not is_active:
+                        cursor.execute(
+                            "UPDATE public.app_sessions SET force_logout = true "
+                            "WHERE lower(username) = lower(%s) AND ended_at_utc IS NULL",
+                            (username,),
+                        )
+                    cursor.execute(
+                        "INSERT INTO public.app_audit_log "
+                        "(actor_username, action, target_username, detail) "
+                        "VALUES (%s, %s, %s, %s)",
+                        (
+                            actor_username, action, username,
+                            Jsonb({
+                                "role": role,
+                                "can_view_history": bool(can_view_history),
+                                "is_active": bool(is_active),
+                                "password_changed": bool(password_hash),
+                            }),
+                        ),
+                    )
+        except (psycopg.Error, TypeError, ValueError) as exc:
+            if isinstance(exc, ValueError):
+                raise
+            raise RepositoryBusyError(
+                "The user could not be saved. Please try again."
+            ) from exc
+
+    def import_app_users(
+        self,
+        users: list[dict[str, Any]],
+        *,
+        actor_username: str,
+    ) -> tuple[int, int]:
+        """Import missing Secrets users without overwriting database users."""
+        if not self.uses_database:
+            raise RepositoryBusyError("Neon must be configured to import users.")
+        imported = 0
+        for user in users:
+            if self.get_app_user(str(user.get("username", ""))):
+                continue
+            self.save_app_user(
+                username=str(user.get("username", "")),
+                email=str(user.get("email", "")),
+                name=str(user.get("name", "")),
+                password_hash=str(user.get("password_hash", "")),
+                role=str(user.get("role", "external")),
+                can_view_history=bool(user.get("can_view_history", False)),
+                is_active=True,
+                must_change_password=bool(user.get("must_change_password", False)),
+                actor_username=actor_username,
+            )
+            imported += 1
+        return imported, len(users)
+
+    def record_user_login(self, username: str) -> None:
+        if not self.uses_database:
+            return
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE public.app_users SET last_login_at_utc = now(), "
+                        "updated_at_utc = now() WHERE lower(username) = lower(%s)",
+                        (str(username).strip(),),
+                    )
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The login could not be recorded. Please try again."
+            ) from exc
+
+    def change_app_user_password(
+        self,
+        username: str,
+        password_hash: str,
+        *,
+        actor_username: str,
+    ) -> None:
+        if not self.uses_database:
+            raise RepositoryBusyError("Neon must be configured to change passwords.")
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE public.app_users SET password_hash = %s, "
+                        "must_change_password = false, password_changed_at_utc = now(), "
+                        "updated_at_utc = now() WHERE lower(username) = lower(%s)",
+                        (password_hash, str(username).strip()),
+                    )
+                    cursor.execute(
+                        "INSERT INTO public.app_audit_log "
+                        "(actor_username, action, target_username, detail) "
+                        "VALUES (%s, 'password_changed', %s, '{}'::jsonb)",
+                        (actor_username, str(username).strip()),
+                    )
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The password could not be changed. Please try again."
+            ) from exc
+
+    def load_app_audit_log(self, limit: int = 100) -> pd.DataFrame:
+        columns = [
+            "occurred_at_utc", "actor_username", "action",
+            "target_username", "detail",
+        ]
+        if not self.uses_database:
+            return pd.DataFrame(columns=columns)
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT occurred_at_utc, actor_username, action, "
+                        "target_username, detail FROM public.app_audit_log "
+                        "ORDER BY occurred_at_utc DESC LIMIT %s",
+                        (max(1, min(int(limit), 500)),),
+                    )
+                    rows = cursor.fetchall()
+            return pd.DataFrame(rows, columns=columns)
+        except psycopg.errors.UndefinedTable:
+            return pd.DataFrame(columns=columns)
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The user audit log could not be loaded. Please try again."
+            ) from exc
 
     def load_bom_lines(self, item_code: str | None = None) -> pd.DataFrame:
         if not self.bom_path.exists():
