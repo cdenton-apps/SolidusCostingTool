@@ -15,6 +15,7 @@ REQUIRED_FIELDS = {
     "height_mm": "Height",
     "pallet_quantity": "Pallet quantity",
     "order_quantity": "Order quantity",
+    "annual_volume_units": "Expected annual volume",
     "delivery_postcode": "Delivery postcode",
 }
 
@@ -36,6 +37,22 @@ ANNUAL_VOLUME_ADJUSTMENTS = {
 }
 
 DEFAULT_ANNUAL_VOLUME_BAND = "50,001 - 100,000"
+
+
+def annual_volume_band_for_units(annual_volume_units: float) -> str:
+    """Map an entered annual unit volume to the internal pricing band."""
+    volume = max(0.0, float(annual_volume_units))
+    if volume <= 10_000:
+        return "0 - 10,000"
+    if volume <= 25_000:
+        return "10,001 - 25,000"
+    if volume <= 50_000:
+        return "25,001 - 50,000"
+    if volume <= 100_000:
+        return "50,001 - 100,000"
+    if volume <= 1_000_000:
+        return "100,001 - 1,000,000"
+    return "Over 1,000,000"
 
 
 def _number(values: dict[str, Any], key: str) -> float:
@@ -64,6 +81,7 @@ def validate_details(values: dict[str, Any]) -> list[str]:
         "height_mm",
         "pallet_quantity",
         "order_quantity",
+        "annual_volume_units",
     }
 
     for key, label in REQUIRED_FIELDS.items():
@@ -118,9 +136,14 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         )
 
     materials = _number(values, "materials_cost_per_1000")
-    annual_volume_band = str(
-        values.get("annual_volume_band", DEFAULT_ANNUAL_VOLUME_BAND)
-        or DEFAULT_ANNUAL_VOLUME_BAND
+    annual_volume_units = _number(values, "annual_volume_units")
+    annual_volume_band = (
+        annual_volume_band_for_units(annual_volume_units)
+        if annual_volume_units > 0
+        else str(
+            values.get("annual_volume_band", DEFAULT_ANNUAL_VOLUME_BAND)
+            or DEFAULT_ANNUAL_VOLUME_BAND
+        )
     )
     annual_volume_adjustment = ANNUAL_VOLUME_ADJUSTMENTS.get(
         annual_volume_band, 0.0

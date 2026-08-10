@@ -37,11 +37,12 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.number_input, "Width (mm) *").set_value(376)
     _widget(app.number_input, "Height (mm) *").set_value(149)
     _widget(app.number_input, "Order quantity (units) *").set_value(10000)
-    _widget(app.selectbox, "Annual volume").set_value("0 - 10,000")
+    _widget(app.number_input, "Expected annual volume (units) *").set_value(10_000)
     _widget(app.checkbox, "Consistent Payer").check()
     _widget(app.button, "Save order details").click().run()
 
     assert app.session_state["draft"]["annual_volume_band"] == "0 - 10,000"
+    assert app.session_state["draft"]["annual_volume_units"] == 10_000
     assert app.session_state["draft"]["comex_consistent_payer"] is True
 
     assert all("tooling" not in widget.label.lower() for widget in app.number_input)
@@ -139,6 +140,10 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
     assert "5.00 h · 5 hr 0 min" in rendered_cards
     assert any(
         item.label == "View machine hours calculation" for item in app.expander
+    )
+    assert any(
+        item.label == "How the material adjustment was calculated"
+        for item in app.expander
     )
 
     pricing_base = app.session_state["breakdown"]["pricing_base_per_1000"]
@@ -246,6 +251,14 @@ def test_red_costing_is_blocked_for_non_admin(
 
     assert app.session_state["pricing"]["traffic_light_status"] == "red"
     assert _widget(app.button, "Continue to save and print").disabled
+    rendered_cards = "\n".join(item.value for item in app.markdown)
+    assert "Pricing base / 1,000" not in rendered_cards
+    assert "Spread value / 1,000" not in rendered_cards
+    assert "Material spread / 1,000" not in rendered_cards
+    assert all(
+        item.label != "How the material adjustment was calculated"
+        for item in app.expander
+    )
     assert all(
         item.label != "Reason for admin override *" for item in app.text_area
     )
@@ -369,6 +382,7 @@ def test_mtc_can_be_entered_in_pallets() -> None:
     )
     _widget(app.radio, "Enter order quantity as").set_value("Pallets").run()
     _widget(app.number_input, "Order quantity (pallets) *").set_value(10).run()
+    _widget(app.number_input, "Expected annual volume (units) *").set_value(75_000)
     _widget(app.number_input, "Pallets per delivery / call-off *").set_value(1)
     _widget(
         app.number_input, "Potential holding charge (£ per pallet per week)"

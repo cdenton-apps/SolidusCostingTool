@@ -18,8 +18,8 @@ the other figure update. Machine and labour are not added to the price.
    - **MTC (Make to Contract):** enter the agreement term, pallets per call-off
      and any potential pallet holding charge.
 4. Review the automatic material calculation and delivery quote.
-5. Select the annual-volume band and any relevant customer factors. These use
-   fixed material adjustments; users do not type a percentage.
+5. Enter the expected annual unit volume and select any relevant customer
+   factors. The app chooses the internal volume band automatically.
 6. Change either spread percentage or selling price; the other value updates
    immediately.
 7. Review spread per machine hour, calculated from the BOM operation speeds
@@ -75,6 +75,14 @@ Customer −3%**, **Over Credit Limit +10%** and **Poor Payment History +5%**.
 All selected percentages are added together and applied once to material cost;
 they are not compounded. Delivery remains the haulier price. These internal
 factors are saved in costing history but are not printed on the customer quote.
+Users enter an annual unit volume rather than choosing from the band table, so
+the thresholds and percentages are not displayed in the working form.
+
+Non-admin users have a reduced commercial view. They can enter the spread or
+selling price and can see the selling price, spread, spread per machine hour,
+machine time and traffic-light result. Material costs, adjustments, delivery
+cost, component rates, alternative haulier prices and the full costing CSV are
+admin-only. Non-admin history downloads use the same reduced set of figures.
 
 The operational spread indicator is separate from customer pricing. It applies
 the selected spread percentage to material cost only, so transport distance

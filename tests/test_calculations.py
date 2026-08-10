@@ -4,6 +4,7 @@ import pytest
 
 from src.calculations import (
     DEFAULT_ANNUAL_VOLUME_BAND,
+    annual_volume_band_for_units,
     calculate_cost,
     operational_spread_metrics,
     price_from_spread_percent,
@@ -27,6 +28,7 @@ def valid_costing() -> dict:
         "net_mass_kg": 0.08,
         "pallet_quantity": 2_000,
         "order_quantity": 10_000,
+        "annual_volume_units": 75_000,
         "materials_cost_per_1000": 70.4,
         "print_machine_cost_per_1000": 10,
         "die_cut_machine_cost_per_1000": 20,
@@ -76,6 +78,7 @@ def test_customer_and_volume_factors_are_additive_and_material_only(
     valid_costing.update(
         {
             "materials_cost_per_1000": 100,
+            "annual_volume_units": 10_000,
             "annual_volume_band": "0 - 10,000",  # +15%
             "comex_consistent_payer": True,  # -5%
             "comex_strategic_customer": True,  # -3%
@@ -98,6 +101,29 @@ def test_standard_volume_band_does_not_adjust_material(valid_costing: dict) -> N
     result = calculate_cost(valid_costing)
     assert result["total_material_adjustment_percent"] == 0
     assert result["material_base_per_1000"] == pytest.approx(70.4)
+
+
+@pytest.mark.parametrize(
+    ("units", "band"),
+    [
+        (1, "0 - 10,000"),
+        (10_000, "0 - 10,000"),
+        (10_001, "10,001 - 25,000"),
+        (25_001, "25,001 - 50,000"),
+        (50_001, "50,001 - 100,000"),
+        (100_001, "100,001 - 1,000,000"),
+        (1_000_001, "Over 1,000,000"),
+    ],
+)
+def test_annual_volume_entry_maps_to_hidden_band(units: int, band: str) -> None:
+    assert annual_volume_band_for_units(units) == band
+
+
+def test_entered_annual_volume_overrides_an_old_saved_band(valid_costing: dict) -> None:
+    valid_costing["annual_volume_units"] = 8_000
+    valid_costing["annual_volume_band"] = DEFAULT_ANNUAL_VOLUME_BAND
+    result = calculate_cost(valid_costing)
+    assert result["annual_volume_adjustment_percent"] == pytest.approx(15)
 
 
 def test_machine_time_changes_operational_hours_not_pricing(valid_costing: dict) -> None:

@@ -66,6 +66,7 @@ SPECIFICATION_COLUMNS = [
     "transport_rate_zone",
     "transport_manual_override",
     "annual_volume_band",
+    "annual_volume_units",
     "comex_consistent_payer",
     "comex_strategic_customer",
     "comex_over_credit_limit",

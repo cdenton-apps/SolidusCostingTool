@@ -17,6 +17,7 @@ from src.calculations import (
     ANNUAL_VOLUME_ADJUSTMENTS,
     COMEX_FACTORS,
     DEFAULT_ANNUAL_VOLUME_BAND,
+    annual_volume_band_for_units,
     calculate_cost,
     operational_spread_metrics,
     price_from_spread_percent,
@@ -228,6 +229,7 @@ def default_draft() -> dict[str, Any]:
         "estimated_delivery_count": 1,
         "pallet_holding_charge_per_pallet_per_week": 0.0,
         "annual_volume_band": DEFAULT_ANNUAL_VOLUME_BAND,
+        "annual_volume_units": 0,
         "comex_consistent_payer": False,
         "comex_strategic_customer": False,
         "comex_over_credit_limit": False,
@@ -465,7 +467,54 @@ def show_cost_breakdown(breakdown: dict[str, float]) -> None:
     )
 
 
-def render_select(repository: CsvRepository, can_create_new: bool) -> None:
+def show_admin_adjustment_detail(breakdown: dict[str, float]) -> None:
+    """Explain the hidden commercial adjustment to an admin only."""
+    draft = st.session_state.draft
+    annual_volume = draft_number("annual_volume_units")
+    band = str(draft.get("annual_volume_band", DEFAULT_ANNUAL_VOLUME_BAND))
+    volume_percent = float(
+        breakdown.get(
+            "annual_volume_adjustment_percent",
+            ANNUAL_VOLUME_ADJUSTMENTS.get(band, 0),
+        )
+        or 0
+    )
+    selected_factors = [
+        (label, percent)
+        for key, (label, percent) in COMEX_FACTORS.items()
+        if draft_flag(key)
+    ]
+    with st.expander("How the material adjustment was calculated"):
+        st.write(
+            f"Annual volume entered: {annual_volume:,.0f} units. Internal band: "
+            f"{band}, applying {volume_percent:+.0f}%."
+        )
+        if selected_factors:
+            factor_table = pd.DataFrame(
+                selected_factors, columns=["Selected customer factor", "Adjustment"]
+            )
+            st.dataframe(
+                factor_table,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "Adjustment": st.column_config.NumberColumn(format="%+.0f%%")
+                },
+            )
+        else:
+            st.caption("No customer factors are selected.")
+        st.write(
+            f"Total material adjustment: "
+            f"{float(breakdown.get('total_material_adjustment_percent', 0) or 0):+.0f}% "
+            f"(£{float(breakdown.get('material_adjustment_value_per_1000', 0) or 0):,.2f} per 1,000)."
+        )
+
+
+def render_select(
+    repository: CsvRepository,
+    can_create_new: bool,
+    is_admin: bool,
+) -> None:
     heading, access = st.columns([4, 1])
     heading.subheader("Choose a product")
     access.markdown(
@@ -519,36 +568,41 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
         with st.container(border=True):
             st.markdown(f"### {selected.get('item_code', '')}")
             st.write(str(selected.get("description", "")))
-            show_detail_cards(
-                [
-                    ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
-                    (
-                        "Pallet quantity",
-                        f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
-                    ),
-                    ("Material / 1,000", f"£{selected_material_total:,.2f}"),
-                    (
-                        "Size",
-                        f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
-                        f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
-                        f"{float(selected.get('height_mm', 0) or 0):,.0f} mm",
-                    ),
-                ]
-            )
+            product_cards = [
+                ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
+                (
+                    "Pallet quantity",
+                    f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
+                ),
+                (
+                    "Size",
+                    f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
+                    f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
+                    f"{float(selected.get('height_mm', 0) or 0):,.0f} mm",
+                ),
+            ]
+            if is_admin:
+                product_cards.insert(
+                    2, ("Material / 1,000", f"£{selected_material_total:,.2f}")
+                )
+            show_detail_cards(product_cards)
 
-        with st.expander("Product and material details"):
-            show_detail_cards(
-                [
-                    ("Product group", selected.get("product_group", "—")),
-                    ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
-                    (
-                        "Pallet quantity",
-                        f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
-                    ),
+        with st.expander("Product and material details" if is_admin else "Product details"):
+            detail_cards = [
+                ("Product group", selected.get("product_group", "—")),
+                ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
+                (
+                    "Pallet quantity",
+                    f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
+                ),
+                ("From", selected.get("source_type", "Stock list")),
+            ]
+            if is_admin:
+                detail_cards.insert(
+                    3,
                     ("Calculated material / 1,000", f"£{selected_material_total:,.2f}"),
-                    ("From", selected.get("source_type", "Stock list")),
-                ]
-            )
+                )
+            show_detail_cards(detail_cards)
             st.caption(
                 f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
                 f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
@@ -559,7 +613,7 @@ def render_select(repository: CsvRepository, can_create_new: bool) -> None:
                 str(selected.get("item_code", ""))
             )
             material_lines = material_result["lines"]
-            if not material_lines.empty:
+            if is_admin and not material_lines.empty:
                 st.caption(
                     f"Board price source: {selected.get('board_price_source', '—')}. "
                     "Machine and labour are excluded from every value shown here."
@@ -895,23 +949,12 @@ def render_specification(repository: CsvRepository) -> None:
         )
 
     st.markdown("#### Customer and annual volume")
-    volume_options = list(ANNUAL_VOLUME_ADJUSTMENTS)
-    current_volume_band = str(
-        draft.get("annual_volume_band", DEFAULT_ANNUAL_VOLUME_BAND)
-        or DEFAULT_ANNUAL_VOLUME_BAND
-    )
-    if current_volume_band not in volume_options:
-        current_volume_band = DEFAULT_ANNUAL_VOLUME_BAND
-    annual_volume_band = st.selectbox(
-        "Annual volume",
-        volume_options,
-        index=volume_options.index(current_volume_band),
-        format_func=lambda band: (
-            f"{band} ({ANNUAL_VOLUME_ADJUSTMENTS[band]:+.0f}%)"
-            if ANNUAL_VOLUME_ADJUSTMENTS[band]
-            else f"{band} (standard)"
-        ),
-        help="This adjusts material cost only. Delivery rates are not changed.",
+    annual_volume_units = st.number_input(
+        "Expected annual volume (units) *",
+        min_value=0,
+        value=max(0, int(draft_number("annual_volume_units"))),
+        step=1_000,
+        help="Enter the customer's expected total unit volume over 12 months.",
     )
     positive, negative = st.columns(2)
     with positive:
@@ -934,10 +977,7 @@ def render_specification(repository: CsvRepository) -> None:
             COMEX_FACTORS["comex_poor_payment_history"][0],
             value=draft_flag("comex_poor_payment_history"),
         )
-    st.caption(
-        "Selected customer factors and the annual-volume rate are added together "
-        "and applied once to material cost."
-    )
+    st.caption("Customer factors are used in the internal commercial calculation.")
 
     submitted = st.button("Save order details", type="primary")
 
@@ -970,7 +1010,10 @@ def render_specification(repository: CsvRepository) -> None:
             "pallet_holding_charge_per_pallet_per_week": float(
                 pallet_holding_charge
             ),
-            "annual_volume_band": annual_volume_band,
+            "annual_volume_units": int(annual_volume_units),
+            "annual_volume_band": annual_volume_band_for_units(
+                annual_volume_units
+            ),
             "comex_consistent_payer": bool(consistent_payer),
             "comex_strategic_customer": bool(strategic_customer),
             "comex_over_credit_limit": bool(over_credit_limit),
@@ -988,7 +1031,11 @@ def render_specification(repository: CsvRepository) -> None:
             navigate_to(2)
 
 
-def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> None:
+def render_costs(
+    repository: CsvRepository,
+    rate_table: HaulierRateTable,
+    is_admin: bool,
+) -> None:
     st.subheader("Material base and delivery")
     draft = st.session_state.draft
     source_item_code = str(draft.get("source_item_code") or draft.get("item_code", ""))
@@ -1000,9 +1047,12 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
         imported_total = float(
             material_result["summary"].get("materials_cost_per_1000", 0) or 0
         )
-        st.success(
-            f"Material cost from the BOM and board prices: £{imported_total:,.2f} per 1,000."
-        )
+        if is_admin:
+            st.success(
+                f"Material cost from the BOM and board prices: £{imported_total:,.2f} per 1,000."
+            )
+        else:
+            st.success("The BOM and board-price calculation is ready.")
     else:
         st.info(
             "Choose the board and, if needed, a comparable BOM for the other components."
@@ -1031,8 +1081,12 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
         ).drop_duplicates("board_item_code")
         board_labels = {
             str(row["board_item_code"]): (
-                f"{row['board_item_code']} — {row.get('board_item_name', '')} — "
-                f"{float(row['price_per_tonne']):,.0f} £/tonne"
+                f"{row['board_item_code']} — {row.get('board_item_name', '')}"
+                + (
+                    f" — {float(row['price_per_tonne']):,.0f} £/tonne"
+                    if is_admin
+                    else ""
+                )
             )
             for _, row in board_catalog.iterrows()
         }
@@ -1091,36 +1145,36 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
                 board_catalog["board_item_code"].astype(str).eq(selected_board_code)
             ].iloc[0]
 
-    st.markdown("#### Included pricing components")
-    st.caption(
-        "Board prices come from the April 2026 mill list when the board code matches. "
-        "Other components come from the BOM. Machine and labour are not included."
-    )
+    st.markdown("#### Material setup")
+    st.caption("Board and other components are calculated from the product data.")
     if material_result is not None:
         material_summary = material_result["summary"]
         material_lines = material_result["lines"]
-        show_detail_cards(
-            [
-                ("Board / 1,000", f"£{float(material_summary['board_cost_per_1000']):,.2f}"),
-                (
-                    "Other components / 1,000",
-                    f"£{float(material_summary['other_components_cost_per_1000']):,.2f}",
-                ),
-                (
-                    "Total materials / 1,000",
-                    f"£{float(material_summary['materials_cost_per_1000']):,.2f}",
-                ),
-                (
-                    "Board rate",
-                    f"£{float(material_summary['board_price_per_tonne']):,.2f} / tonne",
-                ),
-            ]
-        )
-        st.caption(
-            f"{material_summary.get('board_article_code') or material_summary.get('board_item_code', 'Board')} · "
-            f"{material_summary.get('board_price_source', '')}"
-        )
-        if not material_lines.empty:
+        if is_admin:
+            show_detail_cards(
+                [
+                    ("Board / 1,000", f"£{float(material_summary['board_cost_per_1000']):,.2f}"),
+                    (
+                        "Other components / 1,000",
+                        f"£{float(material_summary['other_components_cost_per_1000']):,.2f}",
+                    ),
+                    (
+                        "Total materials / 1,000",
+                        f"£{float(material_summary['materials_cost_per_1000']):,.2f}",
+                    ),
+                    (
+                        "Board rate",
+                        f"£{float(material_summary['board_price_per_tonne']):,.2f} / tonne",
+                    ),
+                ]
+            )
+            st.caption(
+                f"{material_summary.get('board_article_code') or material_summary.get('board_item_code', 'Board')} · "
+                f"{material_summary.get('board_price_source', '')}"
+            )
+        else:
+            st.success("Material details are complete.")
+        if is_admin and not material_lines.empty:
             with st.expander("View board and component calculation"):
                 visible = [
                     "component_type",
@@ -1208,11 +1262,14 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
             if vendor_preference in preferences
             else 0,
         )
-        manual_override = st.checkbox(
-            "Use a manual transport total",
-            value=manual_override,
-        )
-        if manual_override:
+        if is_admin:
+            manual_override = st.checkbox(
+                "Use a manual transport total",
+                value=manual_override,
+            )
+        else:
+            manual_override = False
+        if is_admin and manual_override:
             manual_transport_total = st.number_input(
                 "Manual transport total (£)",
                 min_value=0.0,
@@ -1220,7 +1277,9 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
                 step=1.0,
             )
         st.caption(
-            "AM/PM adds £7 per load; Timed adds £19 per load. McDowells adds £40 for each complete 26-pallet load."
+            "AM/PM, timed-booking and full-load charges are included automatically."
+            if not is_admin
+            else "AM/PM adds £7 per load; Timed adds £19 per load. McDowells adds £40 for each complete 26-pallet load."
         )
 
     calculate = st.button(
@@ -1312,7 +1371,7 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
 
     if st.session_state.get("breakdown"):
         quotes = st.session_state.get("transport_quotes", [])
-        if quotes:
+        if quotes and is_admin:
             quote_frame = pd.DataFrame(quotes).rename(
                 columns={
                     "vendor": "Haulier",
@@ -1357,7 +1416,11 @@ def render_costs(repository: CsvRepository, rate_table: HaulierRateTable) -> Non
                 f"£{float(draft.get('transport_total', 0)):,.2f} across "
                 f"{int(draft.get('estimated_delivery_count', 1) or 1):,} planned delivery event(s)."
             )
-        show_cost_breakdown(st.session_state.breakdown)
+        if is_admin:
+            show_cost_breakdown(st.session_state.breakdown)
+            show_admin_adjustment_detail(st.session_state.breakdown)
+        else:
+            st.success("Material and delivery have been calculated.")
         if st.button("Continue to pricing", type="primary"):
             navigate_to(3)
 
@@ -1459,11 +1522,15 @@ def render_pricing(
 ) -> None:
     st.subheader("Set spread or selling price")
     breakdown = st.session_state.breakdown
-    show_cost_breakdown(breakdown)
-    st.info(
-        "Spread = (selling price − pricing base) ÷ selling price. "
-        "Change either figure to recalculate the other."
-    )
+    if is_admin:
+        show_cost_breakdown(breakdown)
+        show_admin_adjustment_detail(breakdown)
+        st.info(
+            "Spread = (selling price − pricing base) ÷ selling price. "
+            "Change either figure to recalculate the other."
+        )
+    else:
+        st.caption("Enter either the spread or selling price. The other figure will update.")
 
     pricing_base = float(breakdown["pricing_base_per_1000"])
     stored_pricing = st.session_state.get("pricing") or {}
@@ -1536,37 +1603,49 @@ def render_pricing(
 
     pricing = st.session_state.get("pricing")
     if pricing:
-        show_detail_cards(
-            [
-                ("Selling price / 1,000", f"£{pricing['selling_price_per_1000']:,.2f}"),
-                ("Selling price / item", format_unit_price(pricing["selling_price_per_item"])),
-                ("Spread", f"{pricing['spread_percent']:,.2f}%"),
-                ("Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}"),
-            ]
-        )
+        pricing_cards = [
+            ("Selling price / 1,000", f"£{pricing['selling_price_per_1000']:,.2f}"),
+            ("Selling price / item", format_unit_price(pricing["selling_price_per_item"])),
+            ("Spread", f"{pricing['spread_percent']:,.2f}%"),
+        ]
+        if is_admin:
+            pricing_cards.append(
+                ("Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}")
+            )
+        show_detail_cards(pricing_cards)
         st.markdown("#### Material-only operational spread")
         if pricing.get("total_machine_hours", 0) > 0:
-            show_detail_cards(
-                [
-                    ("Spread / machine hour", f"£{pricing['spread_per_machine_hour']:,.2f}"),
-                    (
-                        "Machine time for quote",
-                        f"{pricing['total_machine_hours']:,.2f} h · "
-                        f"{format_machine_duration(pricing['total_machine_hours'])}",
-                    ),
-                    (
-                        "Material spread / 1,000",
-                        f"£{pricing['material_spread_value_per_1000']:,.2f}",
-                    ),
-                    ("Material spread for quote", f"£{pricing['total_spread_value']:,.2f}"),
-                ]
-            )
-            st.caption(
-                f"Spread/hour uses the adjusted material base only: "
-                f"£{float(breakdown.get('material_base_per_1000', breakdown.get('materials_cost_per_1000', 0))):,.2f} "
-                f"per 1,000 at {pricing['spread_percent']:,.2f}%. Delivery is left out. Machine time: "
-                f"{st.session_state.draft.get('machine_time_source', 'BOM operation speeds')}."
-            )
+            operational_cards = [
+                ("Spread / machine hour", f"£{pricing['spread_per_machine_hour']:,.2f}"),
+                (
+                    "Machine time for quote",
+                    f"{pricing['total_machine_hours']:,.2f} h · "
+                    f"{format_machine_duration(pricing['total_machine_hours'])}",
+                ),
+            ]
+            if is_admin:
+                operational_cards.extend(
+                    [
+                        (
+                            "Material spread / 1,000",
+                            f"£{pricing['material_spread_value_per_1000']:,.2f}",
+                        ),
+                        (
+                            "Material spread for quote",
+                            f"£{pricing['total_spread_value']:,.2f}",
+                        ),
+                    ]
+                )
+            show_detail_cards(operational_cards)
+            if is_admin:
+                st.caption(
+                    f"Spread/hour uses the adjusted material base only: "
+                    f"£{float(breakdown.get('material_base_per_1000', breakdown.get('materials_cost_per_1000', 0))):,.2f} "
+                    f"per 1,000 at {pricing['spread_percent']:,.2f}%. Delivery is left out. Machine time: "
+                    f"{st.session_state.draft.get('machine_time_source', 'BOM operation speeds')}."
+                )
+            else:
+                st.caption("Spread per machine hour excludes delivery.")
             show_machine_time_calculation(repository, pricing)
         else:
             st.info(
@@ -1693,6 +1772,7 @@ def render_save(
     user_email: str,
     user_name: str,
     can_create_new: bool,
+    is_admin: bool,
 ) -> None:
     st.subheader("Save, quote and export")
     draft = st.session_state.draft
@@ -1711,15 +1791,18 @@ def render_save(
 
     record = current_record()
     record["notes"] = quote_notes
-    show_detail_cards(
-        [
-            ("Item", record["item_code"]),
-            ("Quantity", f"{float(record['order_quantity']):,.0f}"),
-            ("Fulfilment", record.get("fulfilment_type", "MTO")),
+    summary_cards = [
+        ("Item", record["item_code"]),
+        ("Quantity", f"{float(record['order_quantity']):,.0f}"),
+        ("Fulfilment", record.get("fulfilment_type", "MTO")),
+        ("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}"),
+    ]
+    if is_admin:
+        summary_cards.insert(
+            3,
             ("Pricing base / 1,000", f"£{record['pricing_base_per_1000']:,.2f}"),
-            ("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}"),
-        ]
-    )
+        )
+    show_detail_cards(summary_cards)
 
     if st.button("Save as a new revision", type="primary", width="stretch"):
         record["source_item_code"] = draft.get("source_item_code", "")
@@ -1758,7 +1841,8 @@ def render_save(
         return
 
     export_record = dict(saved)
-    download_columns = st.columns(3 if can_create_new else 2)
+    download_count = 1 + int(can_create_new) + int(is_admin)
+    download_columns = st.columns(download_count)
     download_columns[0].download_button(
         "Customer quote PDF",
         data=quote_pdf(export_record),
@@ -1766,17 +1850,9 @@ def render_save(
         mime="application/pdf",
         width="stretch",
     )
-    one_row = pd.DataFrame([export_record]).to_csv(index=False).encode("utf-8-sig")
-    costing_column = 2 if can_create_new else 1
-    download_columns[costing_column].download_button(
-        "Costing CSV",
-        data=one_row,
-        file_name=f"{export_record['item_code']}-costing.csv",
-        mime="text/csv",
-        width="stretch",
-    )
+    next_column = 1
     if can_create_new:
-        download_columns[1].download_button(
+        download_columns[next_column].download_button(
             "Sage stock import CSV",
             data=sage_stock_import_csv(export_record),
             file_name=f"{export_record['item_code']}-sage-import.csv",
@@ -1786,6 +1862,16 @@ def render_save(
         st.info(
             "The Sage download uses the standard 72-column stock import layout. "
             "Check the account and product fields before importing."
+        )
+        next_column += 1
+    if is_admin:
+        one_row = pd.DataFrame([export_record]).to_csv(index=False).encode("utf-8-sig")
+        download_columns[next_column].download_button(
+            "Costing CSV",
+            data=one_row,
+            file_name=f"{export_record['item_code']}-costing.csv",
+            mime="text/csv",
+            width="stretch",
         )
 
 
@@ -1816,7 +1902,11 @@ def load_saved_costing(record: dict[str, Any]) -> None:
     st.session_state.step = 1
 
 
-def render_history(repository: CsvRepository, current_user: str) -> None:
+def render_history(
+    repository: CsvRepository,
+    current_user: str,
+    is_admin: bool,
+) -> None:
     st.header("My costings")
     st.caption("These are the costings you have saved. Open one if you need to change it.")
     history = repository.load_user_history(current_user)
@@ -1841,7 +1931,6 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         "description",
         "fulfilment_type",
         "order_quantity",
-        "pricing_base_per_1000",
         "selling_price_per_1000",
         "spread_percent",
         "spread_per_machine_hour",
@@ -1849,6 +1938,11 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         "traffic_override_by_username",
         "costing_id",
     ]
+    if is_admin:
+        visible_columns.insert(
+            visible_columns.index("selling_price_per_1000"),
+            "pricing_base_per_1000",
+        )
     st.dataframe(
         filtered[visible_columns],
         hide_index=True,
@@ -1903,24 +1997,25 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         )
 
     with st.expander("Download this list"):
+        export_history = filtered if is_admin else filtered[visible_columns]
         columns = st.columns(2)
         columns[0].download_button(
             "Download CSV",
-            data=filtered.to_csv(index=False).encode("utf-8-sig"),
+            data=export_history.to_csv(index=False).encode("utf-8-sig"),
             file_name="my-costing-history.csv",
             mime="text/csv",
             width="stretch",
         )
         columns[1].download_button(
             "Print-friendly PDF",
-            data=history_pdf(filtered),
+            data=history_pdf(export_history),
             file_name="my-costing-history.pdf",
             mime="application/pdf",
             width="stretch",
         )
 
 
-def render_team_history(repository: CsvRepository) -> None:
+def render_team_history(repository: CsvRepository, is_admin: bool) -> None:
     st.header("Team history")
     st.caption("This shows every saved costing and the username that saved it.")
     history = repository.load_history()
@@ -1985,17 +2080,18 @@ def render_team_history(repository: CsvRepository) -> None:
     )
     st.caption("Team history is view-only. Each user can reopen their own work from My costings.")
     with st.expander("Download this view"):
+        export_history = filtered if is_admin else filtered[visible_columns]
         columns = st.columns(2)
         columns[0].download_button(
             "Download CSV",
-            data=filtered.to_csv(index=False).encode("utf-8-sig"),
+            data=export_history.to_csv(index=False).encode("utf-8-sig"),
             file_name="team-costing-history.csv",
             mime="text/csv",
             width="stretch",
         )
         columns[1].download_button(
             "Print-friendly PDF",
-            data=history_pdf(filtered),
+            data=history_pdf(export_history),
             file_name="team-costing-history.pdf",
             mime="application/pdf",
             width="stretch",
@@ -2162,11 +2258,11 @@ def render_workflow(
         st.success(workflow_notice)
     stage_navigation()
     if st.session_state.step == 0:
-        render_select(repository, can_create_new)
+        render_select(repository, can_create_new, is_admin)
     elif st.session_state.step == 1:
         render_specification(repository)
     elif st.session_state.step == 2:
-        render_costs(repository, rate_table)
+        render_costs(repository, rate_table, is_admin)
     elif st.session_state.step == 3:
         render_pricing(
             repository,
@@ -2176,7 +2272,14 @@ def render_workflow(
             is_admin,
         )
     else:
-        render_save(repository, user_username, user_email, user_name, can_create_new)
+        render_save(
+            repository,
+            user_username,
+            user_email,
+            user_name,
+            can_create_new,
+            is_admin,
+        )
 
 
 def main() -> None:
@@ -2225,9 +2328,9 @@ def main() -> None:
     sign_out_button(repository)
 
     if page == "My costings":
-        render_history(repository, user.email)
+        render_history(repository, user.email, user.is_admin)
     elif page == "Team history":
-        render_team_history(repository)
+        render_team_history(repository, user.is_admin)
     elif page == "User activity":
         render_admin_activity(repository, current_session_id)
     else:

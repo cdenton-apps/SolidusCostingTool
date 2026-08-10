@@ -22,6 +22,7 @@ def test_imported_material_and_haulier_rate_roll_into_pricing_base() -> None:
         {
             "customer_name": "Integration test customer",
             "order_quantity": 10_000,
+            "annual_volume_units": 75_000,
             "delivery_postcode": "BD20 0AA",
             "delivery_method": "Haulier",
         }
