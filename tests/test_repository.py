@@ -12,6 +12,48 @@ from src.repository import CsvRepository
 PROJECT_DATA = Path(__file__).resolve().parents[1] / "data"
 
 
+class _FakeCursor:
+    def __init__(self, *, history_records=None):
+        self.history_records = history_records or []
+        self.last_sql = ""
+        self.executed = []
+        self.rowcount = 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, sql, params=None):
+        self.last_sql = sql
+        self.executed.append((sql, params))
+
+    def fetchone(self):
+        if "COALESCE(MAX(revision)" in self.last_sql:
+            return {"revision": 1}
+        return None
+
+    def fetchall(self):
+        if "SELECT record FROM public.costing_revisions" in self.last_sql:
+            return [{"record": record} for record in self.history_records]
+        return []
+
+
+class _FakeConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def cursor(self):
+        return self._cursor
+
+
 def test_saves_append_only_revisions(tmp_path: Path) -> None:
     repository = CsvRepository(tmp_path)
     record = {
@@ -43,6 +85,61 @@ def test_saves_append_only_revisions(tmp_path: Path) -> None:
     assert list(history["created_by_username"]) == ["one", "two"]
     assert list(history["created_by_name"]) == ["User One", "User Two"]
     assert list(pd.to_numeric(history["selling_price_per_1000"])) == [150, 160]
+
+
+def test_neon_save_uses_database_without_writing_history_csv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(
+        repository, "_connect", lambda: _FakeConnection(cursor)
+    )
+
+    saved = repository.save_costing(
+        {"item_code": "DB-001", "customer_name": "Database Customer"},
+        user_username="connor",
+        user_email="connor@example.com",
+        user_name="Connor",
+    )
+
+    assert repository.uses_database
+    assert saved["revision"] == 1
+    assert any(
+        "INSERT INTO public.costing_revisions" in sql
+        for sql, _ in cursor.executed
+    )
+    assert not repository.history_path.exists()
+
+
+def test_neon_history_reconstructs_saved_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = {
+        "costing_id": "C-DB-ONE",
+        "item_code": "DB-001",
+        "revision": 1,
+        "created_by": "connor@example.com",
+        "created_by_username": "connor",
+        "created_by_name": "Connor",
+        "selling_price_per_1000": 150,
+    }
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor(history_records=[record])
+    monkeypatch.setattr(
+        repository, "_connect", lambda: _FakeConnection(cursor)
+    )
+
+    history = repository.load_history()
+
+    assert list(history["costing_id"]) == ["C-DB-ONE"]
+    assert list(history["created_by_username"]) == ["connor"]
 
 
 def test_simultaneous_users_receive_distinct_revisions(tmp_path: Path) -> None:

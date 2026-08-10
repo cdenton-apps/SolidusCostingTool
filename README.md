@@ -116,8 +116,8 @@ against Streamlit Secrets and is never saved in costing history. The saved
 revision records the original red result, reason, approver and approval time.
 Changing the price or spread cancels the approval and requires another review.
 The high-volume bands use the same recorded admin route when a red result needs
-to proceed; no extra discount is applied. A multi-user approval queue can be
-added when costing history moves to the shared PostgreSQL database.
+to proceed; no extra discount is applied. Neon now provides the shared database,
+so a multi-user approval queue can be added as a later workflow change.
 
 ## Run it locally
 
@@ -188,6 +188,34 @@ If both are supplied, the hash takes precedence.
 The real secrets file is ignored by Git and must never be committed. Explicit
 `mode = "demo"` remains available for local development tests only.
 
+## Neon database storage
+
+Saved costing revisions and user-session activity use Neon when a database URL
+is present. Product, BOM, board-price and haulier reference feeds remain as CSV
+files in the app package.
+
+1. Open the **Solidus Costing Tool** project in Neon.
+2. Choose **Connect**, enable connection pooling, and copy the pooled connection
+   string. Its hostname includes `-pooler`.
+3. In Streamlit Community Cloud, open **App settings > Secrets**.
+4. Add the following above the existing `[app_auth]` and `[users...]` sections:
+
+```toml
+[database]
+url = "PASTE_THE_POOLED_NEON_CONNECTION_STRING_HERE"
+```
+
+5. Save the Secrets. The sidebar will show **Storage: Neon database** after the
+   app restarts.
+
+The connection string contains the database password. Keep it in Streamlit
+Secrets only; never add it to GitHub. If the `[database]` section is absent, the
+app continues to use local CSV storage so local development still works.
+
+An administrator can open **User activity > Import earlier CSV costing history**
+to copy any revisions still held in `saved_costings.csv`. Existing Neon records
+are skipped.
+
 ## Keeping the data current
 
 The `data` folder contains the app-ready feeds:
@@ -200,7 +228,7 @@ The `data` folder contains the app-ready feeds:
 | `bom_costs.csv` | Material BOM lines and imported audit values |
 | `material_summaries.csv` | Precalculated material and machine-time summary for quick page loading |
 | `haulier_rates.csv` | Postcode, service, vendor and pallet rates |
-| `saved_costings.csv` | Append-only costing revisions |
+| `saved_costings.csv` | Local fallback and optional source for importing older revisions into Neon |
 
 After replacing the source workbooks, rebuild the app feeds with:
 
@@ -227,26 +255,19 @@ Machine time uses `EffectiveQuantityPerRun` (column Q in the BOM
 export) whenever it is present and positive. `SystemQuantityPerRun` is only the
 fallback when the effective quantity is blank.
 
-Set `COSTING_DATA_DIR` if live data and saved costings should sit outside the Git
-checkout or on a persistent mounted folder.
+Set `COSTING_DATA_DIR` if the CSV reference feeds should sit outside the Git
+checkout.
 
 ## Multiple users
 
 Each signed-in user gets their own working form. Saves use a shared file lock
-and unique references, so two people saving at the same time on one running app
-do not overwrite one another.
+in local CSV mode. With Neon configured, revision allocation is handled inside
+the database, so simultaneous users cannot take the same product revision.
 
-The admin session register is intentionally lightweight. Active time counts
-short gaps between user actions rather than the whole time a browser tab is
-open. The register is held in `data/active_sessions.csv`, is ignored by Git and
-can reset when Streamlit restarts the app. It is useful for day-to-day visibility,
-but it is not a permanent security or HR audit log.
-
-The Streamlit Community Cloud filesystem is not permanent storage. It can be
-replaced when the app reboots or redeploys. Before relying on this as the live
-costing history for multiple users, move saved revisions to shared persistent
-storage such as the company's SQL platform. The current repository layer keeps
-that database migration contained to one part of the app.
+Active time still counts short gaps between user actions rather than the whole
+time a browser tab is open. With Neon configured, the session register and
+saved revisions survive Streamlit restarts and redeployments. It remains a
+practical app-activity record rather than a formal HR monitoring system.
 
 ## Transport behaviour
 

@@ -45,6 +45,14 @@ from src.transport import HaulierRateTable, TransportLookupError
 PROJECT_ROOT = Path(__file__).resolve().parent
 STAGES = ["Product", "Order", "Costs", "Price", "Quote"]
 
+
+def configured_database_url() -> str:
+    """Read the private Neon connection string from Streamlit Secrets."""
+    try:
+        return str(dict(st.secrets.get("database", {})).get("url", "")).strip()
+    except FileNotFoundError:
+        return ""
+
 st.set_page_config(
     page_title="Solidus Costing Tool",
     page_icon="📦",
@@ -190,22 +198,25 @@ def track_user_session(
 @st.fragment(run_every="30s")
 def session_heartbeat(repository: CsvRepository, session_id: str) -> None:
     """Keep the admin view current and apply forced logouts promptly."""
-    if repository.session_forced_logout(session_id):
-        _sign_out_local_session(repository, "An administrator signed you out.")
-    now = _utc_now()
-    last_activity = pd.to_datetime(
-        st.session_state.get("app_last_activity_at"), utc=True, errors="coerce"
-    )
-    if pd.notna(last_activity) and (
-        now - last_activity
-    ).total_seconds() > session_timeout_minutes() * 60:
-        _sign_out_local_session(
-            repository,
-            "You were signed out after a period of inactivity.",
+    try:
+        if repository.session_forced_logout(session_id):
+            _sign_out_local_session(repository, "An administrator signed you out.")
+        now = _utc_now()
+        last_activity = pd.to_datetime(
+            st.session_state.get("app_last_activity_at"), utc=True, errors="coerce"
         )
-    repository.touch_session(
-        {"session_id": session_id, "last_heartbeat_utc": now.isoformat()}
-    )
+        if pd.notna(last_activity) and (
+            now - last_activity
+        ).total_seconds() > session_timeout_minutes() * 60:
+            _sign_out_local_session(
+                repository,
+                "You were signed out after a period of inactivity.",
+            )
+        repository.touch_session(
+            {"session_id": session_id, "last_heartbeat_utc": now.isoformat()}
+        )
+    except RepositoryBusyError:
+        st.warning("The activity database is temporarily unavailable.")
 
 
 def default_draft() -> dict[str, Any]:
@@ -2198,6 +2209,28 @@ def render_admin_activity(repository: CsvRepository, current_session_id: str) ->
     st.caption(
         "Live sessions and saved-costing activity. Times are approximate and use UTC."
     )
+    if repository.uses_database:
+        st.success("Saved costings and session activity are using Neon.")
+        with st.expander("Import earlier CSV costing history"):
+            st.caption(
+                "This safely copies any revisions still present in saved_costings.csv. "
+                "Costings already in Neon are skipped."
+            )
+            if st.button("Import CSV history into Neon"):
+                try:
+                    imported, available = repository.import_csv_history_to_database()
+                except RepositoryBusyError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(
+                        f"Imported {imported:,} of {available:,} CSV revision(s). "
+                        "Existing database records were left unchanged."
+                    )
+    else:
+        st.warning(
+            "Neon is not configured. Add the database URL in Streamlit Secrets "
+            "before relying on saved history."
+        )
     sessions = repository.load_sessions().copy()
     history = repository.load_history().copy()
     now = _utc_now()
@@ -2379,7 +2412,10 @@ def render_workflow(
 
 def main() -> None:
     user = require_user()
-    repository = CsvRepository(data_directory(PROJECT_ROOT))
+    repository = CsvRepository(
+        data_directory(PROJECT_ROOT),
+        database_url=configured_database_url(),
+    )
     rate_table = HaulierRateTable(repository.haulier_path)
     st.session_state.setdefault("step", 0)
 
@@ -2404,6 +2440,9 @@ def main() -> None:
         "Access: "
         + ("existing and new products" if user.can_create_new else "existing products")
     )
+    st.sidebar.caption(
+        "Storage: Neon database" if repository.uses_database else "Storage: local CSV"
+    )
     navigation = ["Costing workflow", "My costings"]
     if user.can_view_history or user.is_admin:
         navigation.append("Team history")
@@ -2414,7 +2453,11 @@ def main() -> None:
         navigation,
         key="main_navigation",
     )
-    current_session_id = track_user_session(repository, user, page)
+    try:
+        current_session_id = track_user_session(repository, user, page)
+    except RepositoryBusyError as exc:
+        st.error(str(exc))
+        st.stop()
     session_heartbeat(repository, current_session_id)
     st.sidebar.divider()
     st.sidebar.caption(
@@ -2422,22 +2465,25 @@ def main() -> None:
     )
     sign_out_button(repository)
 
-    if page == "My costings":
-        render_history(repository, user.email, user.is_admin)
-    elif page == "Team history":
-        render_team_history(repository, user.is_admin)
-    elif page == "User activity":
-        render_admin_activity(repository, current_session_id)
-    else:
-        render_workflow(
-            repository,
-            rate_table,
-            user.username,
-            user.email,
-            user.name,
-            user.can_create_new,
-            user.is_admin,
-        )
+    try:
+        if page == "My costings":
+            render_history(repository, user.email, user.is_admin)
+        elif page == "Team history":
+            render_team_history(repository, user.is_admin)
+        elif page == "User activity":
+            render_admin_activity(repository, current_session_id)
+        else:
+            render_workflow(
+                repository,
+                rate_table,
+                user.username,
+                user.email,
+                user.name,
+                user.can_create_new,
+                user.is_admin,
+            )
+    except RepositoryBusyError as exc:
+        st.error(str(exc))
 
 
 if __name__ == "__main__":

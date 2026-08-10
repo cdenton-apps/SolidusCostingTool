@@ -11,6 +11,9 @@ from typing import Any
 
 import pandas as pd
 from filelock import FileLock, Timeout
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 
 class RepositoryBusyError(RuntimeError):
@@ -186,9 +189,14 @@ BOM_TOTAL_RENAMES = {
 
 
 class CsvRepository:
-    """CSV-backed repository with imported item/BOM feeds and append-only history."""
+    """CSV reference feeds with optional Neon-backed history and sessions."""
 
-    def __init__(self, data_dir: str | Path):
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        database_url: str | None = None,
+    ):
         self.data_dir = Path(data_dir)
         self.items_path = self.data_dir / "current_items.csv"
         self.bom_path = self.data_dir / "bom_costs.csv"
@@ -198,7 +206,48 @@ class CsvRepository:
         self.material_summary_path = self.data_dir / "material_summaries.csv"
         self.history_path = self.data_dir / "saved_costings.csv"
         self.sessions_path = self.data_dir / "active_sessions.csv"
+        self.database_url = str(database_url or "").strip()
+        self.uses_database = bool(self.database_url)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def _connect(self):
+        if not self.database_url:
+            raise RuntimeError("Database storage is not configured.")
+        return psycopg.connect(
+            self.database_url,
+            connect_timeout=10,
+            row_factory=dict_row,
+        )
+
+    @staticmethod
+    def _json_ready(value: Any) -> Any:
+        """Convert pandas/numpy values into safe JSON values for Postgres."""
+        if isinstance(value, dict):
+            return {
+                str(key): CsvRepository._json_ready(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [CsvRepository._json_ready(item) for item in value]
+        if isinstance(value, (datetime, pd.Timestamp)):
+            return value.isoformat()
+        if hasattr(value, "item"):
+            value = value.item()
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    @staticmethod
+    def _timestamp(value: Any, *, fallback: datetime | None = None) -> datetime | None:
+        if value in (None, ""):
+            return fallback
+        parsed = pd.to_datetime(value, utc=True, errors="coerce")
+        return parsed.to_pydatetime() if pd.notna(parsed) else fallback
 
     def load_bom_lines(self, item_code: str | None = None) -> pd.DataFrame:
         if not self.bom_path.exists():
@@ -805,23 +854,132 @@ class CsvRepository:
             items[column] = items[column].fillna("")
         return items
 
-    def load_history(self) -> pd.DataFrame:
+    def _load_csv_history(self) -> pd.DataFrame:
         if not self.history_path.exists() or self.history_path.stat().st_size == 0:
             return pd.DataFrame(columns=HISTORY_COLUMNS)
         history = pd.read_csv(self.history_path)
         for column in HISTORY_COLUMNS:
             if column not in history:
                 history[column] = None
-        # Older rows pre-date username tracking. Keep them readable by showing
-        # the email identity that was already recorded for the audit trail.
         username = history["created_by_username"].fillna("").astype(str).str.strip()
         history.loc[username.eq(""), "created_by_username"] = history.loc[
             username.eq(""), "created_by"
         ]
         return history[HISTORY_COLUMNS]
 
+    @staticmethod
+    def _history_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
+        history = pd.DataFrame(records)
+        if history.empty:
+            return pd.DataFrame(columns=HISTORY_COLUMNS)
+        missing = [column for column in HISTORY_COLUMNS if column not in history]
+        if missing:
+            history = pd.concat(
+                [
+                    history,
+                    pd.DataFrame(
+                        {column: [None] * len(history) for column in missing},
+                        index=history.index,
+                    ),
+                ],
+                axis=1,
+            )
+        username = history["created_by_username"].fillna("").astype(str).str.strip()
+        history.loc[username.eq(""), "created_by_username"] = history.loc[
+            username.eq(""), "created_by"
+        ]
+        return history[HISTORY_COLUMNS]
+
+    def load_history(self) -> pd.DataFrame:
+        if self.uses_database:
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT record FROM public.costing_revisions "
+                            "ORDER BY created_at_utc, revision"
+                        )
+                        records = [row["record"] for row in cursor.fetchall()]
+            except psycopg.Error as exc:
+                raise RepositoryBusyError(
+                    "The costing database could not be reached. Please try again."
+                ) from exc
+            return self._history_frame(records)
+        return self._load_csv_history()
+
+    def import_csv_history_to_database(self) -> tuple[int, int]:
+        """Copy legacy CSV revisions into Neon without creating duplicates."""
+        if not self.uses_database:
+            return (0, 0)
+        history = self._load_csv_history()
+        if history.empty:
+            return (0, 0)
+        imported = 0
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    for _, row in history.iterrows():
+                        record = self._json_ready(row.to_dict())
+                        costing_id = str(record.get("costing_id") or "").strip()
+                        item_code = str(record.get("item_code") or "").strip()
+                        if not costing_id or not item_code:
+                            continue
+                        cursor.execute(
+                            "INSERT INTO public.costing_revisions "
+                            "(costing_id, item_code, revision, source_item_code, "
+                            "customer_name, quote_reference, created_at_utc, "
+                            "created_by_email, created_by_username, created_by_name, record) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                            "ON CONFLICT DO NOTHING",
+                            (
+                                costing_id,
+                                item_code,
+                                int(float(record.get("revision") or 1)),
+                                str(record.get("source_item_code") or ""),
+                                str(record.get("customer_name") or ""),
+                                str(record.get("quote_reference") or ""),
+                                self._timestamp(
+                                    record.get("created_at_utc"),
+                                    fallback=datetime.now(timezone.utc),
+                                ),
+                                str(record.get("created_by") or "unknown"),
+                                str(
+                                    record.get("created_by_username")
+                                    or record.get("created_by")
+                                    or "unknown"
+                                ),
+                                str(record.get("created_by_name") or ""),
+                                Jsonb(record),
+                            ),
+                        )
+                        imported += max(0, cursor.rowcount)
+        except (psycopg.Error, TypeError, ValueError) as exc:
+            raise RepositoryBusyError(
+                "The existing costing history could not be imported."
+            ) from exc
+        return imported, len(history)
+
     def load_sessions(self) -> pd.DataFrame:
         """Load the small runtime session register used by the admin screen."""
+        if self.uses_database:
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT session_id, username, name, email, "
+                            "signed_in_at_utc, last_activity_utc, last_heartbeat_utc, "
+                            "active_seconds, current_page, force_logout, ended_at_utc "
+                            "FROM public.app_sessions ORDER BY signed_in_at_utc"
+                        )
+                        sessions = pd.DataFrame(cursor.fetchall())
+            except psycopg.Error as exc:
+                raise RepositoryBusyError(
+                    "The session database could not be reached. Please try again."
+                ) from exc
+            for column in SESSION_COLUMNS:
+                if column not in sessions:
+                    sessions[column] = ""
+            return sessions[SESSION_COLUMNS]
         if not self.sessions_path.exists() or self.sessions_path.stat().st_size == 0:
             return pd.DataFrame(columns=SESSION_COLUMNS, dtype=object)
         sessions = pd.read_csv(self.sessions_path, dtype=str, keep_default_na=False)
@@ -834,6 +992,73 @@ class CsvRepository:
         session_id = str(values.get("session_id", "") or "").strip()
         if not session_id:
             return
+        if self.uses_database:
+            now = datetime.now(timezone.utc)
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT session_id, username, name, email, signed_in_at_utc, "
+                            "last_activity_utc, last_heartbeat_utc, active_seconds, "
+                            "current_page, force_logout, ended_at_utc "
+                            "FROM public.app_sessions WHERE session_id = %s",
+                            (session_id,),
+                        )
+                        existing = cursor.fetchone() or {}
+                        merged = {
+                            column: values.get(column, existing.get(column))
+                            for column in SESSION_COLUMNS
+                        }
+                        merged.update(
+                            {
+                                "session_id": session_id,
+                                "username": str(merged.get("username") or "unknown"),
+                                "name": str(merged.get("name") or ""),
+                                "email": str(merged.get("email") or "unknown"),
+                                "signed_in_at_utc": self._timestamp(
+                                    merged.get("signed_in_at_utc"), fallback=now
+                                ),
+                                "last_activity_utc": self._timestamp(
+                                    merged.get("last_activity_utc"), fallback=now
+                                ),
+                                "last_heartbeat_utc": self._timestamp(
+                                    merged.get("last_heartbeat_utc"), fallback=now
+                                ),
+                                "active_seconds": float(
+                                    merged.get("active_seconds") or 0
+                                ),
+                                "current_page": str(merged.get("current_page") or ""),
+                                "force_logout": bool(merged.get("force_logout") or False),
+                                "ended_at_utc": self._timestamp(
+                                    merged.get("ended_at_utc")
+                                ),
+                            }
+                        )
+                        cursor.execute(
+                            "INSERT INTO public.app_sessions "
+                            "(session_id, username, name, email, signed_in_at_utc, "
+                            "last_activity_utc, last_heartbeat_utc, active_seconds, "
+                            "current_page, force_logout, ended_at_utc) "
+                            "VALUES (%(session_id)s, %(username)s, %(name)s, %(email)s, "
+                            "%(signed_in_at_utc)s, %(last_activity_utc)s, "
+                            "%(last_heartbeat_utc)s, %(active_seconds)s, %(current_page)s, "
+                            "%(force_logout)s, %(ended_at_utc)s) "
+                            "ON CONFLICT (session_id) DO UPDATE SET "
+                            "username = EXCLUDED.username, name = EXCLUDED.name, "
+                            "email = EXCLUDED.email, signed_in_at_utc = EXCLUDED.signed_in_at_utc, "
+                            "last_activity_utc = EXCLUDED.last_activity_utc, "
+                            "last_heartbeat_utc = EXCLUDED.last_heartbeat_utc, "
+                            "active_seconds = EXCLUDED.active_seconds, "
+                            "current_page = EXCLUDED.current_page, "
+                            "force_logout = EXCLUDED.force_logout, "
+                            "ended_at_utc = EXCLUDED.ended_at_utc",
+                            merged,
+                        )
+                return
+            except (psycopg.Error, TypeError, ValueError) as exc:
+                raise RepositoryBusyError(
+                    "The session database could not be updated. Please try again."
+                ) from exc
         lock = FileLock(str(self.sessions_path) + ".lock", timeout=10)
         try:
             with lock:
@@ -859,6 +1084,21 @@ class CsvRepository:
             ) from exc
 
     def session_forced_logout(self, session_id: str) -> bool:
+        if self.uses_database:
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT force_logout FROM public.app_sessions "
+                            "WHERE session_id = %s",
+                            (str(session_id),),
+                        )
+                        row = cursor.fetchone()
+                return bool(row and row["force_logout"])
+            except psycopg.Error as exc:
+                raise RepositoryBusyError(
+                    "The session database could not be checked. Please try again."
+                ) from exc
         sessions = self.load_sessions()
         matches = sessions[
             sessions["session_id"].fillna("").astype(str).eq(str(session_id))
@@ -883,6 +1123,22 @@ class CsvRepository:
 
     def load_user_history(self, user_email: str) -> pd.DataFrame:
         """Return only revisions created by the signed-in user."""
+        if self.uses_database:
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT record FROM public.costing_revisions "
+                            "WHERE lower(created_by_email) = lower(%s) "
+                            "ORDER BY created_at_utc, revision",
+                            (str(user_email).strip(),),
+                        )
+                        records = [row["record"] for row in cursor.fetchall()]
+            except psycopg.Error as exc:
+                raise RepositoryBusyError(
+                    "Your costing history could not be loaded. Please try again."
+                ) from exc
+            return self._history_frame(records)
         history = self.load_history()
         if history.empty:
             return history
@@ -904,7 +1160,23 @@ class CsvRepository:
         feed = feed.loc[feed_bom_available.gt(0)].copy()
         feed["source_type"] = "Stock list"
 
-        history = self.load_history()
+        if self.uses_database:
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT DISTINCT ON (item_code) record "
+                            "FROM public.costing_revisions "
+                            "ORDER BY item_code, created_at_utc DESC, revision DESC"
+                        )
+                        records = [row["record"] for row in cursor.fetchall()]
+            except psycopg.Error as exc:
+                raise RepositoryBusyError(
+                    "Saved products could not be loaded. Please try again."
+                ) from exc
+            history = self._history_frame(records)
+        else:
+            history = self.load_history()
         if history.empty:
             return feed
         latest = (
@@ -949,6 +1221,60 @@ class CsvRepository:
         user_email: str,
         user_name: str,
     ) -> dict[str, Any]:
+        if self.uses_database:
+            item_code = str(record.get("item_code", "")).strip()
+            now = datetime.now(timezone.utc)
+            costing_id = f"C-{now:%Y%m%d}-{uuid.uuid4().hex[:8].upper()}"
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        # Serialise revision allocation for this item while still
+                        # allowing different products to save concurrently.
+                        cursor.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                            (item_code,),
+                        )
+                        cursor.execute(
+                            "SELECT COALESCE(MAX(revision), 0) + 1 AS revision "
+                            "FROM public.costing_revisions WHERE item_code = %s",
+                            (item_code,),
+                        )
+                        revision = int(cursor.fetchone()["revision"])
+                        saved = {
+                            **record,
+                            "costing_id": costing_id,
+                            "revision": revision,
+                            "created_at_utc": now.isoformat(timespec="seconds"),
+                            "created_by": user_email,
+                            "created_by_username": user_username or user_email,
+                            "created_by_name": user_name,
+                        }
+                        safe_record = self._json_ready(saved)
+                        cursor.execute(
+                            "INSERT INTO public.costing_revisions "
+                            "(costing_id, item_code, revision, source_item_code, "
+                            "customer_name, quote_reference, created_at_utc, "
+                            "created_by_email, created_by_username, created_by_name, record) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (
+                                costing_id,
+                                item_code,
+                                revision,
+                                str(saved.get("source_item_code", "") or ""),
+                                str(saved.get("customer_name", "") or ""),
+                                str(saved.get("quote_reference", "") or ""),
+                                now,
+                                user_email,
+                                user_username or user_email,
+                                user_name,
+                                Jsonb(safe_record),
+                            ),
+                        )
+                return saved
+            except psycopg.Error as exc:
+                raise RepositoryBusyError(
+                    "The costing could not be saved to the database. Please try again."
+                ) from exc
         lock = FileLock(str(self.history_path) + ".lock", timeout=30)
         try:
             with lock:
