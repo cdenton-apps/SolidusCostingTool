@@ -243,6 +243,26 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             textColor=INK,
         )
     )
+    styles.add(
+        ParagraphStyle(
+            name="SignatureLabel",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=10,
+            alignment=TA_CENTER,
+            textColor=INK,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="SignatureMeta",
+            parent=styles["BodyText"],
+            fontSize=7.5,
+            leading=10,
+            textColor=colors.HexColor("#303434"),
+        )
+    )
     def paragraph(value: Any, style_name: str = "CellValue") -> Paragraph:
         return Paragraph(_display(value), styles[style_name])
 
@@ -523,6 +543,52 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ],
     )
+    signature_space = 18 * mm if fulfilment_type == "MTC" else 12 * mm
+
+    def signature_box(label: str) -> Table:
+        return Table(
+            [
+                [Paragraph(label, styles["SignatureLabel"])],
+                [""],
+                [Paragraph("Name: ____________________<br/>Date: _____________________", styles["SignatureMeta"])],
+            ],
+            colWidths=[58 * mm],
+            rowHeights=[7 * mm, signature_space, 12 * mm],
+            style=[
+                ("BACKGROUND", (0, 0), (0, 0), PALE),
+                ("BOX", (0, 0), (-1, -1), 0.4, GREY),
+                ("LINEBELOW", (0, 1), (0, 1), 0.5, INK),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ],
+        )
+
+    signature_table = Table(
+        [[
+            signature_box("Sales Representative"),
+            "",
+            signature_box("Customer"),
+            "",
+            signature_box("Sales Director"),
+        ]],
+        colWidths=[58 * mm, 3 * mm, 58 * mm, 3 * mm, 58 * mm],
+        style=[
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ],
+    )
+    signature_intro = (
+        "Signatures below confirm agreement to the quoted MTC term and call-off profile, "
+        "subject to final commercial approval and the attached terms and conditions."
+        if fulfilment_type == "MTC"
+        else "Signatures below record approval of this quotation."
+    )
     story.extend(
         [
             Spacer(1, 3 * mm),
@@ -544,6 +610,20 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
                 Paragraph(f"- {html.escape(term)}", styles["Terms"])
                 for term in commercial_terms
             ],
+            Spacer(1, 3 * mm),
+            KeepTogether(
+                [
+                    section(
+                        "MTC agreement signatures"
+                        if fulfilment_type == "MTC"
+                        else "Quotation signatures"
+                    ),
+                    Spacer(1, 1.5 * mm),
+                    Paragraph(signature_intro, styles["Terms"]),
+                    Spacer(1, 2 * mm),
+                    signature_table,
+                ]
+            ),
         ]
     )
 
