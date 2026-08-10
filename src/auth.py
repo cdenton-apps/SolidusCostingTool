@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -244,7 +245,15 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
         if st.session_state.get("authenticated_user"):
             stored = st.session_state.authenticated_user
             username = str(stored.get("username", stored["email"]))
-            if repository is not None and repository.has_app_users():
+            database_backed = stored.get("database_backed")
+            if database_backed is None:
+                database_backed = bool(
+                    repository is not None and repository.has_app_users()
+                )
+                stored["database_backed"] = database_backed
+            last_check = float(stored.get("last_auth_check_monotonic", 0) or 0)
+            check_due = time.monotonic() - last_check >= 60
+            if repository is not None and database_backed and check_due:
                 entry = repository.get_app_user(username)
                 if (
                     not entry
@@ -268,6 +277,8 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
                         "role": user.role,
                         "must_change_password": user.must_change_password,
                         "session_version": user.session_version,
+                        "database_backed": True,
+                        "last_auth_check_monotonic": time.monotonic(),
                     }
                 )
                 return user
@@ -325,6 +336,8 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
                     "role": user.role,
                     "must_change_password": user.must_change_password,
                     "session_version": user.session_version,
+                    "database_backed": database_users,
+                    "last_auth_check_monotonic": time.monotonic(),
                 }
                 if database_users:
                     repository.record_user_login(user.username)
