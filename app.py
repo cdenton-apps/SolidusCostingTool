@@ -12,7 +12,12 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from src.auth import require_user, session_timeout_minutes, sign_out_button
+from src.auth import (
+    authenticate_admin,
+    require_user,
+    session_timeout_minutes,
+    sign_out_button,
+)
 from src.calculations import (
     ANNUAL_VOLUME_ADJUSTMENTS,
     COMEX_FACTORS,
@@ -92,6 +97,10 @@ st.markdown(
     .access-pill { display: inline-block; font-size: .78rem; font-weight: 700;
         padding: .28rem .62rem; border-radius: 999px; background: var(--solidus-mist);
         border: 1px solid var(--solidus-grey); margin-bottom: .5rem; }
+    .amber-alert { background: #fff1c7; border: 3px solid #d97706;
+        border-left-width: 10px; border-radius: 14px; padding: 1rem 1.1rem;
+        margin: .75rem 0 1rem; color: #4a2a00; }
+    .amber-alert strong { display: block; font-size: 1.22rem; margin-bottom: .35rem; }
     .stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"] {
         background: var(--solidus-yellow); color: var(--solidus-ink); border-color: var(--solidus-gold);
         border-radius: 10px; font-weight: 700; }
@@ -416,10 +425,14 @@ def can_access(step: int) -> bool:
     if step == 3:
         return bool(st.session_state.get("breakdown"))
     pricing = st.session_state.get("pricing") or {}
-    return bool(pricing) and (
-        pricing.get("traffic_light_status") != "red"
-        or bool(pricing.get("traffic_override_approved"))
-    )
+    if not pricing:
+        return False
+    status = pricing.get("traffic_light_status")
+    if status == "red":
+        return bool(pricing.get("traffic_override_approved"))
+    if status == "amber":
+        return bool(pricing.get("traffic_amber_acknowledged"))
+    return True
 
 
 def stage_navigation() -> None:
@@ -1672,21 +1685,58 @@ def render_pricing(
                 "traffic_override_basis",
             ]:
                 pricing.pop(key, None)
+        if pricing.get("traffic_amber_acknowledgement_basis") != basis:
+            for key in [
+                "traffic_amber_acknowledged",
+                "traffic_amber_acknowledged_by_username",
+                "traffic_amber_acknowledged_at_utc",
+                "traffic_amber_acknowledgement_basis",
+            ]:
+                pricing.pop(key, None)
         if traffic["status"] != "red":
             pricing["traffic_override_approved"] = False
+        if traffic["status"] != "amber":
+            pricing["traffic_amber_acknowledged"] = False
         st.session_state.pricing = pricing
 
         st.markdown("#### Commercial check")
-        status_message = {
-            "green": "Green — both targets are met.",
-            "amber": "Amber — hourly spread is on target, but spread is below 30%.",
-            "red": "Red — this costing cannot continue without admin approval.",
-        }[traffic["status"]]
-        getattr(st, {"green": "success", "amber": "warning", "red": "error"}[traffic["status"]])(
-            f"{status_message} {traffic['reason'].capitalize()}."
-        )
+        if traffic["status"] == "green":
+            st.success(
+                f"GREEN — both targets are met. {traffic['reason'].capitalize()}."
+            )
+        elif traffic["status"] == "amber":
+            st.markdown(
+                '<div class="amber-alert"><strong>⚠ AMBER COMMERCIAL WARNING</strong>'
+                "The hourly target is met, but spread is below 30%. Review the "
+                "selling price before continuing.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.error(
+                f"RED — this costing cannot continue without admin approval. "
+                f"{traffic['reason'].capitalize()}."
+            )
 
         override_approved = bool(pricing.get("traffic_override_approved"))
+        amber_acknowledged = bool(pricing.get("traffic_amber_acknowledged"))
+        if traffic["status"] == "amber":
+            if amber_acknowledged:
+                st.success(
+                    "Amber warning acknowledged by "
+                    f"@{pricing.get('traffic_amber_acknowledged_by_username', user_username)}."
+                )
+            elif st.button("Acknowledge amber warning", type="primary"):
+                pricing.update(
+                    {
+                        "traffic_amber_acknowledged": True,
+                        "traffic_amber_acknowledged_by_username": user_username,
+                        "traffic_amber_acknowledged_at_utc": _utc_now().isoformat(),
+                        "traffic_amber_acknowledgement_basis": basis,
+                    }
+                )
+                st.session_state.pricing = pricing
+                st.rerun()
+
         if traffic["status"] == "red" and is_admin:
             if override_approved:
                 st.success(
@@ -1717,9 +1767,54 @@ def render_pricing(
                     st.session_state.pricing = pricing
                     st.rerun()
         elif traffic["status"] == "red":
-            st.caption("Ask an administrator to review and approve this costing.")
+            if override_approved:
+                st.success(
+                    f"Override approved by {pricing.get('traffic_override_by_name', '')}. "
+                    f"Reason: {pricing.get('traffic_override_reason', '')}"
+                )
+            else:
+                st.write(
+                    "An administrator can approve this costing below without signing "
+                    "the current user out."
+                )
+                with st.form("red_admin_approval", clear_on_submit=True):
+                    admin_username = st.text_input("Admin username")
+                    admin_password = st.text_input("Admin password", type="password")
+                    override_reason = st.text_area(
+                        "Reason for admin override *", height=90
+                    )
+                    submitted = st.form_submit_button("Approve red costing")
+                if submitted:
+                    approving_admin = authenticate_admin(
+                        admin_username,
+                        admin_password,
+                    )
+                    if not override_reason.strip():
+                        st.error("Enter a reason for the override.")
+                    elif approving_admin is None:
+                        st.error(
+                            "The administrator username or password was not recognised."
+                        )
+                    else:
+                        pricing.update(
+                            {
+                                "traffic_override_approved": True,
+                                "traffic_override_reason": override_reason.strip(),
+                                "traffic_override_by_username": approving_admin.username,
+                                "traffic_override_by_name": approving_admin.name,
+                                "traffic_override_by_email": approving_admin.email,
+                                "traffic_override_at_utc": _utc_now().isoformat(),
+                                "traffic_override_basis": basis,
+                            }
+                        )
+                        st.session_state.pricing = pricing
+                        st.rerun()
 
-        can_continue = traffic["status"] != "red" or override_approved
+        can_continue = (
+            traffic["status"] == "green"
+            or (traffic["status"] == "amber" and amber_acknowledged)
+            or (traffic["status"] == "red" and override_approved)
+        )
         if st.button(
             "Continue to save and print",
             type="primary",

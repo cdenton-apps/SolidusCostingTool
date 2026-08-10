@@ -212,6 +212,14 @@ def test_red_costing_is_blocked_for_non_admin(
     monkeypatch.setenv("COSTING_DATA_DIR", str(tmp_path))
     app = AppTest.from_file(APP_PATH, default_timeout=10)
     app.secrets["app_auth"] = {"mode": "password"}
+    app.secrets["users"] = {
+        "manager": {
+            "name": "Commercial Manager",
+            "email": "manager@example.com",
+            "password": "approval-password",
+            "is_admin": True,
+        }
+    }
     app.session_state["authenticated_user"] = {
         "username": "standard",
         "email": "standard@example.com",
@@ -259,10 +267,68 @@ def test_red_costing_is_blocked_for_non_admin(
         item.label != "How the material adjustment was calculated"
         for item in app.expander
     )
-    assert all(
-        item.label != "Reason for admin override *" for item in app.text_area
+    assert _widget(app.text_input, "Admin username")
+    assert _widget(app.text_input, "Admin password")
+    assert _widget(app.text_area, "Reason for admin override *")
+
+    _widget(app.text_input, "Admin username").set_value("manager")
+    _widget(app.text_input, "Admin password").set_value("approval-password")
+    _widget(app.text_area, "Reason for admin override *").set_value(
+        "Commercial exception agreed"
     )
-    assert any("Ask an administrator" in item.value for item in app.caption)
+    _widget(app.button, "Approve red costing").click().run()
+
+    assert app.session_state["pricing"]["traffic_override_approved"] is True
+    assert app.session_state["pricing"]["traffic_override_by_username"] == "manager"
+    assert not _widget(app.button, "Continue to save and print").disabled
+
+
+def test_amber_warning_must_be_acknowledged() -> None:
+    app = _demo_app()
+    app.session_state["step"] = 3
+    app.session_state["draft"] = {
+        "customer_name": "Amber test",
+        "item_code": "AMBER-TEST",
+        "description": "Amber test item",
+        "material": "Solid board",
+        "board_gsm": 1000,
+        "length_mm": 500,
+        "width_mm": 400,
+        "height_mm": 100,
+        "pallet_quantity": 1000,
+        "order_quantity": 10000,
+        "delivery_postcode": "BD20 0AA",
+        "spread_percent": 27,
+    }
+    app.session_state["breakdown"] = {
+        "pricing_base_per_1000": 100.0,
+        "pricing_base_per_item": 0.1,
+        "pallet_count": 10.0,
+        "net_weight_kg_per_1000": 500.0,
+        "materials_cost_per_1000": 90.0,
+        "material_base_per_1000": 90.0,
+        "transport_cost_per_1000": 10.0,
+        "machine_hours_per_1000": 0.05,
+        "total_machine_hours": 0.5,
+    }
+    app.run()
+
+    assert app.session_state["pricing"]["traffic_light_status"] == "amber"
+    assert any("AMBER COMMERCIAL WARNING" in item.value for item in app.markdown)
+    assert _widget(app.button, "Continue to save and print").disabled
+    _widget(app.button, "Acknowledge amber warning").click().run()
+
+    assert app.session_state["pricing"]["traffic_amber_acknowledged"] is True
+    assert app.session_state["pricing"][
+        "traffic_amber_acknowledged_by_username"
+    ] == "demo"
+    assert not _widget(app.button, "Continue to save and print").disabled
+
+    _widget(app.number_input, "Spread (%)").set_value(28).run()
+    assert not app.session_state["pricing"].get(
+        "traffic_amber_acknowledged", False
+    )
+    assert _widget(app.button, "Continue to save and print").disabled
 
 
 def test_exports_require_an_exact_saved_revision(

@@ -137,6 +137,10 @@ CALCULATION_COLUMNS = [
     "traffic_override_by_email",
     "traffic_override_at_utc",
     "traffic_override_basis",
+    "traffic_amber_acknowledged",
+    "traffic_amber_acknowledged_by_username",
+    "traffic_amber_acknowledged_at_utc",
+    "traffic_amber_acknowledgement_basis",
 ]
 
 HISTORY_COLUMNS = [

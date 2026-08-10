@@ -6,9 +6,11 @@ from streamlit.testing.v1 import AppTest
 
 from src.auth import (
     _verify_configured_password,
+    authenticate_admin,
     make_password_hash,
     verify_password,
 )
+import src.auth as auth_module
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -39,6 +41,36 @@ def test_configured_password_accepts_plain_secret_or_hash() -> None:
     assert not _verify_configured_password(
         "wrong-password", {"password_hash": encoded}
     )
+
+
+def test_inline_admin_check_requires_valid_admin_credentials(monkeypatch) -> None:
+    sections = {
+        "app_auth": {"mode": "password"},
+        "users": {
+            "manager": {
+                "name": "Commercial Manager",
+                "email": "manager@example.com",
+                "password": "approval-password",
+                "is_admin": True,
+            },
+            "standard": {
+                "name": "Standard User",
+                "email": "standard@example.com",
+                "password": "user-password",
+                "is_admin": False,
+            },
+        },
+    }
+    monkeypatch.setattr(
+        auth_module, "_secret_section", lambda name: sections.get(name, {})
+    )
+
+    approved = authenticate_admin("manager", "approval-password")
+    assert approved is not None
+    assert approved.is_admin
+    assert approved.username == "manager"
+    assert authenticate_admin("manager", "wrong") is None
+    assert authenticate_admin("standard", "user-password") is None
 
 
 def test_app_is_locked_when_no_users_are_configured() -> None:

@@ -96,6 +96,37 @@ def session_timeout_minutes() -> int:
         return 60
 
 
+def authenticate_admin(username: str, password: str) -> AuthenticatedUser | None:
+    """Check an administrator's password without changing the signed-in user."""
+    config = _secret_section("app_auth")
+    if str(config.get("mode", "password")).lower() != "password":
+        return None
+    users = _secret_section("users")
+    matched_key = next(
+        (
+            key
+            for key in users
+            if str(key).lower() == str(username).lower().strip()
+        ),
+        None,
+    )
+    entry = dict(users.get(matched_key, {})) if matched_key else {}
+    if (
+        not entry
+        or not _secret_bool(entry.get("is_admin"))
+        or not _verify_configured_password(password, entry)
+    ):
+        return None
+    return AuthenticatedUser(
+        username=str(matched_key),
+        email=str(entry.get("email", matched_key)),
+        name=str(entry.get("name", matched_key)),
+        can_create_new=_secret_bool(entry.get("can_create_new")),
+        can_view_history=_secret_bool(entry.get("can_view_history")),
+        is_admin=True,
+    )
+
+
 def require_user() -> AuthenticatedUser:
     """Authenticate with OIDC, a local password, or explicit demo mode."""
     config = _secret_section("app_auth")

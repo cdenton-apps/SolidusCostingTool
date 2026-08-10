@@ -104,15 +104,20 @@ The commercial check uses the following rules:
 
 - **Green:** at least £600 spread per machine hour and at least 30% spread.
 - **Amber:** at least £600 spread per machine hour and 25% to under 30% spread.
+  The app shows a prominent warning and requires the current user to acknowledge
+  it before continuing.
 - **Red:** below £600 spread per machine hour or below 25% spread.
 
-A red costing is blocked. A signed-in administrator can approve it after
-entering a reason. The saved revision records the original red result, reason,
-approver and approval time. Changing the price or spread cancels the approval
-and requires another review. The high-volume bands use the same recorded admin
-route when a red result needs to proceed; no extra discount is applied. A
-multi-user approval queue can be added when costing history moves to the shared
-PostgreSQL database.
+A red costing is blocked. If an administrator is already signed in, they can
+enter a reason and approve it directly. If an ordinary user is signed in, an
+administrator can enter their own username and password on the red warning,
+along with the reason, without signing the user out. The password is checked
+against Streamlit Secrets and is never saved in costing history. The saved
+revision records the original red result, reason, approver and approval time.
+Changing the price or spread cancels the approval and requires another review.
+The high-volume bands use the same recorded admin route when a red result needs
+to proceed; no extra discount is applied. A multi-user approval queue can be
+added when costing history moves to the shared PostgreSQL database.
 
 ## Run it locally
 
