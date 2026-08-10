@@ -18,11 +18,13 @@ the other figure update. Machine and labour are not added to the price.
    - **MTC (Make to Contract):** enter the agreement term, pallets per call-off
      and any potential pallet holding charge.
 4. Review the automatic material calculation and delivery quote.
-5. Change either spread percentage or selling price; the other value updates
+5. Select the annual-volume band and any relevant customer factors. These use
+   fixed material adjustments; users do not type a percentage.
+6. Change either spread percentage or selling price; the other value updates
    immediately.
-6. Review spread per machine hour, calculated from the BOM operation speeds
+7. Review spread per machine hour, calculated from the BOM operation speeds
    without adding machine or labour to the pricing base.
-7. Save a new revision and download a customer quotation, costing CSV or Sage
+8. Save a new revision and download a customer quotation, costing CSV or Sage
    stock-item import row.
 
 Downloads only become available after the current revision has been saved. If
@@ -57,6 +59,23 @@ percentage of selling price:
 
 `selling price = pricing base ÷ (1 − spread %)`
 
+The current annual-volume adjustments are:
+
+| Annual volume | Material adjustment |
+| --- | ---: |
+| 0–10,000 | +15% |
+| 10,001–25,000 | +10% |
+| 25,001–50,000 | +5% |
+| 50,001–100,000 | 0% |
+| 100,001–1,000,000 | −10% |
+| Over 1,000,000 | −15% |
+
+The current COMEX placeholders are **Consistent Payer −5%**, **Strategic
+Customer −3%**, **Over Credit Limit +10%** and **Poor Payment History +5%**.
+All selected percentages are added together and applied once to material cost;
+they are not compounded. Delivery remains the haulier price. These internal
+factors are saved in costing history but are not printed on the customer quote.
+
 The operational spread indicator is separate from customer pricing. It applies
 the selected spread percentage to material cost only, so transport distance
 cannot inflate the operational result:
@@ -72,6 +91,20 @@ each operation's run hours, system quantity, effective quantity, quantity source
 and calculated hours per 1,000, followed by the total for the quoted quantity.
 The total is shown as both decimal hours and an hours/minutes duration, with
 seconds retained in the expanded audit for easier checking.
+
+The commercial check uses the following rules:
+
+- **Green:** at least £600 spread per machine hour and at least 30% spread.
+- **Amber:** at least £600 spread per machine hour and 25% to under 30% spread.
+- **Red:** below £600 spread per machine hour or below 25% spread.
+
+A red costing is blocked. A signed-in administrator can approve it after
+entering a reason. The saved revision records the original red result, reason,
+approver and approval time. Changing the price or spread cancels the approval
+and requires another review. The high-volume bands use the same recorded admin
+route when a red result needs to proceed; no extra discount is applied. A
+multi-user approval queue can be added when costing history moves to the shared
+PostgreSQL database.
 
 ## Run it locally
 

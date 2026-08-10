@@ -19,11 +19,39 @@ REQUIRED_FIELDS = {
 }
 
 
+COMEX_FACTORS = {
+    "comex_consistent_payer": ("Consistent Payer", -5.0),
+    "comex_strategic_customer": ("Strategic Customer", -3.0),
+    "comex_over_credit_limit": ("Over Credit Limit", 10.0),
+    "comex_poor_payment_history": ("Poor Payment History", 5.0),
+}
+
+ANNUAL_VOLUME_ADJUSTMENTS = {
+    "0 - 10,000": 15.0,
+    "10,001 - 25,000": 10.0,
+    "25,001 - 50,000": 5.0,
+    "50,001 - 100,000": 0.0,
+    "100,001 - 1,000,000": -10.0,
+    "Over 1,000,000": -15.0,
+}
+
+DEFAULT_ANNUAL_VOLUME_BAND = "50,001 - 100,000"
+
+
 def _number(values: dict[str, Any], key: str) -> float:
     try:
         return float(values.get(key, 0) or 0)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{key} must be numeric") from exc
+
+
+def _flag(values: dict[str, Any], key: str) -> bool:
+    value = values.get(key, False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def validate_details(values: dict[str, Any]) -> list[str]:
@@ -90,7 +118,23 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         )
 
     materials = _number(values, "materials_cost_per_1000")
-    material_base = materials
+    annual_volume_band = str(
+        values.get("annual_volume_band", DEFAULT_ANNUAL_VOLUME_BAND)
+        or DEFAULT_ANNUAL_VOLUME_BAND
+    )
+    annual_volume_adjustment = ANNUAL_VOLUME_ADJUSTMENTS.get(
+        annual_volume_band, 0.0
+    )
+    comex_adjustment = sum(
+        percent
+        for key, (_, percent) in COMEX_FACTORS.items()
+        if _flag(values, key)
+    )
+    # Commercial percentages are deliberately additive. They are applied once
+    # to material cost only, never sequentially and never to delivery.
+    total_material_adjustment = annual_volume_adjustment + comex_adjustment
+    material_adjustment_value = materials * total_material_adjustment / 100
+    material_base = materials + material_adjustment_value
 
     delivery_method = str(values.get("delivery_method", "Haulier"))
     transport_total = (
@@ -106,12 +150,42 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         "pallet_count": float(pallet_count),
         "transport_total": round(transport_total, 4),
         "materials_cost_per_1000": round(materials, 4),
+        "annual_volume_adjustment_percent": round(annual_volume_adjustment, 4),
+        "comex_adjustment_percent": round(comex_adjustment, 4),
+        "total_material_adjustment_percent": round(total_material_adjustment, 4),
+        "material_adjustment_value_per_1000": round(material_adjustment_value, 4),
+        "adjusted_materials_cost_per_1000": round(material_base, 4),
         "material_base_per_1000": round(material_base, 4),
         "transport_cost_per_1000": round(transport_cost_per_1000, 4),
         "pricing_base_per_1000": round(pricing_base, 4),
         "pricing_base_per_item": round(pricing_base / 1_000, 5),
         "machine_hours_per_1000": round(machine_hours_per_1000, 6),
         "total_machine_hours": round(total_machine_hours, 4),
+    }
+
+
+def traffic_light_result(
+    spread_per_machine_hour: float,
+    spread_percent: float,
+) -> dict[str, str]:
+    """Return the commercial traffic-light result and a plain reason."""
+    hourly = float(spread_per_machine_hour)
+    margin = float(spread_percent)
+    if hourly < 600 or margin < 25:
+        failures: list[str] = []
+        if hourly < 600:
+            failures.append("spread per machine hour is below £600")
+        if margin < 25:
+            failures.append("spread is below 25%")
+        return {"status": "red", "reason": " and ".join(failures)}
+    if margin >= 30:
+        return {
+            "status": "green",
+            "reason": "spread per machine hour is at least £600 and spread is at least 30%",
+        }
+    return {
+        "status": "amber",
+        "reason": "spread per machine hour is at least £600 and spread is between 25% and 30%",
     }
 
 

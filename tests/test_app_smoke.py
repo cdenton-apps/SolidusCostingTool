@@ -37,7 +37,12 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.number_input, "Width (mm) *").set_value(376)
     _widget(app.number_input, "Height (mm) *").set_value(149)
     _widget(app.number_input, "Order quantity (units) *").set_value(10000)
+    _widget(app.selectbox, "Annual volume").set_value("0 - 10,000")
+    _widget(app.checkbox, "Consistent Payer").check()
     _widget(app.button, "Save order details").click().run()
+
+    assert app.session_state["draft"]["annual_volume_band"] == "0 - 10,000"
+    assert app.session_state["draft"]["comex_consistent_payer"] is True
 
     assert all("tooling" not in widget.label.lower() for widget in app.number_input)
     assert all(
@@ -52,6 +57,9 @@ def test_new_item_reaches_pricing_stage() -> None:
         "__NONE__"
     ).run()
     _widget(app.button, "Calculate pricing base").click().run()
+    assert app.session_state["breakdown"][
+        "total_material_adjustment_percent"
+    ] == pytest.approx(10)
     _widget(app.button, "Continue to pricing").click().run()
 
     assert not app.exception
@@ -143,6 +151,105 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
         pricing_base * 2
     ).run()
     assert _widget(app.number_input, "Spread (%)").value == pytest.approx(50)
+
+
+def test_red_costing_requires_recorded_admin_override() -> None:
+    app = _demo_app()
+    app.session_state["step"] = 3
+    app.session_state["draft"] = {
+        "customer_name": "Approval test",
+        "item_code": "APPROVAL-TEST",
+        "description": "Approval test item",
+        "material": "Solid board",
+        "board_gsm": 1000,
+        "length_mm": 500,
+        "width_mm": 400,
+        "height_mm": 100,
+        "pallet_quantity": 1000,
+        "order_quantity": 10000,
+        "delivery_postcode": "BD20 0AA",
+        "spread_percent": 30,
+    }
+    app.session_state["breakdown"] = {
+        "pricing_base_per_1000": 100.0,
+        "pricing_base_per_item": 0.1,
+        "pallet_count": 10.0,
+        "net_weight_kg_per_1000": 500.0,
+        "materials_cost_per_1000": 90.0,
+        "material_base_per_1000": 90.0,
+        "transport_cost_per_1000": 10.0,
+        "machine_hours_per_1000": 0.5,
+        "total_machine_hours": 5.0,
+    }
+    app.run()
+
+    assert app.session_state["pricing"]["traffic_light_status"] == "red"
+    assert _widget(app.button, "Continue to save and print").disabled
+    _widget(app.text_area, "Reason for admin override *").set_value(
+        "Approved for this customer agreement"
+    ).run()
+    _widget(app.button, "Approve red costing").click().run()
+
+    assert app.session_state["pricing"]["traffic_override_approved"] is True
+    assert app.session_state["pricing"]["traffic_override_by_username"] == "demo"
+    assert not _widget(app.button, "Continue to save and print").disabled
+
+    _widget(app.number_input, "Spread (%)").set_value(31).run()
+    assert not app.session_state["pricing"].get("traffic_override_approved", False)
+    assert _widget(app.button, "Continue to save and print").disabled
+
+
+def test_red_costing_is_blocked_for_non_admin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for source in PROJECT_DATA.glob("*.csv"):
+        copy2(source, tmp_path / source.name)
+    monkeypatch.setenv("COSTING_DATA_DIR", str(tmp_path))
+    app = AppTest.from_file(APP_PATH, default_timeout=10)
+    app.secrets["app_auth"] = {"mode": "password"}
+    app.session_state["authenticated_user"] = {
+        "username": "standard",
+        "email": "standard@example.com",
+        "name": "Standard User",
+        "can_create_new": False,
+        "can_view_history": False,
+        "is_admin": False,
+    }
+    app.session_state["step"] = 3
+    app.session_state["draft"] = {
+        "customer_name": "Approval test",
+        "item_code": "APPROVAL-TEST",
+        "description": "Approval test item",
+        "material": "Solid board",
+        "board_gsm": 1000,
+        "length_mm": 500,
+        "width_mm": 400,
+        "height_mm": 100,
+        "pallet_quantity": 1000,
+        "order_quantity": 10000,
+        "delivery_postcode": "BD20 0AA",
+        "spread_percent": 30,
+        "source_item_code": "APPROVAL-TEST",
+    }
+    app.session_state["breakdown"] = {
+        "pricing_base_per_1000": 100.0,
+        "pricing_base_per_item": 0.1,
+        "pallet_count": 10.0,
+        "net_weight_kg_per_1000": 500.0,
+        "materials_cost_per_1000": 90.0,
+        "material_base_per_1000": 90.0,
+        "transport_cost_per_1000": 10.0,
+        "machine_hours_per_1000": 0.5,
+        "total_machine_hours": 5.0,
+    }
+    app.run()
+
+    assert app.session_state["pricing"]["traffic_light_status"] == "red"
+    assert _widget(app.button, "Continue to save and print").disabled
+    assert all(
+        item.label != "Reason for admin override *" for item in app.text_area
+    )
+    assert any("Ask an administrator" in item.value for item in app.caption)
 
 
 def test_exports_require_an_exact_saved_revision(

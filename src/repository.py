@@ -65,6 +65,11 @@ SPECIFICATION_COLUMNS = [
     "transport_booking",
     "transport_rate_zone",
     "transport_manual_override",
+    "annual_volume_band",
+    "comex_consistent_payer",
+    "comex_strategic_customer",
+    "comex_over_credit_limit",
+    "comex_poor_payment_history",
 ]
 
 COST_INPUT_COLUMNS = [
@@ -83,6 +88,11 @@ COST_INPUT_COLUMNS = [
     "material_cost_source",
     "machine_hours_per_1000",
     "machine_time_source",
+    "annual_volume_adjustment_percent",
+    "comex_adjustment_percent",
+    "total_material_adjustment_percent",
+    "material_adjustment_value_per_1000",
+    "adjusted_materials_cost_per_1000",
 ]
 
 NUMERIC_COST_INPUT_COLUMNS = [
@@ -94,6 +104,11 @@ NUMERIC_COST_INPUT_COLUMNS = [
     "other_components_cost_per_1000",
     "units_out",
     "machine_hours_per_1000",
+    "annual_volume_adjustment_percent",
+    "comex_adjustment_percent",
+    "total_material_adjustment_percent",
+    "material_adjustment_value_per_1000",
+    "adjusted_materials_cost_per_1000",
 ]
 
 CALCULATION_COLUMNS = [
@@ -112,6 +127,15 @@ CALCULATION_COLUMNS = [
     "total_machine_hours",
     "total_spread_value",
     "spread_per_machine_hour",
+    "traffic_light_status",
+    "traffic_light_reason",
+    "traffic_override_approved",
+    "traffic_override_reason",
+    "traffic_override_by_username",
+    "traffic_override_by_name",
+    "traffic_override_by_email",
+    "traffic_override_at_utc",
+    "traffic_override_basis",
 ]
 
 HISTORY_COLUMNS = [

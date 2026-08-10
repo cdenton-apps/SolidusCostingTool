@@ -14,10 +14,14 @@ import streamlit as st
 
 from src.auth import require_user, session_timeout_minutes, sign_out_button
 from src.calculations import (
+    ANNUAL_VOLUME_ADJUSTMENTS,
+    COMEX_FACTORS,
+    DEFAULT_ANNUAL_VOLUME_BAND,
     calculate_cost,
     operational_spread_metrics,
     price_from_spread_percent,
     spread_percent_from_price,
+    traffic_light_result,
     validate_details,
 )
 from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
@@ -223,6 +227,11 @@ def default_draft() -> dict[str, Any]:
         "delivery_pallets_per_calloff": 0,
         "estimated_delivery_count": 1,
         "pallet_holding_charge_per_pallet_per_week": 0.0,
+        "annual_volume_band": DEFAULT_ANNUAL_VOLUME_BAND,
+        "comex_consistent_payer": False,
+        "comex_strategic_customer": False,
+        "comex_over_credit_limit": False,
+        "comex_poor_payment_history": False,
         "bom_available": 0,
         "materials_cost_per_1000": 0.0,
         "board_item_code": "",
@@ -257,6 +266,15 @@ def draft_number(key: str, fallback: float = 0.0) -> float:
         return float(st.session_state.draft.get(key, fallback) or fallback)
     except (TypeError, ValueError):
         return fallback
+
+
+def draft_flag(key: str) -> bool:
+    value = st.session_state.draft.get(key, False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def format_unit_price(value: Any) -> str:
@@ -305,7 +323,13 @@ def show_detail_cards(items: list[tuple[str, Any]]) -> None:
 
 def with_operational_spread(pricing: dict[str, float]) -> dict[str, float]:
     breakdown = st.session_state.get("breakdown", {})
-    materials = float(breakdown.get("materials_cost_per_1000", 0) or 0)
+    materials = float(
+        breakdown.get(
+            "material_base_per_1000",
+            breakdown.get("materials_cost_per_1000", 0),
+        )
+        or 0
+    )
     material_pricing = price_from_spread_percent(
         materials,
         pricing["spread_percent"],
@@ -328,6 +352,27 @@ def with_operational_spread(pricing: dict[str, float]) -> dict[str, float]:
             "spread_value_per_1000"
         ],
     }
+
+
+def traffic_override_basis(pricing: dict[str, float]) -> str:
+    """Fingerprint the figures an admin has explicitly approved."""
+    payload = {
+        "item_code": st.session_state.draft.get("item_code", ""),
+        "order_quantity": draft_number("order_quantity"),
+        "pricing_base_per_1000": float(
+            st.session_state.breakdown.get("pricing_base_per_1000", 0) or 0
+        ),
+        "spread_percent": float(pricing.get("spread_percent", 0) or 0),
+        "selling_price_per_1000": float(
+            pricing.get("selling_price_per_1000", 0) or 0
+        ),
+        "spread_per_machine_hour": float(
+            pricing.get("spread_per_machine_hour", 0) or 0
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def reset_downstream() -> None:
@@ -368,7 +413,11 @@ def can_access(step: int) -> bool:
         return True
     if step == 3:
         return bool(st.session_state.get("breakdown"))
-    return bool(st.session_state.get("pricing"))
+    pricing = st.session_state.get("pricing") or {}
+    return bool(pricing) and (
+        pricing.get("traffic_light_status") != "red"
+        or bool(pricing.get("traffic_override_approved"))
+    )
 
 
 def stage_navigation() -> None:
@@ -395,10 +444,16 @@ def show_cost_breakdown(breakdown: dict[str, float]) -> None:
             ("Net kg / 1,000", f"{breakdown['net_weight_kg_per_1000']:,.2f}"),
         ]
     )
-    rows = [
-        ("Calculated materials", breakdown["materials_cost_per_1000"]),
-        ("Delivery pass-through", breakdown["transport_cost_per_1000"]),
-    ]
+    rows = [("Calculated materials", breakdown["materials_cost_per_1000"])]
+    adjustment = float(breakdown.get("material_adjustment_value_per_1000", 0) or 0)
+    if adjustment:
+        rows.extend(
+            [
+                ("Customer and volume adjustment", adjustment),
+                ("Adjusted material base", breakdown["material_base_per_1000"]),
+            ]
+        )
+    rows.append(("Delivery pass-through", breakdown["transport_cost_per_1000"]))
     table = pd.DataFrame(rows, columns=["Cost element", "Cost per 1,000"])
     st.dataframe(
         table,
@@ -839,6 +894,51 @@ def render_specification(repository: CsvRepository) -> None:
             f"of up to {int(delivery_pallets_per_calloff):,} pallets."
         )
 
+    st.markdown("#### Customer and annual volume")
+    volume_options = list(ANNUAL_VOLUME_ADJUSTMENTS)
+    current_volume_band = str(
+        draft.get("annual_volume_band", DEFAULT_ANNUAL_VOLUME_BAND)
+        or DEFAULT_ANNUAL_VOLUME_BAND
+    )
+    if current_volume_band not in volume_options:
+        current_volume_band = DEFAULT_ANNUAL_VOLUME_BAND
+    annual_volume_band = st.selectbox(
+        "Annual volume",
+        volume_options,
+        index=volume_options.index(current_volume_band),
+        format_func=lambda band: (
+            f"{band} ({ANNUAL_VOLUME_ADJUSTMENTS[band]:+.0f}%)"
+            if ANNUAL_VOLUME_ADJUSTMENTS[band]
+            else f"{band} (standard)"
+        ),
+        help="This adjusts material cost only. Delivery rates are not changed.",
+    )
+    positive, negative = st.columns(2)
+    with positive:
+        st.caption("Positive customer factors")
+        consistent_payer = st.checkbox(
+            COMEX_FACTORS["comex_consistent_payer"][0],
+            value=draft_flag("comex_consistent_payer"),
+        )
+        strategic_customer = st.checkbox(
+            COMEX_FACTORS["comex_strategic_customer"][0],
+            value=draft_flag("comex_strategic_customer"),
+        )
+    with negative:
+        st.caption("Negative customer factors")
+        over_credit_limit = st.checkbox(
+            COMEX_FACTORS["comex_over_credit_limit"][0],
+            value=draft_flag("comex_over_credit_limit"),
+        )
+        poor_payment_history = st.checkbox(
+            COMEX_FACTORS["comex_poor_payment_history"][0],
+            value=draft_flag("comex_poor_payment_history"),
+        )
+    st.caption(
+        "Selected customer factors and the annual-volume rate are added together "
+        "and applied once to material cost."
+    )
+
     submitted = st.button("Save order details", type="primary")
 
     if submitted:
@@ -870,6 +970,11 @@ def render_specification(repository: CsvRepository) -> None:
             "pallet_holding_charge_per_pallet_per_week": float(
                 pallet_holding_charge
             ),
+            "annual_volume_band": annual_volume_band,
+            "comex_consistent_payer": bool(consistent_payer),
+            "comex_strategic_customer": bool(strategic_customer),
+            "comex_over_credit_limit": bool(over_credit_limit),
+            "comex_poor_payment_history": bool(poor_payment_history),
             "delivery_postcode": delivery_postcode.strip().upper(),
         }
         errors = validate_details(updated)
@@ -1345,7 +1450,13 @@ def show_machine_time_calculation(
         )
 
 
-def render_pricing(repository: CsvRepository) -> None:
+def render_pricing(
+    repository: CsvRepository,
+    user_username: str,
+    user_email: str,
+    user_name: str,
+    is_admin: bool,
+) -> None:
     st.subheader("Set spread or selling price")
     breakdown = st.session_state.breakdown
     show_cost_breakdown(breakdown)
@@ -1451,7 +1562,8 @@ def render_pricing(repository: CsvRepository) -> None:
                 ]
             )
             st.caption(
-                f"Spread/hour uses materials only: £{float(breakdown['materials_cost_per_1000']):,.2f} "
+                f"Spread/hour uses the adjusted material base only: "
+                f"£{float(breakdown.get('material_base_per_1000', breakdown.get('materials_cost_per_1000', 0))):,.2f} "
                 f"per 1,000 at {pricing['spread_percent']:,.2f}%. Delivery is left out. Machine time: "
                 f"{st.session_state.draft.get('machine_time_source', 'BOM operation speeds')}."
             )
@@ -1462,7 +1574,78 @@ def render_pricing(repository: CsvRepository) -> None:
             )
         if pricing["spread_percent"] < 0:
             st.warning("The selected selling price produces a negative spread.")
-        if st.button("Continue to save and print", type="primary"):
+
+        traffic = traffic_light_result(
+            pricing.get("spread_per_machine_hour", 0),
+            pricing.get("spread_percent", 0),
+        )
+        basis = traffic_override_basis(pricing)
+        pricing["traffic_light_status"] = traffic["status"]
+        pricing["traffic_light_reason"] = traffic["reason"]
+        if pricing.get("traffic_override_basis") != basis:
+            for key in [
+                "traffic_override_approved",
+                "traffic_override_reason",
+                "traffic_override_by_username",
+                "traffic_override_by_name",
+                "traffic_override_by_email",
+                "traffic_override_at_utc",
+                "traffic_override_basis",
+            ]:
+                pricing.pop(key, None)
+        if traffic["status"] != "red":
+            pricing["traffic_override_approved"] = False
+        st.session_state.pricing = pricing
+
+        st.markdown("#### Commercial check")
+        status_message = {
+            "green": "Green — both targets are met.",
+            "amber": "Amber — hourly spread is on target, but spread is below 30%.",
+            "red": "Red — this costing cannot continue without admin approval.",
+        }[traffic["status"]]
+        getattr(st, {"green": "success", "amber": "warning", "red": "error"}[traffic["status"]])(
+            f"{status_message} {traffic['reason'].capitalize()}."
+        )
+
+        override_approved = bool(pricing.get("traffic_override_approved"))
+        if traffic["status"] == "red" and is_admin:
+            if override_approved:
+                st.success(
+                    f"Override approved by {pricing.get('traffic_override_by_name', user_name)}. "
+                    f"Reason: {pricing.get('traffic_override_reason', '')}"
+                )
+            else:
+                override_reason = st.text_area(
+                    "Reason for admin override *",
+                    key="traffic_override_reason_input",
+                    height=90,
+                )
+                if st.button(
+                    "Approve red costing",
+                    disabled=not override_reason.strip(),
+                ):
+                    pricing.update(
+                        {
+                            "traffic_override_approved": True,
+                            "traffic_override_reason": override_reason.strip(),
+                            "traffic_override_by_username": user_username,
+                            "traffic_override_by_name": user_name,
+                            "traffic_override_by_email": user_email,
+                            "traffic_override_at_utc": _utc_now().isoformat(),
+                            "traffic_override_basis": basis,
+                        }
+                    )
+                    st.session_state.pricing = pricing
+                    st.rerun()
+        elif traffic["status"] == "red":
+            st.caption("Ask an administrator to review and approve this costing.")
+
+        can_continue = traffic["status"] != "red" or override_approved
+        if st.button(
+            "Continue to save and print",
+            type="primary",
+            disabled=not can_continue,
+        ):
             navigate_to(4)
 
 
@@ -1662,6 +1845,8 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
         "selling_price_per_1000",
         "spread_percent",
         "spread_per_machine_hour",
+        "traffic_light_status",
+        "traffic_override_by_username",
         "costing_id",
     ]
     st.dataframe(
@@ -1674,6 +1859,10 @@ def render_history(repository: CsvRepository, current_user: str) -> None:
             "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
             "spread_percent": st.column_config.NumberColumn(format="%.2f%%"),
             "order_quantity": st.column_config.NumberColumn(format="%.0f"),
+            "traffic_light_status": st.column_config.TextColumn("Check"),
+            "traffic_override_by_username": st.column_config.TextColumn(
+                "Override by"
+            ),
         },
     )
 
@@ -1768,6 +1957,10 @@ def render_team_history(repository: CsvRepository) -> None:
         "order_quantity",
         "selling_price_per_1000",
         "spread_percent",
+        "spread_per_machine_hour",
+        "traffic_light_status",
+        "traffic_override_by_username",
+        "traffic_override_reason",
         "costing_id",
     ]
     st.dataframe(
@@ -1779,6 +1972,14 @@ def render_team_history(repository: CsvRepository) -> None:
             "created_by_name": st.column_config.TextColumn("Name"),
             "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
             "spread_percent": st.column_config.NumberColumn(format="%.2f%%"),
+            "spread_per_machine_hour": st.column_config.NumberColumn(format="£%.2f"),
+            "traffic_light_status": st.column_config.TextColumn("Check"),
+            "traffic_override_by_username": st.column_config.TextColumn(
+                "Override by"
+            ),
+            "traffic_override_reason": st.column_config.TextColumn(
+                "Override reason"
+            ),
             "order_quantity": st.column_config.NumberColumn(format="%.0f"),
         },
     )
@@ -1947,6 +2148,7 @@ def render_workflow(
     user_email: str,
     user_name: str,
     can_create_new: bool,
+    is_admin: bool,
 ) -> None:
     st.markdown(
         '<div class="brand-banner"><div><div class="brand-name">Solidus</div>'
@@ -1966,7 +2168,13 @@ def render_workflow(
     elif st.session_state.step == 2:
         render_costs(repository, rate_table)
     elif st.session_state.step == 3:
-        render_pricing(repository)
+        render_pricing(
+            repository,
+            user_username,
+            user_email,
+            user_name,
+            is_admin,
+        )
     else:
         render_save(repository, user_username, user_email, user_name, can_create_new)
 
@@ -2030,6 +2238,7 @@ def main() -> None:
             user.email,
             user.name,
             user.can_create_new,
+            user.is_admin,
         )
 
 

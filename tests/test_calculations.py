@@ -3,10 +3,12 @@ from __future__ import annotations
 import pytest
 
 from src.calculations import (
+    DEFAULT_ANNUAL_VOLUME_BAND,
     calculate_cost,
     operational_spread_metrics,
     price_from_spread_percent,
     spread_percent_from_price,
+    traffic_light_result,
     validate_details,
 )
 
@@ -68,6 +70,36 @@ def test_machine_and_labour_source_values_are_ignored(valid_costing: dict) -> No
     assert calculate_cost(valid_costing) == result
 
 
+def test_customer_and_volume_factors_are_additive_and_material_only(
+    valid_costing: dict,
+) -> None:
+    valid_costing.update(
+        {
+            "materials_cost_per_1000": 100,
+            "annual_volume_band": "0 - 10,000",  # +15%
+            "comex_consistent_payer": True,  # -5%
+            "comex_strategic_customer": True,  # -3%
+            "comex_over_credit_limit": True,  # +10%
+            "comex_poor_payment_history": True,  # +5%
+        }
+    )
+    result = calculate_cost(valid_costing)
+
+    # 15 - 5 - 3 + 10 + 5 = 22%; it is applied once, not compounded.
+    assert result["total_material_adjustment_percent"] == pytest.approx(22)
+    assert result["material_adjustment_value_per_1000"] == pytest.approx(22)
+    assert result["material_base_per_1000"] == pytest.approx(122)
+    assert result["transport_cost_per_1000"] == pytest.approx(25)
+    assert result["pricing_base_per_1000"] == pytest.approx(147)
+
+
+def test_standard_volume_band_does_not_adjust_material(valid_costing: dict) -> None:
+    valid_costing["annual_volume_band"] = DEFAULT_ANNUAL_VOLUME_BAND
+    result = calculate_cost(valid_costing)
+    assert result["total_material_adjustment_percent"] == 0
+    assert result["material_base_per_1000"] == pytest.approx(70.4)
+
+
 def test_machine_time_changes_operational_hours_not_pricing(valid_costing: dict) -> None:
     original = calculate_cost(valid_costing)
     valid_costing["machine_hours_per_1000"] = 2.5
@@ -118,6 +150,21 @@ def test_operational_spread_is_not_changed_by_transport() -> None:
     )
     assert short_distance == long_distance
     assert material_spread == pytest.approx(60)
+
+
+@pytest.mark.parametrize(
+    ("hourly", "margin", "status"),
+    [
+        (600, 30, "green"),
+        (700, 35, "green"),
+        (600, 25, "amber"),
+        (700, 29.99, "amber"),
+        (599.99, 40, "red"),
+        (900, 24.99, "red"),
+    ],
+)
+def test_traffic_light_rules(hourly: float, margin: float, status: str) -> None:
+    assert traffic_light_result(hourly, margin)["status"] == status
 
 
 def test_validation_blocks_missing_fields(valid_costing: dict) -> None:
