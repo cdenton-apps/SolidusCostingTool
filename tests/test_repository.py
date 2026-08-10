@@ -398,7 +398,38 @@ def test_runtime_sessions_can_be_seen_forced_out_and_ended(tmp_path: Path) -> No
     assert not repository.session_forced_logout("session-two")
     repository.force_logout_session("session-two")
     assert repository.session_forced_logout("session-two")
+    assert repository.touch_session(
+        {
+            "session_id": "session-two",
+            "last_heartbeat_utc": "2026-08-07T09:06:00+00:00",
+        }
+    )
 
     repository.end_session("session-one")
     ended = repository.load_sessions().set_index("session_id").loc["session-one"]
     assert str(ended["ended_at_utc"]).strip()
+
+
+def test_reference_csv_is_reused_until_the_file_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boards_path = tmp_path / "board_items.csv"
+    pd.DataFrame([{"board_item_code": "BOARD-1"}]).to_csv(boards_path, index=False)
+    repository = CsvRepository(tmp_path)
+    real_read_csv = pd.read_csv
+    calls = 0
+
+    def counted_read_csv(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_read_csv(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_csv", counted_read_csv)
+
+    assert repository.load_board_items().iloc[0]["board_item_code"] == "BOARD-1"
+    assert repository.load_board_items().iloc[0]["board_item_code"] == "BOARD-1"
+    assert calls == 1
+
+    pd.DataFrame([{"board_item_code": "BOARD-2"}]).to_csv(boards_path, index=False)
+    assert repository.load_board_items().iloc[0]["board_item_code"] == "BOARD-2"
+    assert calls == 2
