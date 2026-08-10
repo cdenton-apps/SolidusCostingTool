@@ -4,6 +4,7 @@ import os
 import math
 import re
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 import pandas as pd
 from filelock import FileLock, Timeout
 import psycopg
+from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -210,16 +212,64 @@ class CsvRepository:
         self.sessions_path = self.data_dir / "active_sessions.csv"
         self.database_url = str(database_url or "").strip()
         self.uses_database = bool(self.database_url)
+        self._pool: ConnectionPool | None = None
+        self._pool_lock = threading.Lock()
+        self._reference_frames: dict[Path, tuple[tuple[int, int], pd.DataFrame]] = {}
+        self._derived_frames: dict[str, tuple[Any, pd.DataFrame]] = {}
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def _connect(self):
         if not self.database_url:
             raise RuntimeError("Database storage is not configured.")
-        return psycopg.connect(
-            self.database_url,
-            connect_timeout=10,
-            row_factory=dict_row,
+        if self._pool is None:
+            with self._pool_lock:
+                if self._pool is None:
+                    self._pool = ConnectionPool(
+                        conninfo=self.database_url,
+                        min_size=0,
+                        max_size=4,
+                        max_idle=60,
+                        timeout=10,
+                        kwargs={
+                            "connect_timeout": 10,
+                            "row_factory": dict_row,
+                        },
+                        open=True,
+                    )
+        return self._pool.connection(timeout=10)
+
+    @staticmethod
+    def _file_signature(path: Path) -> tuple[int, int]:
+        if not path.exists():
+            return (0, 0)
+        status = path.stat()
+        return (status.st_mtime_ns, status.st_size)
+
+    def reference_data_version(self) -> tuple[tuple[int, int], ...]:
+        """Return a cheap cache key that changes when an input feed changes."""
+        return tuple(
+            self._file_signature(path)
+            for path in (
+                self.items_path,
+                self.bom_path,
+                self.board_items_path,
+                self.board_prices_path,
+                self.material_summary_path,
+                self.haulier_path,
+            )
         )
+
+    def _read_reference_csv(self, path: Path) -> pd.DataFrame:
+        """Read a fixed input feed once, refreshing automatically after replacement."""
+        if not path.exists():
+            return pd.DataFrame()
+        signature = self._file_signature(path)
+        cached = self._reference_frames.get(path)
+        if cached is None or cached[0] != signature:
+            cached = (signature, pd.read_csv(path))
+            self._reference_frames[path] = cached
+            self._derived_frames.clear()
+        return cached[1].copy()
 
     @staticmethod
     def _json_ready(value: Any) -> Any:
@@ -514,12 +564,16 @@ class CsvRepository:
     def load_bom_lines(self, item_code: str | None = None) -> pd.DataFrame:
         if not self.bom_path.exists():
             return pd.DataFrame()
-        bom = pd.read_csv(self.bom_path)
+        bom = self._read_reference_csv(self.bom_path)
         if item_code is not None and "bom_code" in bom:
             bom = bom[bom["bom_code"] == item_code]
         return bom
 
     def load_bom_summary(self) -> pd.DataFrame:
+        signature = self._file_signature(self.bom_path)
+        cached = self._derived_frames.get("bom_summary")
+        if cached is not None and cached[0] == signature:
+            return cached[1].copy()
         bom = self.load_bom_lines()
         if bom.empty:
             return pd.DataFrame(columns=["item_code", *BOM_TOTAL_RENAMES.values()])
@@ -530,17 +584,18 @@ class CsvRepository:
             .first()[["bom_code", *available]]
             .rename(columns={"bom_code": "item_code", **BOM_TOTAL_RENAMES})
         )
-        return summary
+        self._derived_frames["bom_summary"] = (signature, summary)
+        return summary.copy()
 
     def load_board_items(self) -> pd.DataFrame:
         if not self.board_items_path.exists():
             return pd.DataFrame()
-        return pd.read_csv(self.board_items_path)
+        return self._read_reference_csv(self.board_items_path)
 
     def load_board_prices(self) -> pd.DataFrame:
         if not self.board_prices_path.exists():
             return pd.DataFrame()
-        return pd.read_csv(self.board_prices_path)
+        return self._read_reference_csv(self.board_prices_path)
 
     def find_board_by_code(
         self,
@@ -969,8 +1024,16 @@ class CsvRepository:
 
     def load_material_summary(self) -> pd.DataFrame:
         if self.material_summary_path.exists():
-            return pd.read_csv(self.material_summary_path)
-        return self._calculate_material_summary()
+            return self._read_reference_csv(self.material_summary_path)
+        signature = (
+            self._file_signature(self.bom_path),
+            self._file_signature(self.board_items_path),
+        )
+        cached = self._derived_frames.get("material_summary")
+        if cached is None or cached[0] != signature:
+            cached = (signature, self._calculate_material_summary())
+            self._derived_frames["material_summary"] = cached
+        return cached[1].copy()
 
     def load_priced_board_catalog(self) -> pd.DataFrame:
         boards = self.load_board_items().copy()
@@ -1075,7 +1138,11 @@ class CsvRepository:
     def load_current_items(self) -> pd.DataFrame:
         if not self.items_path.exists():
             return pd.DataFrame(columns=SPECIFICATION_COLUMNS)
-        items = pd.read_csv(self.items_path)
+        signature = self.reference_data_version()
+        cached = self._derived_frames.get("current_items")
+        if cached is not None and cached[0] == signature:
+            return cached[1].copy()
+        items = self._read_reference_csv(self.items_path)
         items = items.merge(self.load_bom_summary(), on="item_code", how="left")
         items = items.merge(self.load_material_summary(), on="item_code", how="left")
         defaults: dict[str, Any] = {
@@ -1114,7 +1181,8 @@ class CsvRepository:
             items[column] = pd.to_numeric(items[column], errors="coerce").fillna(0)
         for column in set(COST_INPUT_COLUMNS) - set(NUMERIC_COST_INPUT_COLUMNS):
             items[column] = items[column].fillna("")
-        return items
+        self._derived_frames["current_items"] = (signature, items)
+        return items.copy()
 
     def _load_csv_history(self) -> pd.DataFrame:
         if not self.history_path.exists() or self.history_path.stat().st_size == 0:
@@ -1250,10 +1318,11 @@ class CsvRepository:
                 sessions[column] = ""
         return sessions[SESSION_COLUMNS]
 
-    def touch_session(self, values: dict[str, Any]) -> None:
+    def touch_session(self, values: dict[str, Any]) -> bool:
+        """Update a session and return whether an administrator requested logout."""
         session_id = str(values.get("session_id", "") or "").strip()
         if not session_id:
-            return
+            return False
         if self.uses_database:
             now = datetime.now(timezone.utc)
             try:
@@ -1316,7 +1385,7 @@ class CsvRepository:
                             "ended_at_utc = EXCLUDED.ended_at_utc",
                             merged,
                         )
-                return
+                return bool(merged["force_logout"])
             except (psycopg.Error, TypeError, ValueError) as exc:
                 raise RepositoryBusyError(
                     "The session database could not be updated. Please try again."
@@ -1339,7 +1408,12 @@ class CsvRepository:
                         sessions = pd.concat(
                             [sessions, pd.DataFrame([row])], ignore_index=True
                         )
+                current = sessions.loc[
+                    sessions["session_id"].fillna("").astype(str).eq(session_id)
+                ].iloc[-1]
+                flag = pd.to_numeric(current.get("force_logout", 0), errors="coerce")
                 self._atomic_csv_write(sessions, self.sessions_path)
+                return bool(float(flag)) if pd.notna(flag) else False
         except Timeout as exc:
             raise RepositoryBusyError(
                 "The session register is busy. Please try again in a moment."
