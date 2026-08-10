@@ -55,6 +55,27 @@ def configured_database_url() -> str:
     except FileNotFoundError:
         return ""
 
+
+@st.cache_resource(show_spinner=False)
+def cached_repository(data_dir: str, database_url: str) -> CsvRepository:
+    """Keep reference-data caches and database connections across reruns."""
+    return CsvRepository(data_dir, database_url=database_url)
+
+
+@st.cache_resource(show_spinner=False)
+def cached_rate_table(path: str, file_version: tuple[int, int]) -> HaulierRateTable:
+    """Reload haulier rates only when the source file changes."""
+    return HaulierRateTable(path)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def cached_product_catalog(
+    _repository: CsvRepository,
+    reference_version: tuple[tuple[int, int], ...],
+) -> pd.DataFrame:
+    """Avoid rebuilding the product selector after every keystroke."""
+    return _repository.load_catalog()
+
 st.set_page_config(
     page_title="Solidus Costing Tool",
     page_icon="📦",
@@ -159,9 +180,8 @@ def track_user_session(
 ) -> str:
     """Record an approximate active-use total for this browser session."""
     now = _utc_now()
+    new_session = "app_session_id" not in st.session_state
     session_id = st.session_state.setdefault("app_session_id", uuid.uuid4().hex)
-    if repository.session_forced_logout(session_id):
-        _sign_out_local_session(repository, "An administrator signed you out.")
 
     signed_in = st.session_state.setdefault("app_signed_in_at", now.isoformat())
     previous_text = st.session_state.get("app_last_activity_at")
@@ -179,21 +199,34 @@ def track_user_session(
             active_seconds += elapsed
     st.session_state.app_last_activity_at = now.isoformat()
     st.session_state.app_active_seconds = active_seconds
-    repository.touch_session(
-        {
-            "session_id": session_id,
-            "username": user.username,
-            "name": user.name,
-            "email": user.email,
-            "signed_in_at_utc": signed_in,
-            "last_activity_utc": now.isoformat(),
-            "last_heartbeat_utc": now.isoformat(),
-            "active_seconds": round(active_seconds, 1),
-            "current_page": current_page,
-            "force_logout": 0,
-            "ended_at_utc": "",
-        }
+    last_sync = pd.to_datetime(
+        st.session_state.get("app_last_session_sync_at"),
+        utc=True,
+        errors="coerce",
     )
+    page_changed = st.session_state.get("app_last_persisted_page") != current_page
+    sync_due = new_session or page_changed or pd.isna(last_sync) or (
+        now - last_sync
+    ).total_seconds() >= 15
+    if sync_due:
+        forced = repository.touch_session(
+            {
+                "session_id": session_id,
+                "username": user.username,
+                "name": user.name,
+                "email": user.email,
+                "signed_in_at_utc": signed_in,
+                "last_activity_utc": now.isoformat(),
+                "last_heartbeat_utc": now.isoformat(),
+                "active_seconds": round(active_seconds, 1),
+                "current_page": current_page,
+            }
+        )
+        if forced:
+            _sign_out_local_session(repository, "An administrator signed you out.")
+        st.session_state.app_last_session_sync_at = now.isoformat()
+        st.session_state.app_last_heartbeat_sync_at = now.isoformat()
+        st.session_state.app_last_persisted_page = current_page
     return session_id
 
 
@@ -201,8 +234,6 @@ def track_user_session(
 def session_heartbeat(repository: CsvRepository, session_id: str) -> None:
     """Keep the admin view current and apply forced logouts promptly."""
     try:
-        if repository.session_forced_logout(session_id):
-            _sign_out_local_session(repository, "An administrator signed you out.")
         now = _utc_now()
         last_activity = pd.to_datetime(
             st.session_state.get("app_last_activity_at"), utc=True, errors="coerce"
@@ -214,9 +245,20 @@ def session_heartbeat(repository: CsvRepository, session_id: str) -> None:
                 repository,
                 "You were signed out after a period of inactivity.",
             )
-        repository.touch_session(
-            {"session_id": session_id, "last_heartbeat_utc": now.isoformat()}
+        last_sync = pd.to_datetime(
+            st.session_state.get("app_last_heartbeat_sync_at"),
+            utc=True,
+            errors="coerce",
         )
+        if pd.isna(last_sync) or (now - last_sync).total_seconds() >= 25:
+            forced = repository.touch_session(
+                {"session_id": session_id, "last_heartbeat_utc": now.isoformat()}
+            )
+            if forced:
+                _sign_out_local_session(
+                    repository, "An administrator signed you out."
+                )
+            st.session_state.app_last_heartbeat_sync_at = now.isoformat()
     except RepositoryBusyError:
         st.warning("The activity database is temporarily unavailable.")
 
@@ -560,7 +602,9 @@ def render_select(
         )
 
     if mode == "Existing product":
-        catalog = repository.load_catalog()
+        catalog = cached_product_catalog(
+            repository, repository.reference_data_version()
+        )
         if catalog.empty:
             message = "There are no products in the stock list yet."
             if can_create_new:
@@ -1926,6 +1970,7 @@ def render_save(
             st.warning(str(exc))
         else:
             st.session_state.last_saved = saved
+            cached_product_catalog.clear()
             st.session_state.saved_revision_fingerprint = (
                 saved_revision_fingerprint(saved)
             )
@@ -2638,14 +2683,18 @@ def render_workflow(
 
 
 def main() -> None:
-    repository = CsvRepository(
-        data_directory(PROJECT_ROOT),
-        database_url=configured_database_url(),
+    data_dir = data_directory(PROJECT_ROOT)
+    repository = cached_repository(
+        str(data_dir),
+        configured_database_url(),
     )
     user = require_user(repository)
     if user.must_change_password:
         render_required_password_change(repository, user)
-    rate_table = HaulierRateTable(repository.haulier_path)
+    rate_table = cached_rate_table(
+        str(repository.haulier_path),
+        repository.reference_data_version()[-1],
+    )
     st.session_state.setdefault("step", 0)
 
     draft = st.session_state.get("draft", {})
