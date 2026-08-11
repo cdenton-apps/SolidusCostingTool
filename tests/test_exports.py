@@ -77,6 +77,7 @@ def test_quote_and_sage_exports() -> None:
     assert "Sales Director" in quote_text
     assert "Minimum of 1 pallet per delivery" in normalised_quote_text
     assert "Up to 1 pallet" not in normalised_quote_text
+    assert "not the quotation date" in normalised_quote_text
     assert "Stock item code" in csv
     assert "BOX-TEST" in csv
     assert "AnalysisName\\18" in csv

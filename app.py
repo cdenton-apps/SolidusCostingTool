@@ -1036,6 +1036,11 @@ def render_specification(repository: CsvRepository) -> None:
             f"Planned profile: approximately {estimated_delivery_count:,} deliveries "
             f"with a minimum of {int(delivery_pallets_per_calloff):,} pallets per delivery."
         )
+        st.caption(
+            "The agreement term starts from the confirmed commencement date, "
+            "based on current lead times and production planning. It does not "
+            "start on the quotation date."
+        )
 
     st.markdown("#### Customer and annual volume")
     annual_volume_units = st.number_input(

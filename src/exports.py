@@ -332,7 +332,10 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ]
         )
         commercial_terms.append(
-            f"This quotation assumes a {agreement_months:,.0f}-month MTC agreement and the stated call-off profile. Changes to delivery frequency or pallet quantities may change transport pricing."
+            f"The {agreement_months:,.0f}-month MTC term starts on the commencement "
+            "date confirmed by Solidus in line with current lead times and production "
+            "planning, not the quotation date. Changes to the call-off profile may "
+            "change transport pricing."
         )
         if holding_charge > 0:
             commercial_terms.append(
