@@ -15,7 +15,7 @@ the other figure update. Machine and labour are not added to the price.
    entered as units or pallets.
 3. Choose the fulfilment type:
    - **MTO (Make to Order):** the order is treated as one delivery event.
-   - **MTC (Make to Contract):** enter the agreement term, pallets per call-off
+   - **MTC (Make to Contract):** enter the agreement term and minimum pallets per delivery
      and any potential pallet holding charge.
 4. Review the automatic material calculation and delivery quote.
 5. Enter the expected annual unit volume and select any relevant customer
@@ -203,9 +203,11 @@ director_name = "Sales Director"
 director_email = "director@example.com"
 ```
 
-The Director fields are optional defaults and can be changed on the quotation.
-A saved revision must contain a customer contact, customer email, Director name
-and Director email before it can be sent. The signed-in sales representative
+The Director name and email are controlled centrally through Streamlit Secrets.
+Quotation users can see the configured recipient but cannot change it. Update
+these two settings once whenever the responsible Director changes. A saved
+revision must contain a customer contact, customer email, Director name and
+Director email before it can be sent. The signed-in sales representative
 must explicitly approve the exact saved revision. Their username, name, email
 and approval time are recorded in Neon and printed in the Sales Representative
 sign-off cell.

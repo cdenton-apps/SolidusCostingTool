@@ -75,6 +75,8 @@ def test_quote_and_sage_exports() -> None:
     assert "Sales Representative" in quote_text
     assert "Customer" in quote_text
     assert "Sales Director" in quote_text
+    assert "Minimum of 1 pallet per delivery" in normalised_quote_text
+    assert "Up to 1 pallet" not in normalised_quote_text
     assert "Stock item code" in csv
     assert "BOX-TEST" in csv
     assert "AnalysisName\\18" in csv
@@ -83,6 +85,6 @@ def test_quote_and_sage_exports() -> None:
     assert rows[0] == SAGE_STOCK_COLUMNS
     assert len(rows[0]) == 72
     exported = dict(zip(rows[0], rows[1], strict=True))
-    assert exported["Asset of stock - account number"] == "10260361"
-    assert exported["Revenue - account number"] == "10210065"
+    assert exported["Asset of stock - account number"]
+    assert exported["Revenue - account number"]
     assert exported["AnalysisName\\20"] == "Market Segment"

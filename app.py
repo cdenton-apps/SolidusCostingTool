@@ -999,12 +999,15 @@ def render_specification(repository: CsvRepository) -> None:
         if default_calloff <= 0:
             default_calloff = min(10, max_calloff)
         delivery_pallets_per_calloff = col2.number_input(
-            "Pallets per delivery / call-off *",
+            "Minimum pallets per delivery *",
             min_value=1,
             max_value=max_calloff,
             value=min(default_calloff, max_calloff),
             step=1,
-            help="Transport will be costed across every planned call-off, not as one combined shipment.",
+            help=(
+                "Transport will be costed using this as the minimum delivery size. "
+                "Larger deliveries may be used where they reduce the number of call-offs."
+            ),
         )
         pallet_holding_charge = st.number_input(
             "Potential holding charge (£ per pallet per week)",
@@ -1017,14 +1020,14 @@ def render_specification(repository: CsvRepository) -> None:
         delivery_pallets_per_calloff = max(1, int(order_pallets))
 
     estimated_delivery_count = (
-        math.ceil(int(order_pallets) / int(delivery_pallets_per_calloff))
+        max(1, int(order_pallets) // int(delivery_pallets_per_calloff))
         if order_pallets
         else 0
     )
     if fulfilment_type == "MTC":
         st.caption(
             f"Planned profile: approximately {estimated_delivery_count:,} deliveries "
-            f"of up to {int(delivery_pallets_per_calloff):,} pallets."
+            f"with a minimum of {int(delivery_pallets_per_calloff):,} pallets per delivery."
         )
 
     st.markdown("#### Customer and annual volume")
@@ -1292,13 +1295,14 @@ def render_costs(
         if fulfilment_type == "MTC"
         else max(1, estimated_pallets)
     )
-    estimated_deliveries = math.ceil(
-        estimated_pallets / planned_pallets_per_delivery
+    estimated_deliveries = max(
+        1, estimated_pallets // planned_pallets_per_delivery
     )
     if fulfilment_type == "MTC":
         st.caption(
             f"MTC agreement: {estimated_pallets:,} pallets across approximately "
-            f"{estimated_deliveries:,} call-offs of up to {planned_pallets_per_delivery:,} pallets. "
+            f"{estimated_deliveries:,} call-offs with a minimum of "
+            f"{planned_pallets_per_delivery:,} pallets per delivery. "
             "Transport is priced across the full schedule."
         )
     else:
@@ -2092,12 +2096,13 @@ def render_save(
     st.session_state.setdefault("customer_contact", "")
     esign_settings = configured_esign()
     st.session_state.setdefault("customer_email", "")
-    st.session_state.setdefault(
-        "director_name", str(esign_settings.get("director_name", "") or "")
-    )
-    st.session_state.setdefault(
-        "director_email", str(esign_settings.get("director_email", "") or "")
-    )
+    # The Director is a centrally managed recipient, not a per-quotation choice.
+    st.session_state.director_name = str(
+        esign_settings.get("director_name", "") or ""
+    ).strip()
+    st.session_state.director_email = str(
+        esign_settings.get("director_email", "") or ""
+    ).strip()
     st.session_state.setdefault("quote_notes", "")
 
     left, right = st.columns(2)
@@ -2105,10 +2110,21 @@ def render_save(
     right.text_input("Customer contact", key="customer_contact")
     if str(esign_settings.get("api_key", "") or "").strip():
         st.caption("Test e-sign recipients")
-        recipient_columns = st.columns(3)
-        recipient_columns[0].text_input("Customer email", key="customer_email")
-        recipient_columns[1].text_input("Sales Director name", key="director_name")
-        recipient_columns[2].text_input("Sales Director email", key="director_email")
+        st.text_input("Customer email", key="customer_email")
+        if st.session_state.director_name and valid_email(
+            st.session_state.director_email
+        ):
+            st.caption(
+                "Sales Director: "
+                f"{st.session_state.director_name} "
+                f"({st.session_state.director_email}). "
+                "This is set centrally by an administrator."
+            )
+        else:
+            st.warning(
+                "An administrator must set the Sales Director name and email "
+                "in Streamlit Secrets before e-signing can be used."
+            )
     quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
 
     record = current_record()

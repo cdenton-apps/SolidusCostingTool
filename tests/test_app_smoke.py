@@ -216,7 +216,7 @@ def test_red_costing_is_blocked_for_non_admin(
         "manager": {
             "name": "Commercial Manager",
             "email": "manager@example.com",
-            "password": "approval-password",
+            "password": "dummy-admin-passphrase",
             "is_admin": True,
         }
     }
@@ -272,7 +272,7 @@ def test_red_costing_is_blocked_for_non_admin(
     assert _widget(app.text_area, "Reason for admin override *")
 
     _widget(app.text_input, "Admin username").set_value("manager")
-    _widget(app.text_input, "Admin password").set_value("approval-password")
+    _widget(app.text_input, "Admin password").set_value("dummy-admin-passphrase")
     _widget(app.text_area, "Reason for admin override *").set_value(
         "Commercial exception agreed"
     )
@@ -449,7 +449,7 @@ def test_mtc_can_be_entered_in_pallets() -> None:
     _widget(app.radio, "Enter order quantity as").set_value("Pallets").run()
     _widget(app.number_input, "Order quantity (pallets) *").set_value(10).run()
     _widget(app.number_input, "Expected annual volume (units) *").set_value(75_000)
-    _widget(app.number_input, "Pallets per delivery / call-off *").set_value(1)
+    _widget(app.number_input, "Minimum pallets per delivery *").set_value(1)
     _widget(
         app.number_input, "Potential holding charge (£ per pallet per week)"
     ).set_value(3)
@@ -533,15 +533,15 @@ def test_team_history_permission_shows_saved_usernames(
     repository = CsvRepository(tmp_path)
     repository.save_costing(
         {"item_code": "TEAM-ONE", "customer_name": "Customer One"},
-        user_username="connor",
-        user_email="connor@example.com",
-        user_name="Connor Denton",
+        user_username="alice",
+        user_email="alice@example.com",
+        user_name="Alice Example",
     )
     repository.save_costing(
         {"item_code": "TEAM-TWO", "customer_name": "Customer Two"},
-        user_username="ben",
-        user_email="ben@example.com",
-        user_name="Ben Barraclough",
+        user_username="bob",
+        user_email="bob@example.com",
+        user_name="Bob Example",
     )
     monkeypatch.setenv("COSTING_DATA_DIR", str(tmp_path))
 
@@ -560,5 +560,5 @@ def test_team_history_permission_shows_saved_usernames(
     navigation.set_value("Team history").run()
 
     table = app.dataframe[0].value
-    assert set(table["created_by_username"]) >= {"connor", "ben"}
+    assert set(table["created_by_username"]) >= {"alice", "bob"}
     assert all(item.label != "Load and amend this costing" for item in app.button)

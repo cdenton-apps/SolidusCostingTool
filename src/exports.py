@@ -327,7 +327,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                 ("Agreement term", f"{agreement_months:,.0f} months"),
                 (
                     "Planned call-off",
-                    f"Up to {calloff_pallets:,.0f} {calloff_unit} per delivery; approximately {delivery_count:,.0f} {delivery_unit}",
+                    f"Minimum of {calloff_pallets:,.0f} {calloff_unit} per delivery; approximately {delivery_count:,.0f} {delivery_unit}",
                 ),
             ]
         )
@@ -442,7 +442,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     profile_pallets = _number(record.get("delivery_pallets_per_calloff"))
     profile_unit = "pallet" if profile_pallets == 1 else "pallets"
     delivery_profile = (
-        f"Up to {profile_pallets:,.0f} {profile_unit} per call-off"
+        f"Minimum of {profile_pallets:,.0f} {profile_unit} per delivery"
         if fulfilment_type == "MTC"
         else "One delivery event"
     )

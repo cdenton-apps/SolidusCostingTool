@@ -74,6 +74,31 @@ def test_mtc_calloffs_cost_more_than_one_combined_delivery(
     assert calloffs[0].total_cost > combined[0].total_cost
 
 
+def test_mtc_minimum_delivery_size_does_not_create_a_small_remainder(
+    rate_table: HaulierRateTable,
+) -> None:
+    quotes = rate_table.quote_schedule(
+        postcode="BD20 0AA",
+        total_pallets=10,
+        pallets_per_delivery=3,
+        service="Economy",
+    )
+
+    # Ten pallets with a minimum of three are distributed as 4 + 3 + 3,
+    # rather than treating three as a maximum and creating a 1-pallet delivery.
+    assert quotes[0].delivery_count == 3
+    expected = (
+        rate_table.quote_options(
+            postcode="BD20 0AA", pallet_count=4, service="Economy"
+        )[0].total_cost
+        + 2
+        * rate_table.quote_options(
+            postcode="BD20 0AA", pallet_count=3, service="Economy"
+        )[0].total_cost
+    )
+    assert quotes[0].total_cost == pytest.approx(expected)
+
+
 def test_unavailable_vendor_is_omitted(rate_table: HaulierRateTable) -> None:
     quotes = rate_table.quote_options(
         postcode="LL38 1AA", pallet_count=10, service="Economy"

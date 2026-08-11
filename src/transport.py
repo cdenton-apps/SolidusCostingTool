@@ -229,13 +229,15 @@ class HaulierRateTable:
         if pallets_per_delivery <= 0:
             raise TransportLookupError("Pallets per delivery must be greater than zero.")
 
-        planned_size = min(int(pallets_per_delivery), int(total_pallets))
-        full_deliveries, remainder = divmod(int(total_pallets), planned_size)
+        minimum_size = min(int(pallets_per_delivery), int(total_pallets))
+        delivery_count = max(1, int(total_pallets) // minimum_size)
+        base_size, larger_deliveries = divmod(int(total_pallets), delivery_count)
         delivery_batches: list[tuple[int, int]] = []
-        if full_deliveries:
-            delivery_batches.append((planned_size, full_deliveries))
-        if remainder:
-            delivery_batches.append((remainder, 1))
+        standard_deliveries = delivery_count - larger_deliveries
+        if standard_deliveries:
+            delivery_batches.append((base_size, standard_deliveries))
+        if larger_deliveries:
+            delivery_batches.append((base_size + 1, larger_deliveries))
 
         options_by_size: list[tuple[int, dict[str, TransportQuote]]] = []
         for batch_size, repeat_count in delivery_batches:
@@ -271,7 +273,7 @@ class HaulierRateTable:
                     service=service,
                     vendor=vendor,
                     pallet_count=int(total_pallets),
-                    pallets_per_delivery=planned_size,
+                    pallets_per_delivery=minimum_size,
                     delivery_count=delivery_count,
                     load_count=sum(
                         repeat_count * quote.load_count
