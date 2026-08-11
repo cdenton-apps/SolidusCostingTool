@@ -414,6 +414,20 @@ def test_existing_item_specification_is_collapsed() -> None:
     assert "Order and fulfilment" in [item.value for item in app.subheader]
 
 
+def test_creator_can_base_a_new_product_on_an_existing_product() -> None:
+    app = _demo_app().run()
+    _widget(app.selectbox, "Search existing products").set_value(0).run()
+    _widget(app.button, "Base new product on this").click().run()
+
+    assert not app.exception
+    assert app.session_state["draft"]["based_on_existing_new_product"] is True
+    assert app.session_state["draft"]["source_item_code"]
+    assert app.session_state["step"] == 1
+    assert not _widget(app.text_input, "Item code *").disabled
+    assert not _widget(app.text_input, "Description *").disabled
+    assert "Product specification *" in [item.label for item in app.expander]
+
+
 def test_external_user_can_amend_print_customer_code_and_description() -> None:
     catalog = CsvRepository(PROJECT_DATA).load_catalog().sort_values("item_code").reset_index(drop=True)
     selected_index = int(

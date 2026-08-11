@@ -402,6 +402,7 @@ def default_draft() -> dict[str, Any]:
         "transport_total": 0.0,
         "spread_percent": 30.0,
         "source_item_code": "",
+        "based_on_existing_new_product": False,
     }
 
 
@@ -824,12 +825,7 @@ def render_select(
             st.warning(
                 "No costing BOM is available for this item, so it cannot be costed yet."
             )
-        if st.button(
-            "Start costing",
-            type="primary",
-            width="stretch",
-            disabled=not has_material_cost,
-        ):
+        def start_from_selected(*, as_new_product: bool) -> None:
             draft = default_draft()
             draft.update(
                 {key: selected.get(key, draft.get(key)) for key in SPECIFICATION_COLUMNS}
@@ -840,9 +836,40 @@ def render_select(
             if "spread_percent" in selected:
                 draft["spread_percent"] = selected["spread_percent"]
             draft["source_item_code"] = selected.get("item_code", "")
+            draft["based_on_existing_new_product"] = as_new_product
             st.session_state.draft = clean_record(draft)
             reset_downstream()
             navigate_to(1)
+
+        if can_create_new:
+            existing_action, base_action = st.columns(2)
+            start_existing = existing_action.button(
+                "Start costing",
+                type="primary",
+                width="stretch",
+                disabled=not has_material_cost,
+            )
+            base_on_existing = base_action.button(
+                "Base new product on this",
+                width="stretch",
+                disabled=not has_material_cost,
+                help=(
+                    "Copies this product's specification and uses its BOM as the "
+                    "costing source. You can then enter a new item code and amend the details."
+                ),
+            )
+        else:
+            start_existing = st.button(
+                "Start costing",
+                type="primary",
+                width="stretch",
+                disabled=not has_material_cost,
+            )
+            base_on_existing = False
+        if start_existing:
+            start_from_selected(as_new_product=False)
+        if base_on_existing:
+            start_from_selected(as_new_product=True)
     else:
         with st.container(border=True):
             st.markdown("### Create a new product")
@@ -889,7 +916,9 @@ def render_specification(
 ) -> None:
     st.subheader("Order and fulfilment")
     draft = st.session_state.draft
-    existing_item = bool(str(draft.get("source_item_code", "")).strip())
+    source_item_code = str(draft.get("source_item_code", "")).strip()
+    based_on_existing = bool(draft.get("based_on_existing_new_product", False))
+    existing_item = bool(source_item_code) and not based_on_existing
     board_widget_defaults = {
         "spec_board_code": str(draft.get("board_code", "")),
         "spec_board_gsm": draft_number("board_gsm"),
@@ -905,6 +934,14 @@ def render_specification(
             f"{str(draft.get('item_code', ''))}</strong> — "
             f"{str(draft.get('description', ''))}<br>"
             "Product details loaded. Open them below if anything needs changing.</div>",
+            unsafe_allow_html=True,
+        )
+    elif based_on_existing:
+        st.markdown(
+            '<div class="status-card"><strong>New product based on '
+            f"{html.escape(source_item_code)}</strong><br>"
+            "Enter the new item code and change any product details required. "
+            "The original product's BOM remains the costing source.</div>",
             unsafe_allow_html=True,
         )
 
@@ -3141,7 +3178,11 @@ def render_top_menu(
     if current not in navigation:
         current = navigation[0]
         st.session_state.main_navigation = current
-    menu, identity = st.columns([1, 5], vertical_alignment="center")
+    identity, menu = st.columns([5, 1], vertical_alignment="center")
+    identity.caption(
+        f"{current} · {user.name} · "
+        + ("Neon storage" if repository.uses_database else "Local storage")
+    )
     with menu:
         with st.popover("☰ Menu", use_container_width=True):
             st.caption(f"Signed in as {user.name} (@{user.username})")
@@ -3159,10 +3200,6 @@ def render_top_menu(
                 f"Signs out after {session_timeout_minutes()} minutes without activity."
             )
             sign_out_button(repository)
-    identity.caption(
-        f"{current} · {user.name} · "
-        + ("Neon storage" if repository.uses_database else "Local storage")
-    )
     return current
 
 
