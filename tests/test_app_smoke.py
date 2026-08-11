@@ -416,7 +416,11 @@ def test_existing_item_specification_is_collapsed() -> None:
 
 def test_creator_can_base_a_new_product_on_an_existing_product() -> None:
     app = _demo_app().run()
-    _widget(app.selectbox, "Search existing products").set_value(0).run()
+    _widget(app.radio, "Costing route").set_value("New product").run()
+    _widget(app.radio, "How do you want to start?").set_value(
+        "Base on existing product"
+    ).run()
+    _widget(app.selectbox, "Search for a product to use as the base").set_value(0).run()
     _widget(app.button, "Base new product on this").click().run()
 
     assert not app.exception

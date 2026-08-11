@@ -684,6 +684,27 @@ def show_admin_adjustment_detail(breakdown: dict[str, float]) -> None:
         )
 
 
+def start_from_selected_product(
+    selected: dict[str, Any],
+    *,
+    as_new_product: bool,
+) -> None:
+    draft = default_draft()
+    draft.update(
+        {key: selected.get(key, draft.get(key)) for key in SPECIFICATION_COLUMNS}
+    )
+    draft.update(
+        {key: selected.get(key, draft.get(key)) for key in COST_INPUT_COLUMNS}
+    )
+    if "spread_percent" in selected:
+        draft["spread_percent"] = selected["spread_percent"]
+    draft["source_item_code"] = selected.get("item_code", "")
+    draft["based_on_existing_new_product"] = as_new_product
+    st.session_state.draft = clean_record(draft)
+    reset_downstream()
+    navigate_to(1)
+
+
 def render_select(
     repository: CsvRepository,
     can_create_new: bool,
@@ -825,62 +846,65 @@ def render_select(
             st.warning(
                 "No costing BOM is available for this item, so it cannot be costed yet."
             )
-        def start_from_selected(*, as_new_product: bool) -> None:
-            draft = default_draft()
-            draft.update(
-                {key: selected.get(key, draft.get(key)) for key in SPECIFICATION_COLUMNS}
-            )
-            draft.update(
-                {key: selected.get(key, draft.get(key)) for key in COST_INPUT_COLUMNS}
-            )
-            if "spread_percent" in selected:
-                draft["spread_percent"] = selected["spread_percent"]
-            draft["source_item_code"] = selected.get("item_code", "")
-            draft["based_on_existing_new_product"] = as_new_product
-            st.session_state.draft = clean_record(draft)
-            reset_downstream()
-            navigate_to(1)
-
-        if can_create_new:
-            existing_action, base_action = st.columns(2)
-            start_existing = existing_action.button(
-                "Start costing",
-                type="primary",
-                width="stretch",
-                disabled=not has_material_cost,
-            )
-            base_on_existing = base_action.button(
-                "Base new product on this",
-                width="stretch",
-                disabled=not has_material_cost,
-                help=(
-                    "Copies this product's specification and uses its BOM as the "
-                    "costing source. You can then enter a new item code and amend the details."
-                ),
-            )
-        else:
-            start_existing = st.button(
-                "Start costing",
-                type="primary",
-                width="stretch",
-                disabled=not has_material_cost,
-            )
-            base_on_existing = False
-        if start_existing:
-            start_from_selected(as_new_product=False)
-        if base_on_existing:
-            start_from_selected(as_new_product=True)
+        if st.button(
+            "Start costing",
+            type="primary",
+            width="stretch",
+            disabled=not has_material_cost,
+        ):
+            start_from_selected_product(selected, as_new_product=False)
     else:
-        with st.container(border=True):
-            st.markdown("### Create a new product")
-            st.write(
-                "For products not already in the list. Have the product specification "
-                "and board details ready."
+        starting_point = st.radio(
+            "How do you want to start?",
+            ["Blank product", "Base on existing product"],
+            horizontal=True,
+        )
+        if starting_point == "Blank product":
+            with st.container(border=True):
+                st.markdown("### Create a new product")
+                st.write(
+                    "Start with an empty specification and enter all product details."
+                )
+                if st.button("Create new product", type="primary", width="stretch"):
+                    st.session_state.draft = default_draft()
+                    reset_downstream()
+                    navigate_to(1)
+        else:
+            catalog = cached_product_catalog(
+                repository, repository.reference_data_version()
             )
-            if st.button("Create new product", type="primary", width="stretch"):
-                st.session_state.draft = default_draft()
-                reset_downstream()
-                navigate_to(1)
+            catalog = catalog.sort_values("item_code").reset_index(drop=True)
+            labels = {
+                index: (
+                    f"{row['item_code']} — "
+                    f"{str(row.get('description', ''))[:100]}"
+                )
+                for index, row in catalog.iterrows()
+            }
+            selected_index = st.selectbox(
+                "Search for a product to use as the base",
+                options=list(labels),
+                format_func=labels.get,
+                index=None,
+                placeholder="Search by item code or description",
+            )
+            if selected_index is None:
+                st.info("Choose the existing product you want to copy.")
+                return
+            selected = clean_record(catalog.loc[selected_index].to_dict())
+            with st.container(border=True):
+                st.markdown(f"### {selected.get('item_code', '')}")
+                st.write(str(selected.get("description", "")))
+                st.caption(
+                    "Its specification and BOM will be used as the starting point. "
+                    "You will enter a new item code on the next screen."
+                )
+            if st.button(
+                "Base new product on this",
+                type="primary",
+                width="stretch",
+            ):
+                start_from_selected_product(selected, as_new_product=True)
 
 
 def fill_board_details(repository: CsvRepository) -> None:
