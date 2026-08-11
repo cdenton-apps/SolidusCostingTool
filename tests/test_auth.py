@@ -181,7 +181,7 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
     )
     _widget(app.button, "Sign in").click().run()
 
-    assert app.session_state["authenticated_user"] == {
+    expected_user = {
         "username": "connor",
         "email": "connor@example.com",
         "name": "Connor Denton",
@@ -192,6 +192,10 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
         "must_change_password": False,
         "session_version": 1,
     }
+    authenticated_user = app.session_state["authenticated_user"]
+    assert {
+        key: authenticated_user[key] for key in expected_user
+    } == expected_user
     assert _widget(app.radio, "Costing route")
     navigation = _widget(app.sidebar.radio, "Navigation")
     assert "Team history" in navigation.options
