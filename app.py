@@ -66,8 +66,15 @@ def configured_esign() -> dict[str, Any]:
 
 
 @st.cache_resource(show_spinner=False)
-def cached_repository(data_dir: str, database_url: str) -> CsvRepository:
+def cached_repository(
+    data_dir: str,
+    database_url: str,
+    repository_code_version: str,
+) -> CsvRepository:
     """Keep reference-data caches and database connections across reruns."""
+    # This argument is deliberately part of Streamlit's cache key. It prevents
+    # a hot deployment from retaining an instance of the previous class.
+    del repository_code_version
     return CsvRepository(data_dir, database_url=database_url)
 
 
@@ -2918,9 +2925,14 @@ def render_workflow(
 
 def main() -> None:
     data_dir = data_directory(PROJECT_ROOT)
+    repository_source = PROJECT_ROOT / "src" / "repository.py"
+    repository_code_version = hashlib.sha256(
+        repository_source.read_bytes()
+    ).hexdigest()
     repository = cached_repository(
         str(data_dir),
         configured_database_url(),
+        repository_code_version,
     )
     user = require_user(repository)
     if user.must_change_password:
