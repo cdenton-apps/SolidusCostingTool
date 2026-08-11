@@ -193,6 +193,7 @@ def format_uk_datetime(
     parsed = pd.to_datetime(value, utc=True, errors="coerce")
     if pd.isna(parsed):
         return default
+    parsed = parsed.tz_convert("Europe/London")
     return parsed.strftime("%d/%m/%Y %H:%M" if include_time else "%d/%m/%Y")
 
 
@@ -2763,6 +2764,7 @@ def render_user_management(
     }
     display = users.copy()
     display["role"] = display["role"].map(role_names).fillna(display["role"])
+    display = format_frame_dates(display, ["last_login_at_utc"])
     st.dataframe(
         display[
             [
@@ -2782,9 +2784,7 @@ def render_user_management(
             "must_change_password": st.column_config.CheckboxColumn(
                 "Password change due"
             ),
-            "last_login_at_utc": st.column_config.DatetimeColumn(
-                "Last login", format="DD/MM/YYYY HH:mm"
-            ),
+            "last_login_at_utc": st.column_config.TextColumn("Last login"),
         },
     )
 
@@ -2979,20 +2979,28 @@ def render_admin_activity(
     sessions["active_minutes"] = (
         pd.to_numeric(sessions["active_seconds"], errors="coerce").fillna(0) / 60
     ).round(1)
-    sessions["signed_in"] = sessions["_signed_in_at_utc"].dt.strftime(
+    sessions["signed_in"] = sessions["_signed_in_at_utc"].dt.tz_convert(
+        "Europe/London"
+    ).dt.strftime(
         "%d/%m/%Y %H:%M"
     )
-    sessions["last_activity"] = sessions["_last_activity_utc"].dt.strftime(
+    sessions["last_activity"] = sessions["_last_activity_utc"].dt.tz_convert(
+        "Europe/London"
+    ).dt.strftime(
         "%d/%m/%Y %H:%M"
     )
 
-    today = now.date()
-    signed_today = sessions["_signed_in_at_utc"].dt.date.eq(today)
+    today = now.tz_convert("Europe/London").date()
+    signed_today = sessions["_signed_in_at_utc"].dt.tz_convert(
+        "Europe/London"
+    ).dt.date.eq(today)
     if history.empty:
         saved_today = 0
     else:
         saved_times = pd.to_datetime(history["created_at_utc"], utc=True, errors="coerce")
-        saved_today = int(saved_times.dt.date.eq(today).sum())
+        saved_today = int(
+            saved_times.dt.tz_convert("Europe/London").dt.date.eq(today).sum()
+        )
     show_detail_cards(
         [
             ("Online now", str(int(sessions["status"].eq("Online").sum()))),

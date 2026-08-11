@@ -91,7 +91,8 @@ def test_esign_pdf_contains_director_and_customer_tags() -> None:
     assert "[date_signed|req|signer1]" in text
     assert "[date_signed|req|signer2]" in text
     assert "Approved in costing tool by" in text
-    assert "11/08/2026 10:00" in text
+    assert "11/08/2026 11:00" in text
     assert "Quotation date" in text
     assert "11/08/2026" in text
+    assert text.count("Date:") >= 2
     assert "SUBJECT TO FINAL COMMERCIAL APPROVAL" not in text

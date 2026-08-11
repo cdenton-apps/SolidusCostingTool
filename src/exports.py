@@ -154,6 +154,7 @@ def _uk_datetime(value: Any, *, include_time: bool = False, default: str = "") -
     parsed = pd.to_datetime(value, utc=True, errors="coerce")
     if pd.isna(parsed):
         return default
+    parsed = parsed.tz_convert("Europe/London")
     return parsed.strftime("%d/%m/%Y %H:%M" if include_time else "%d/%m/%Y")
 
 
@@ -580,13 +581,13 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     if esign_tags:
         customer_detail = (
             '<font color="#FFFFFF">[sig|req|signer2]</font>'
-            '<br/><font color="#FFFFFF">[text|req|signer2|Full name]</font>'
-            '<br/><font color="#FFFFFF">[date_signed|req|signer2]</font>'
+            '<br/>Name: <font color="#FFFFFF">[text|req|signer2|Full name]</font>'
+            '<br/>Date: <font color="#FFFFFF">[date_signed|req|signer2]</font>'
         )
         director_detail = (
             '<font color="#FFFFFF">[sig|req|signer1]</font>'
-            '<br/><font color="#FFFFFF">[text|req|signer1|Full name]</font>'
-            '<br/><font color="#FFFFFF">[date_signed|req|signer1]</font>'
+            '<br/>Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
+            '<br/>Date: <font color="#FFFFFF">[date_signed|req|signer1]</font>'
         )
     signature_table = Table(
         [
@@ -602,7 +603,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ],
         ],
         colWidths=[60 * mm, 60 * mm, 60 * mm],
-        rowHeights=[5 * mm, 16 * mm],
+        rowHeights=[5 * mm, (22 if esign_tags else 16) * mm],
         style=[
             ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
             ("BOX", (0, 0), (-1, -1), 0.4, GREY),
