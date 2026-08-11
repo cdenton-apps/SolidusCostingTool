@@ -414,6 +414,63 @@ def test_existing_item_specification_is_collapsed() -> None:
     assert "Order and fulfilment" in [item.value for item in app.subheader]
 
 
+def test_external_user_can_amend_print_customer_code_and_description() -> None:
+    catalog = CsvRepository(PROJECT_DATA).load_catalog().sort_values("item_code").reset_index(drop=True)
+    selected_index = int(
+        catalog.index[
+            catalog["item_code"].astype(str).eq(
+                "BOX001/101/YPL/M0115/02/1000G"
+            )
+        ][0]
+    )
+    app = AppTest.from_file(APP_PATH, default_timeout=10)
+    app.secrets["app_auth"] = {"mode": "password"}
+    app.session_state["authenticated_user"] = {
+        "username": "external",
+        "email": "external@example.com",
+        "name": "External User",
+        "can_create_new": False,
+        "can_view_history": False,
+    }
+    app.run()
+    _widget(app.selectbox, "Search existing products").set_value(selected_index).run()
+    _widget(app.button, "Start costing").click().run()
+
+    assert _widget(app.text_input, "Item code *").disabled
+    assert not _widget(app.text_input, "Description *").disabled
+    _widget(app.text_input, "Description *").set_value("Customer-specific printed lid")
+    _widget(app.text_input, "Customer code *").set_value("A0123")
+    _widget(app.text_input, "Print number *").set_value("07")
+    _widget(app.text_input, "Customer *").set_value("Customer A")
+    _widget(app.text_input, "Delivery postcode *").set_value("BD20 0AA")
+    _widget(app.number_input, "Order quantity (units) *").set_value(10_000)
+    _widget(app.number_input, "Expected annual volume (units) *").set_value(10_000)
+    _widget(app.button, "Continue to delivery").click().run()
+
+    assert not app.exception
+    assert app.session_state["draft"]["item_code"] == "BOX001/101/YPL/A0123/07/1000G"
+    assert app.session_state["draft"]["source_item_code"] == "BOX001/101/YPL/M0115/02/1000G"
+    assert app.session_state["draft"]["description"] == "Customer-specific printed lid"
+
+
+def test_sidebar_is_replaced_by_top_menu() -> None:
+    app = AppTest.from_file(APP_PATH, default_timeout=10)
+    app.secrets["app_auth"] = {"mode": "password"}
+    app.session_state["authenticated_user"] = {
+        "username": "external",
+        "email": "external@example.com",
+        "name": "External User",
+        "can_create_new": False,
+        "can_view_history": False,
+    }
+    app.run()
+
+    assert not app.sidebar.button
+    assert not app.sidebar.radio
+    assert _widget(app.button, "Costing workflow")
+    assert _widget(app.button, "Sign out")
+
+
 def test_header_clearance_and_product_details_allow_wrapping() -> None:
     source = APP_PATH.read_text(encoding="utf-8")
 
@@ -517,7 +574,7 @@ def test_user_can_reopen_only_their_own_saved_costing(
         "can_view_history": False,
     }
     app.run()
-    _widget(app.sidebar.radio, "Navigation").set_value("My costings").run()
+    _widget(app.button, "My costings").click().run()
 
     history_selector = _widget(app.selectbox, "Choose a costing to reopen")
     assert any("HISTORY-MINE" in option for option in history_selector.options)
@@ -580,9 +637,7 @@ def test_team_history_permission_shows_saved_usernames(
         "can_view_history": True,
     }
     app.run()
-    navigation = _widget(app.sidebar.radio, "Navigation")
-    assert "Team history" in navigation.options
-    navigation.set_value("Team history").run()
+    _widget(app.button, "Team history").click().run()
 
     table = app.dataframe[0].value
     assert set(table["created_by_username"]) >= {"alice", "bob"}

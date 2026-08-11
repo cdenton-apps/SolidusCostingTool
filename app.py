@@ -4,6 +4,7 @@ import html
 import hashlib
 import json
 import math
+import re
 import uuid
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -98,7 +99,7 @@ st.set_page_config(
     page_title="Solidus Costing Tool",
     page_icon="📦",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown(
@@ -114,6 +115,7 @@ st.markdown(
     .block-container { padding-top: 4.75rem !important; padding-bottom: 3rem; max-width: 1180px; }
     h1, h2, h3 { color: var(--solidus-ink); letter-spacing: -0.025em; }
     [data-testid="stSidebar"] { border-right: 1px solid var(--solidus-grey); }
+    [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
     [data-testid="stVerticalBlockBorderWrapper"] { border-color: var(--solidus-grey); border-radius: 16px; }
     div[data-testid="stMetric"] { background: #ffffff; border: 1px solid var(--solidus-grey);
         border-top: 4px solid var(--solidus-yellow); border-radius: 14px; padding: 12px 16px;
@@ -201,6 +203,39 @@ def format_frame_dates(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
         if column in formatted.columns:
             formatted[column] = formatted[column].map(format_uk_datetime)
     return formatted
+
+
+def printed_item_code_fields(item_code: Any) -> tuple[int, int, str, str] | None:
+    """Locate customer and print segments without assuming a fixed code length."""
+    parts = str(item_code or "").strip().upper().split("/")
+    for print_index in range(1, len(parts) - 1):
+        if re.fullmatch(r"\d{2}", parts[print_index]) and re.fullmatch(
+            r"\d{3,4}G", parts[print_index + 1]
+        ):
+            customer_index = print_index - 1
+            if re.fullmatch(r"[A-Z0-9]{3,10}", parts[customer_index]):
+                return (
+                    customer_index,
+                    print_index,
+                    parts[customer_index],
+                    parts[print_index],
+                )
+    return None
+
+
+def customer_specific_item_code(
+    item_code: Any,
+    customer_code: Any,
+    print_number: Any,
+) -> str:
+    fields = printed_item_code_fields(item_code)
+    if fields is None:
+        return str(item_code or "").strip().upper()
+    customer_index, print_index, _, _ = fields
+    parts = str(item_code or "").strip().upper().split("/")
+    parts[customer_index] = str(customer_code or "").strip().upper()
+    parts[print_index] = str(print_number or "").strip()
+    return "/".join(parts)
 
 
 def _sign_out_local_session(repository: CsvRepository, message: str) -> None:
@@ -499,6 +534,8 @@ def reset_downstream() -> None:
     st.session_state.pop("quote_reference", None)
     st.session_state.pop("customer_contact", None)
     st.session_state.pop("quote_notes", None)
+    st.session_state.pop("customer_item_customer_code", None)
+    st.session_state.pop("customer_item_print_number", None)
     for key in list(st.session_state):
         if key.startswith("spec_board_") or key in {"spec_fsc", "board_lookup_notice"}:
             st.session_state.pop(key, None)
@@ -881,11 +918,37 @@ def render_specification(
     with st.expander(expander_label, expanded=not existing_item):
         left, right = st.columns(2)
         item_code = left.text_input(
-            "Item code *", value=str(draft.get("item_code", "")), disabled=simple_mode
+            "Item code *", value=str(draft.get("item_code", "")), disabled=existing_item
         )
         description = right.text_input(
-            "Description *", value=str(draft.get("description", "")), disabled=simple_mode
+            "Description *",
+            value=str(draft.get("description", "")),
+            help="This description will be used on the saved costing and quotation.",
         )
+
+        printed_fields = printed_item_code_fields(item_code)
+        customer_code = ""
+        print_number = ""
+        if existing_item and printed_fields is not None:
+            _, _, default_customer_code, default_print_number = printed_fields
+            st.caption(
+                "Customer-specific print details. These change the quotation item code; "
+                "the costing still uses the selected product's BOM."
+            )
+            customer_col, print_col = st.columns(2)
+            customer_code = customer_col.text_input(
+                "Customer code *",
+                value=default_customer_code,
+                key="customer_item_customer_code",
+                max_chars=10,
+            )
+            print_number = print_col.text_input(
+                "Print number *",
+                value=default_print_number,
+                key="customer_item_print_number",
+                max_chars=2,
+                help="Use two digits, for example 02.",
+            )
 
         col1, col2, col3 = st.columns(3)
         material_options = [
@@ -1154,6 +1217,16 @@ def render_specification(
     )
 
     if submitted:
+        if printed_fields is not None:
+            if not re.fullmatch(r"[A-Z0-9]{3,10}", customer_code.strip().upper()):
+                st.error("Customer code must contain 3 to 10 letters or numbers.")
+                return
+            if not re.fullmatch(r"\d{2}", print_number.strip()):
+                st.error("Print number must contain two digits, for example 02.")
+                return
+            item_code = customer_specific_item_code(
+                item_code, customer_code, print_number
+            )
         updated = {
             **draft,
             "customer_name": customer_name.strip(),
@@ -3059,6 +3132,40 @@ def render_workflow(
         )
 
 
+def render_top_menu(
+    repository: CsvRepository,
+    user: Any,
+    navigation: list[str],
+) -> str:
+    current = str(st.session_state.get("main_navigation", navigation[0]))
+    if current not in navigation:
+        current = navigation[0]
+        st.session_state.main_navigation = current
+    menu, identity = st.columns([1, 5], vertical_alignment="center")
+    with menu:
+        with st.popover("☰ Menu", use_container_width=True):
+            st.caption(f"Signed in as {user.name} (@{user.username})")
+            for option in navigation:
+                if st.button(
+                    option,
+                    key=f"top_navigation_{option}",
+                    type="primary" if option == current else "secondary",
+                    width="stretch",
+                ):
+                    st.session_state.main_navigation = option
+                    st.rerun()
+            st.divider()
+            st.caption(
+                f"Signs out after {session_timeout_minutes()} minutes without activity."
+            )
+            sign_out_button(repository)
+    identity.caption(
+        f"{current} · {user.name} · "
+        + ("Neon storage" if repository.uses_database else "Local storage")
+    )
+    return current
+
+
 def main() -> None:
     data_dir = data_directory(PROJECT_ROOT)
     repository_source = PROJECT_ROOT / "src" / "repository.py"
@@ -3092,39 +3199,18 @@ def main() -> None:
             "Your account can cost existing products only. Select a product to continue."
         )
 
-    st.sidebar.markdown("## Solidus")
-    st.sidebar.caption("Your circular packaging partner")
-    st.sidebar.markdown("### Spread Costing Tool")
-    st.sidebar.caption(f"Signed in as {user.name} (@{user.username})")
-    st.sidebar.caption(
-        "Access: "
-        + ("existing and new products" if user.can_create_new else "existing products")
-    )
-    st.sidebar.caption(
-        "Storage: Neon database" if repository.uses_database else "Storage: local CSV"
-    )
     navigation = ["Costing workflow", "My costings"]
     if user.can_view_history or user.is_admin:
         navigation.append("Team history")
     if user.is_admin:
         navigation.append("User activity")
-    page = st.sidebar.radio(
-        "Navigation",
-        navigation,
-        key="main_navigation",
-    )
+    page = render_top_menu(repository, user, navigation)
     try:
         current_session_id = track_user_session(repository, user, page)
     except RepositoryBusyError as exc:
         st.error(str(exc))
         st.stop()
     session_heartbeat(repository, current_session_id)
-    st.sidebar.divider()
-    st.sidebar.caption(
-        f"Signs out after {session_timeout_minutes()} minutes without activity."
-    )
-    sign_out_button(repository)
-
     try:
         if page == "My costings":
             render_history(repository, user.email, user.is_admin)

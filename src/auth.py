@@ -364,11 +364,11 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
 def sign_out_button(repository: Any | None = None) -> None:
     config = _secret_section("app_auth")
     mode = str(config.get("mode", "password")).lower()
-    if mode == "oidc" and st.sidebar.button("Sign out"):
+    if mode == "oidc" and st.button("Sign out", width="stretch"):
         if repository is not None:
             repository.end_session(st.session_state.get("app_session_id", ""))
         st.logout()
-    if mode == "password" and st.sidebar.button("Sign out"):
+    if mode == "password" and st.button("Sign out", width="stretch"):
         if repository is not None:
             repository.end_session(st.session_state.get("app_session_id", ""))
         st.session_state.pop("authenticated_user", None)

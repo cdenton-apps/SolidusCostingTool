@@ -197,19 +197,19 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
         key: authenticated_user[key] for key in expected_user
     } == expected_user
     assert _widget(app.radio, "Costing route")
-    navigation = _widget(app.sidebar.radio, "Navigation")
-    assert "Team history" in navigation.options
-    assert "User activity" in navigation.options
+    menu_labels = {button.label for button in app.button}
+    assert "Team history" in menu_labels
+    assert "User activity" in menu_labels
     assert any(
         "Signed in as Connor Denton" in item.value
-        for item in app.sidebar.caption
+        for item in app.caption
     )
 
-    navigation.set_value("User activity").run()
+    _widget(app.button, "User activity").click().run()
     assert "User activity" in [item.value for item in app.header]
     assert any("Online now" in item.value for item in app.markdown)
 
-    _widget(app.sidebar.button, "Sign out").click().run()
+    _widget(app.button, "Sign out").click().run()
     assert "authenticated_user" not in app.session_state
     assert _widget(app.text_input, "Username")
 
@@ -228,8 +228,8 @@ def test_standard_user_sees_existing_products_only() -> None:
 
     assert _widget(app.selectbox, "Search existing products")
     assert all(item.label != "Costing route" for item in app.radio)
-    assert _widget(app.sidebar.radio, "Navigation")
-    assert "Team history" not in _widget(app.sidebar.radio, "Navigation").options
+    assert _widget(app.button, "Costing workflow")
+    assert all(item.label != "Team history" for item in app.button)
     assert all(item.label != "Create new product" for item in app.button)
 
 
