@@ -292,8 +292,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 7),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ],
         )
 
@@ -415,8 +415,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
             ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
         ],
     )
 
@@ -434,8 +434,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-            ("TOPPADDING", (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ],
     )
     booking = str(record.get("transport_booking", "Standard") or "Standard")
@@ -462,8 +462,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
         ],
     )
 
@@ -495,13 +495,13 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         ],
     )
 
-    story = [header, Spacer(1, 4 * mm), section("Quote details"), details_table(order_rows)]
+    story = [header, Spacer(1, 3 * mm), section("Quote details"), details_table(order_rows)]
     story.extend(
         [
-            Spacer(1, 4 * mm),
+            Spacer(1, 3 * mm),
             section("Technical specification"),
             technical_table,
-            Spacer(1, 4 * mm),
+            Spacer(1, 3 * mm),
             Table(
                 [[price_card, "", delivery_card]],
                 colWidths=[87 * mm, 6 * mm, 87 * mm],
@@ -518,8 +518,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ("BOX", (0, 0), (-1, -1), 0.3, GREY),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ],
     )
     approval_notice = Table(
@@ -543,51 +543,39 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ],
     )
-    signature_space = 18 * mm if fulfilment_type == "MTC" else 12 * mm
-
-    def signature_box(label: str) -> Table:
-        return Table(
-            [
-                [Paragraph(label, styles["SignatureLabel"])],
-                [""],
-                [Paragraph("Name: ____________________<br/>Date: _____________________", styles["SignatureMeta"])],
-            ],
-            colWidths=[58 * mm],
-            rowHeights=[7 * mm, signature_space, 12 * mm],
-            style=[
-                ("BACKGROUND", (0, 0), (0, 0), PALE),
-                ("BOX", (0, 0), (-1, -1), 0.4, GREY),
-                ("LINEBELOW", (0, 1), (0, 1), 0.5, INK),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ],
-        )
-
+    quote_reference = _display(record.get("quote_reference"), "Draft")
     signature_table = Table(
-        [[
-            signature_box("Sales Representative"),
-            "",
-            signature_box("Customer"),
-            "",
-            signature_box("Sales Director"),
-        ]],
-        colWidths=[58 * mm, 3 * mm, 58 * mm, 3 * mm, 58 * mm],
+        [
+            [
+                Paragraph("SALES REPRESENTATIVE", styles["SignatureLabel"]),
+                Paragraph("CUSTOMER", styles["SignatureLabel"]),
+                Paragraph("SALES DIRECTOR", styles["SignatureLabel"]),
+            ],
+            [
+                Paragraph("Signed: ____________________<br/>Name / date: ____________________", styles["SignatureMeta"]),
+                Paragraph("Signed: ____________________<br/>Name / date: ____________________", styles["SignatureMeta"]),
+                Paragraph("Signed: ____________________<br/>Name / date: ____________________", styles["SignatureMeta"]),
+            ],
+        ],
+        colWidths=[60 * mm, 60 * mm, 60 * mm],
+        rowHeights=[5 * mm, 12 * mm],
         style=[
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
+            ("BOX", (0, 0), (-1, -1), 0.4, GREY),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, GREY),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
         ],
     )
     signature_intro = (
-        "Signatures below confirm agreement to the quoted MTC term and call-off profile, "
-        "subject to final commercial approval and the attached terms and conditions."
+        f"By signing below, the parties confirm acceptance of quotation {quote_reference}, "
+        "including its MTC term and call-off profile, subject to final commercial approval "
+        "and the attached terms and conditions."
         if fulfilment_type == "MTC"
-        else "Signatures below record approval of this quotation."
+        else f"Signatures below record approval of quotation {quote_reference}."
     )
     story.extend(
         [
@@ -597,7 +585,7 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
     )
     story.extend(
         [
-            Spacer(1, 3 * mm),
+            Spacer(1, 1.5 * mm),
             KeepTogether(
                 [
                     section("Commercial terms"),
@@ -610,17 +598,11 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
                 Paragraph(f"- {html.escape(term)}", styles["Terms"])
                 for term in commercial_terms
             ],
-            Spacer(1, 3 * mm),
+            Spacer(1, 1.5 * mm),
             KeepTogether(
                 [
-                    section(
-                        "MTC agreement signatures"
-                        if fulfilment_type == "MTC"
-                        else "Quotation signatures"
-                    ),
-                    Spacer(1, 1.5 * mm),
                     Paragraph(signature_intro, styles["Terms"]),
-                    Spacer(1, 2 * mm),
+                    Spacer(1, 0.5 * mm),
                     signature_table,
                 ]
             ),
