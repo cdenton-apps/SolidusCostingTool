@@ -2670,6 +2670,10 @@ def render_admin_activity(
             "Neon is not configured. Add the database URL in Streamlit Secrets "
             "before relying on saved history."
         )
+    try:
+        repository.expire_inactive_sessions(session_timeout_minutes())
+    except RepositoryBusyError as exc:
+        st.warning(str(exc))
     sessions = repository.load_sessions().copy()
     history = repository.load_history().copy()
     now = _utc_now()
@@ -2721,7 +2725,8 @@ def render_admin_activity(
     )
 
     st.subheader("Sessions")
-    visible = sessions.sort_values("_last_heartbeat_utc", ascending=False)[
+    current_sessions = sessions.loc[~ended].copy()
+    visible = current_sessions.sort_values("_last_heartbeat_utc", ascending=False)[
         [
             "username",
             "name",
@@ -2748,6 +2753,36 @@ def render_admin_activity(
             ),
         },
     )
+
+    signed_out_sessions = sessions.loc[ended].sort_values(
+        "_ended_at_utc", ascending=False
+    )
+    if not signed_out_sessions.empty:
+        with st.expander("Recent signed-out sessions"):
+            st.dataframe(
+                signed_out_sessions.head(25)[
+                    [
+                        "username",
+                        "name",
+                        "current_page",
+                        "signed_in",
+                        "last_activity",
+                        "active_minutes",
+                    ]
+                ],
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "username": st.column_config.TextColumn("Username"),
+                    "name": st.column_config.TextColumn("Name"),
+                    "current_page": st.column_config.TextColumn("Last page"),
+                    "signed_in": st.column_config.TextColumn("Signed in"),
+                    "last_activity": st.column_config.TextColumn("Last activity"),
+                    "active_minutes": st.column_config.NumberColumn(
+                        "Active minutes", format="%.1f"
+                    ),
+                },
+            )
 
     open_sessions = sessions[
         ~ended

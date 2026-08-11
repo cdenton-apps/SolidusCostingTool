@@ -6,7 +6,7 @@ import re
 import tempfile
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1330,6 +1330,51 @@ class CsvRepository:
             if column not in sessions:
                 sessions[column] = ""
         return sessions[SESSION_COLUMNS]
+
+    def expire_inactive_sessions(self, timeout_minutes: int) -> int:
+        """Close sessions whose last user activity is beyond the timeout."""
+        timeout_minutes = max(5, int(timeout_minutes))
+        timeout = timedelta(minutes=timeout_minutes)
+        cutoff = datetime.now(timezone.utc) - timeout
+        if self.uses_database:
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "UPDATE public.app_sessions SET ended_at_utc = "
+                            "last_activity_utc + (%s * interval '1 minute') "
+                            "WHERE ended_at_utc IS NULL AND last_activity_utc < %s",
+                            (timeout_minutes, cutoff.to_pydatetime()),
+                        )
+                        return max(0, int(cursor.rowcount))
+            except psycopg.Error as exc:
+                raise RepositoryBusyError(
+                    "Inactive sessions could not be closed. Please try again."
+                ) from exc
+
+        if not self.sessions_path.exists() or self.sessions_path.stat().st_size == 0:
+            return 0
+        lock = FileLock(str(self.sessions_path) + ".lock", timeout=10)
+        try:
+            with lock:
+                sessions = self.load_sessions()
+                last_activity = pd.to_datetime(
+                    sessions["last_activity_utc"], utc=True, errors="coerce"
+                )
+                ended = sessions["ended_at_utc"].fillna("").astype(str).str.strip().ne("")
+                expired = ~ended & last_activity.lt(cutoff)
+                if not expired.any():
+                    return 0
+                expiry_times = last_activity.loc[expired] + timeout
+                sessions.loc[expired, "ended_at_utc"] = expiry_times.map(
+                    lambda value: value.isoformat(timespec="seconds")
+                )
+                self._atomic_csv_write(sessions, self.sessions_path)
+                return int(expired.sum())
+        except Timeout as exc:
+            raise RepositoryBusyError(
+                "The session register is busy. Please try again in a moment."
+            ) from exc
 
     def touch_session(self, values: dict[str, Any]) -> bool:
         """Update a session and return whether an administrator requested logout."""

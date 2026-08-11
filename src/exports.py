@@ -588,29 +588,30 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
         ],
     )
-    signature_intro = (
-        f"By signing below, the parties confirm acceptance of quotation {quote_reference}, "
-        "including its MTC term and call-off profile, subject to final commercial approval "
-        "and the attached terms and conditions."
-        if fulfilment_type == "MTC"
-        else f"Signatures below record approval of quotation {quote_reference}."
-    )
+    if fulfilment_type == "MTC":
+        signature_intro = (
+            f"By signing below, the parties confirm acceptance of quotation {quote_reference}, "
+            "including its MTC term, call-off profile and the attached terms and conditions."
+            if esign_tags
+            else f"By signing below, the parties confirm acceptance of quotation {quote_reference}, "
+            "including its MTC term and call-off profile, subject to final commercial approval "
+            "and the attached terms and conditions."
+        )
+    else:
+        signature_intro = f"Signatures below record approval of quotation {quote_reference}."
     story.extend(
         [
             Spacer(1, 3 * mm),
             KeepTogether([section("Notes"), notes_table]),
         ]
     )
+    commercial_heading = [section("Commercial terms")]
+    if not esign_tags:
+        commercial_heading.extend([Spacer(1, 2 * mm), approval_notice])
     story.extend(
         [
             Spacer(1, 1.5 * mm),
-            KeepTogether(
-                [
-                    section("Commercial terms"),
-                    Spacer(1, 2 * mm),
-                    approval_notice,
-                ]
-            ),
+            KeepTogether(commercial_heading),
             Spacer(1, 1 * mm),
             *[
                 Paragraph(f"- {html.escape(term)}", styles["Terms"])

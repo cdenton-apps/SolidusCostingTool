@@ -435,6 +435,27 @@ def test_runtime_sessions_can_be_seen_forced_out_and_ended(tmp_path: Path) -> No
     assert str(ended["ended_at_utc"]).strip()
 
 
+def test_inactive_runtime_sessions_are_automatically_ended(tmp_path: Path) -> None:
+    repository = CsvRepository(tmp_path)
+    repository.touch_session(
+        {
+            "session_id": "expired-session",
+            "username": "old-user",
+            "name": "Old User",
+            "signed_in_at_utc": "2020-01-01T09:00:00+00:00",
+            "last_activity_utc": "2020-01-01T09:05:00+00:00",
+            "last_heartbeat_utc": "2020-01-01T09:05:00+00:00",
+        }
+    )
+
+    assert repository.expire_inactive_sessions(60) == 1
+    expired = repository.load_sessions().set_index("session_id").loc[
+        "expired-session"
+    ]
+    assert str(expired["ended_at_utc"]).startswith("2020-01-01T10:05:00")
+    assert repository.expire_inactive_sessions(60) == 0
+
+
 def test_reference_csv_is_reused_until_the_file_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
