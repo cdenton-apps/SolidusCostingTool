@@ -197,6 +197,19 @@ def format_uk_datetime(
     return parsed.strftime("%d/%m/%Y %H:%M" if include_time else "%d/%m/%Y")
 
 
+def format_esign_datetime(value: Any, *, default: str = "") -> str:
+    """Format Dropbox Sign epoch timestamps in UK local time."""
+    if value in (None, ""):
+        return default
+    if isinstance(value, (int, float)):
+        parsed = pd.to_datetime(value, unit="s", utc=True, errors="coerce")
+    else:
+        parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return default
+    return parsed.tz_convert("Europe/London").strftime("%d/%m/%Y %H:%M")
+
+
 def format_frame_dates(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Return a display/export copy with UK-formatted date columns."""
     formatted = frame.copy()
@@ -2201,9 +2214,12 @@ def render_esign_test(
     if request_id:
         st.info(f"Dropbox Sign test status: **{status or 'sent'}**")
         for signer in saved.get("esign_signers", []) or []:
+            signed_at = format_esign_datetime(signer.get("signed_at"))
+            signer_status = str(signer.get("status", "unknown")).replace("_", " ")
             st.write(
                 f"{signer.get('name') or signer.get('email')}: "
-                f"{str(signer.get('status', 'unknown')).replace('_', ' ')}"
+                f"{signer_status}"
+                + (f" · {signed_at}" if signed_at else "")
             )
         status_columns = st.columns(2)
         if status_columns[0].button("Refresh signing status", width="stretch"):
