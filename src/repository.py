@@ -1344,7 +1344,7 @@ class CsvRepository:
                             "UPDATE public.app_sessions SET ended_at_utc = "
                             "last_activity_utc + (%s * interval '1 minute') "
                             "WHERE ended_at_utc IS NULL AND last_activity_utc < %s",
-                            (timeout_minutes, cutoff.to_pydatetime()),
+                            (timeout_minutes, cutoff),
                         )
                         return max(0, int(cursor.rowcount))
             except psycopg.Error as exc:

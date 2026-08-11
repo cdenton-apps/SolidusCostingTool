@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -103,9 +104,9 @@ def test_neon_save_uses_database_without_writing_history_csv(
 
     saved = repository.save_costing(
         {"item_code": "DB-001", "customer_name": "Database Customer"},
-        user_username="connor",
-        user_email="connor@example.com",
-        user_name="Connor",
+        user_username="alice",
+        user_email="alice@example.com",
+        user_name="Alice",
     )
 
     assert repository.uses_database
@@ -124,9 +125,9 @@ def test_neon_history_reconstructs_saved_record(
         "costing_id": "C-DB-ONE",
         "item_code": "DB-001",
         "revision": 1,
-        "created_by": "connor@example.com",
-        "created_by_username": "connor",
-        "created_by_name": "Connor",
+        "created_by": "alice@example.com",
+        "created_by_username": "alice",
+        "created_by_name": "Alice",
         "selling_price_per_1000": 150,
     }
     repository = CsvRepository(
@@ -141,7 +142,7 @@ def test_neon_history_reconstructs_saved_record(
     history = repository.load_history()
 
     assert list(history["costing_id"]) == ["C-DB-ONE"]
-    assert list(history["created_by_username"]) == ["connor"]
+    assert list(history["created_by_username"]) == ["alice"]
 
 
 def test_esign_status_is_attached_to_owned_neon_revision(
@@ -157,13 +158,13 @@ def test_esign_status_is_attached_to_owned_neon_revision(
     updated = repository.update_costing_esign(
         "C-DB-ONE",
         {"esign_status": "sent", "not_allowed": "discarded"},
-        owner_email="connor@example.com",
+        owner_email="alice@example.com",
     )
 
     sql, params = cursor.executed[-1]
     assert "UPDATE public.costing_revisions" in sql
     assert "lower(created_by_email)" in sql
-    assert params[1:] == ("C-DB-ONE", "connor@example.com")
+    assert params[1:] == ("C-DB-ONE", "alice@example.com")
     assert updated["esign_status"] == "sent"
 
 
@@ -223,9 +224,9 @@ def test_user_history_is_private_and_case_insensitive(tmp_path: Path) -> None:
     repository = CsvRepository(tmp_path)
     repository.save_costing(
         {"item_code": "MINE-001", "customer_name": "My customer"},
-        user_username="connor",
-        user_email="Connor@Example.com",
-        user_name="Connor",
+        user_username="alice",
+        user_email="Alice@Example.com",
+        user_name="Alice",
     )
     repository.save_costing(
         {"item_code": "THEIRS-001", "customer_name": "Other customer"},
@@ -234,10 +235,10 @@ def test_user_history_is_private_and_case_insensitive(tmp_path: Path) -> None:
         user_name="Other User",
     )
 
-    mine = repository.load_user_history("connor@example.com")
+    mine = repository.load_user_history("alice@example.com")
     assert list(mine["item_code"]) == ["MINE-001"]
-    assert set(mine["created_by"]) == {"Connor@Example.com"}
-    assert set(mine["created_by_username"]) == {"connor"}
+    assert set(mine["created_by"]) == {"Alice@Example.com"}
+    assert set(mine["created_by_username"]) == {"alice"}
 
 
 def test_saved_item_appears_in_catalog(tmp_path: Path) -> None:
@@ -400,8 +401,8 @@ def test_runtime_sessions_can_be_seen_forced_out_and_ended(tmp_path: Path) -> No
     repository.touch_session(
         {
             "session_id": "session-one",
-            "username": "connor",
-            "name": "Connor",
+            "username": "alice",
+            "name": "Alice",
             "signed_in_at_utc": "2026-08-07T09:00:00+00:00",
             "last_activity_utc": "2026-08-07T09:05:00+00:00",
             "last_heartbeat_utc": "2026-08-07T09:05:00+00:00",
@@ -413,13 +414,13 @@ def test_runtime_sessions_can_be_seen_forced_out_and_ended(tmp_path: Path) -> No
     repository.touch_session(
         {
             "session_id": "session-two",
-            "username": "ben",
-            "name": "Ben",
+            "username": "bob",
+            "name": "Bob",
             "force_logout": 0,
         }
     )
 
-    assert set(repository.load_sessions()["username"]) == {"connor", "ben"}
+    assert set(repository.load_sessions()["username"]) == {"alice", "bob"}
     assert not repository.session_forced_logout("session-two")
     repository.force_logout_session("session-two")
     assert repository.session_forced_logout("session-two")
@@ -454,6 +455,23 @@ def test_inactive_runtime_sessions_are_automatically_ended(tmp_path: Path) -> No
     ]
     assert str(expired["ended_at_utc"]).startswith("2020-01-01T10:05:00")
     assert repository.expire_inactive_sessions(60) == 0
+
+
+def test_database_session_expiry_uses_a_python_datetime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(repository, "_connect", lambda: _FakeConnection(cursor))
+
+    assert repository.expire_inactive_sessions(60) == 1
+    sql, params = cursor.executed[-1]
+    assert "UPDATE public.app_sessions" in sql
+    assert params[0] == 60
+    assert isinstance(params[1], datetime)
 
 
 def test_reference_csv_is_reused_until_the_file_changes(
