@@ -547,9 +547,9 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
     signature_table = Table(
         [
             [
-                Paragraph("SALES REPRESENTATIVE", styles["SignatureLabel"]),
-                Paragraph("CUSTOMER", styles["SignatureLabel"]),
-                Paragraph("SALES DIRECTOR", styles["SignatureLabel"]),
+                Paragraph("Sales Representative", styles["SignatureLabel"]),
+                Paragraph("Customer", styles["SignatureLabel"]),
+                Paragraph("Sales Director", styles["SignatureLabel"]),
             ],
             [
                 Paragraph("Signed: ____________________<br/>Name / date: ____________________", styles["SignatureMeta"]),
