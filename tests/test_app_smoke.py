@@ -530,6 +530,18 @@ def test_user_can_reopen_only_their_own_saved_costing(
     assert app.session_state["customer_contact"] == "Alex Example"
     assert "quote_reference" not in app.session_state
     assert "Order and fulfilment" in [item.value for item in app.subheader]
+    assert {button.label for button in app.button if button.label in {
+        "Quote details", "Price & approval", "Save & send"
+    }} == {"Quote details", "Price & approval", "Save & send"}
+    assert all(
+        button.label not in {"Product", "Order", "Costs", "Pricing", "Save / print"}
+        for button in app.button
+    )
+    specification = next(
+        item for item in app.expander if item.label == "View product specification"
+    )
+    assert specification.proto.expanded is False
+    assert _widget(app.text_input, "Item code *").disabled
 
 
 def test_team_history_permission_shows_saved_usernames(

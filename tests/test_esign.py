@@ -83,5 +83,9 @@ def test_esign_pdf_contains_director_and_customer_tags() -> None:
 
     assert "[sig|req|signer1]" in text
     assert "[sig|req|signer2]" in text
+    assert "[text|req|signer1|Full name]" in text
+    assert "[text|req|signer2|Full name]" in text
+    assert "[date_signed|req|signer1]" in text
+    assert "[date_signed|req|signer2]" in text
     assert "Approved in costing tool by" in text
     assert "SUBJECT TO FINAL COMMERCIAL APPROVAL" not in text

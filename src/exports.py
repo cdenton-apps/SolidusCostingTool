@@ -554,16 +554,26 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         if rep_approved_by and rep_approved_at
         else "Signed: ____________________<br/>Name / date: ____________________"
     )
-    customer_detail = "Signed: ____________________<br/>Name / date: ____________________"
-    director_detail = "Signed: ____________________<br/>Name / date: ____________________"
+    customer_detail = (
+        "Signed: ____________________<br/>"
+        "Name: _____________________<br/>"
+        "Date: ______________________"
+    )
+    director_detail = (
+        "Signed: ____________________<br/>"
+        "Name: _____________________<br/>"
+        "Date: ______________________"
+    )
     if esign_tags:
         customer_detail = (
             '<font color="#FFFFFF">[sig|req|signer2]</font>'
-            '<br/><font color="#FFFFFF">[date|req|signer2]</font>'
+            '<br/><font color="#FFFFFF">[text|req|signer2|Full name]</font>'
+            '<br/><font color="#FFFFFF">[date_signed|req|signer2]</font>'
         )
         director_detail = (
             '<font color="#FFFFFF">[sig|req|signer1]</font>'
-            '<br/><font color="#FFFFFF">[date|req|signer1]</font>'
+            '<br/><font color="#FFFFFF">[text|req|signer1|Full name]</font>'
+            '<br/><font color="#FFFFFF">[date_signed|req|signer1]</font>'
         )
     signature_table = Table(
         [
@@ -579,7 +589,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ],
         ],
         colWidths=[60 * mm, 60 * mm, 60 * mm],
-        rowHeights=[5 * mm, 12 * mm],
+        rowHeights=[5 * mm, 16 * mm],
         style=[
             ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
             ("BOX", (0, 0), (-1, -1), 0.4, GREY),

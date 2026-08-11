@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -509,7 +510,34 @@ def can_access(step: int) -> bool:
     return True
 
 
-def stage_navigation() -> None:
+def stage_navigation(simple_mode: bool = False) -> None:
+    if simple_mode:
+        labels = ["Quote details", "Price & approval", "Save & send"]
+        current = (
+            0
+            if st.session_state.step <= 2
+            else 1
+            if st.session_state.step == 3
+            else 2
+        )
+        targets = [1 if st.session_state.get("draft") else 0, 3, 4]
+        columns = st.columns(3)
+        for index, label in enumerate(labels):
+            target = targets[index]
+            if columns[index].button(
+                label,
+                key=f"simple_nav_{index}",
+                width="stretch",
+                disabled=not can_access(target),
+                type="primary" if current == index else "secondary",
+            ):
+                navigate_to(target)
+        st.progress(
+            (current + 1) / len(labels),
+            text=f"Step {current + 1} of {len(labels)}",
+        )
+        return
+
     columns = st.columns(5)
     for index, label in enumerate(STAGES):
         if columns[index].button(
@@ -797,7 +825,10 @@ def fill_board_details(repository: CsvRepository) -> None:
     )
 
 
-def render_specification(repository: CsvRepository) -> None:
+def render_specification(
+    repository: CsvRepository,
+    simple_mode: bool = False,
+) -> None:
     st.subheader("Order and fulfilment")
     draft = st.session_state.draft
     existing_item = bool(str(draft.get("source_item_code", "")).strip())
@@ -820,17 +851,19 @@ def render_specification(repository: CsvRepository) -> None:
         )
 
     expander_label = (
-        "View or amend product specification"
+        "View product specification"
+        if simple_mode
+        else "View or amend product specification"
         if existing_item
         else "Product specification *"
     )
     with st.expander(expander_label, expanded=not existing_item):
         left, right = st.columns(2)
         item_code = left.text_input(
-            "Item code *", value=str(draft.get("item_code", ""))
+            "Item code *", value=str(draft.get("item_code", "")), disabled=simple_mode
         )
         description = right.text_input(
-            "Description *", value=str(draft.get("description", ""))
+            "Description *", value=str(draft.get("description", "")), disabled=simple_mode
         )
 
         col1, col2, col3 = st.columns(3)
@@ -845,16 +878,22 @@ def render_specification(repository: CsvRepository) -> None:
         if current_material not in material_options:
             material_options.append(current_material)
         material = col1.selectbox(
-            "Material *", material_options, index=material_options.index(current_material)
+            "Material *",
+            material_options,
+            index=material_options.index(current_material),
+            disabled=simple_mode,
         )
         product_group = col2.text_input(
-            "Product group", value=str(draft.get("product_group", "Finished goods"))
+            "Product group",
+            value=str(draft.get("product_group", "Finished goods")),
+            disabled=simple_mode,
         )
         board_gsm = col3.number_input(
             "Grade / GSM *",
             min_value=0.0,
             step=25.0,
             key="spec_board_gsm",
+            disabled=simple_mode,
         )
 
         col1, col2, col3 = st.columns(3)
@@ -863,18 +902,21 @@ def render_specification(repository: CsvRepository) -> None:
             min_value=0.0,
             value=draft_number("length_mm"),
             step=1.0,
+            disabled=simple_mode,
         )
         width_mm = col2.number_input(
             "Width (mm) *",
             min_value=0.0,
             value=draft_number("width_mm"),
             step=1.0,
+            disabled=simple_mode,
         )
         height_mm = col3.number_input(
             "Height (mm) *",
             min_value=0.0,
             value=draft_number("height_mm"),
             step=1.0,
+            disabled=simple_mode,
         )
 
         col1, col2 = st.columns(2)
@@ -883,6 +925,7 @@ def render_specification(repository: CsvRepository) -> None:
             min_value=0,
             value=max(0, int(draft_number("pallet_quantity"))),
             step=1,
+            disabled=simple_mode,
         )
         net_mass_kg = col2.number_input(
             "Net mass per item (kg)",
@@ -890,6 +933,7 @@ def render_specification(repository: CsvRepository) -> None:
             value=draft_number("net_mass_kg"),
             step=0.0001,
             format="%.4f",
+            disabled=simple_mode,
         )
 
         col1, col2, col3 = st.columns(3)
@@ -898,25 +942,28 @@ def render_specification(repository: CsvRepository) -> None:
             min_value=0.0,
             step=1.0,
             key="spec_board_width",
+            disabled=simple_mode,
         )
         board_length_mm = col2.number_input(
             "Board length / chop (mm)",
             min_value=0.0,
             step=1.0,
             key="spec_board_length",
+            disabled=simple_mode,
         )
         number_of_colours = col3.number_input(
             "Number of colours",
             min_value=0,
             value=max(0, int(draft_number("number_of_colours"))),
             step=1,
+            disabled=simple_mode,
         )
 
         col1, col2 = st.columns(2)
         board_code = col1.text_input(
-            "Board code", key="spec_board_code"
+            "Board code", key="spec_board_code", disabled=simple_mode
         )
-        fsc = col2.text_input("FSC", key="spec_fsc")
+        fsc = col2.text_input("FSC", key="spec_fsc", disabled=simple_mode)
         if not existing_item:
             st.button(
                 "Fill board details from code",
@@ -1076,7 +1123,11 @@ def render_specification(repository: CsvRepository) -> None:
         )
     st.caption("Customer factors are used in the internal commercial calculation.")
 
-    submitted = st.button("Save order details", type="primary")
+    submitted = st.button(
+        "Continue to delivery" if simple_mode else "Save order details",
+        type="primary",
+        width="stretch" if simple_mode else "content",
+    )
 
     if submitted:
         updated = {
@@ -1132,8 +1183,9 @@ def render_costs(
     repository: CsvRepository,
     rate_table: HaulierRateTable,
     is_admin: bool,
+    simple_mode: bool = False,
 ) -> None:
-    st.subheader("Material base and delivery")
+    st.subheader("Delivery details" if simple_mode else "Material base and delivery")
     draft = st.session_state.draft
     source_item_code = str(draft.get("source_item_code") or draft.get("item_code", ""))
     material_result: dict[str, Any] | None = None
@@ -1148,7 +1200,7 @@ def render_costs(
             st.success(
                 f"Material cost from the BOM and board prices: £{imported_total:,.2f} per 1,000."
             )
-        else:
+        elif not simple_mode:
             st.success("The BOM and board-price calculation is ready.")
     else:
         st.info(
@@ -1242,8 +1294,9 @@ def render_costs(
                 board_catalog["board_item_code"].astype(str).eq(selected_board_code)
             ].iloc[0]
 
-    st.markdown("#### Material setup")
-    st.caption("Board and other components are calculated from the product data.")
+    if not simple_mode:
+        st.markdown("#### Material setup")
+        st.caption("Board and other components are calculated from the product data.")
     if material_result is not None:
         material_summary = material_result["summary"]
         material_lines = material_result["lines"]
@@ -1269,7 +1322,7 @@ def render_costs(
                 f"{material_summary.get('board_article_code') or material_summary.get('board_item_code', 'Board')} · "
                 f"{material_summary.get('board_price_source', '')}"
             )
-        else:
+        elif not simple_mode:
             st.success("Material details are complete.")
         if is_admin and not material_lines.empty:
             with st.expander("View board and component calculation"):
@@ -1341,7 +1394,8 @@ def render_costs(
     manual_override = bool(float(draft.get("transport_manual_override", 0) or 0))
     manual_transport_total = draft_number("transport_total")
     if delivery_method == "Haulier":
-        col1, col2, col3 = st.columns(3)
+        delivery_columns = st.columns(2 if simple_mode else 3)
+        col1, col2 = delivery_columns[:2]
         service = col1.selectbox(
             "Service",
             ["Economy", "Next Day"],
@@ -1352,14 +1406,17 @@ def render_costs(
             ["Standard", "AM/PM", "Timed"],
             index=["Standard", "AM/PM", "Timed"].index(booking),
         )
-        preferences = ["Cheapest available", "Joda", "McDowells"]
-        vendor_preference = col3.selectbox(
-            "Haulier",
-            preferences,
-            index=preferences.index(vendor_preference)
-            if vendor_preference in preferences
-            else 0,
-        )
+        if simple_mode:
+            vendor_preference = "Cheapest available"
+        else:
+            preferences = ["Cheapest available", "Joda", "McDowells"]
+            vendor_preference = delivery_columns[2].selectbox(
+                "Haulier",
+                preferences,
+                index=preferences.index(vendor_preference)
+                if vendor_preference in preferences
+                else 0,
+            )
         if is_admin:
             manual_override = st.checkbox(
                 "Use a manual transport total",
@@ -1374,16 +1431,18 @@ def render_costs(
                 value=manual_transport_total,
                 step=1.0,
             )
-        st.caption(
-            "AM/PM, timed-booking and full-load charges are included automatically."
-            if not is_admin
-            else "AM/PM adds £7 per load; Timed adds £19 per load. McDowells adds £40 for each complete 26-pallet load."
-        )
+        if not simple_mode:
+            st.caption(
+                "AM/PM, timed-booking and full-load charges are included automatically."
+                if not is_admin
+                else "AM/PM adds £7 per load; Timed adds £19 per load. McDowells adds £40 for each complete 26-pallet load."
+            )
 
     calculate = st.button(
-        "Calculate pricing base",
+        "Continue to price" if simple_mode else "Calculate pricing base",
         type="primary",
         disabled=material_summary is None,
+        width="stretch" if simple_mode else "content",
     )
 
     if calculate and material_summary is not None:
@@ -1463,7 +1522,10 @@ def render_costs(
             st.session_state.material_lines = material_lines
             st.session_state.breakdown = calculate_cost(st.session_state.draft)
             st.session_state.pop("pricing", None)
-            st.rerun()
+            if simple_mode:
+                navigate_to(3)
+            else:
+                st.rerun()
         except (TransportLookupError, ValueError) as exc:
             st.error(str(exc))
 
@@ -1517,9 +1579,9 @@ def render_costs(
         if is_admin:
             show_cost_breakdown(st.session_state.breakdown)
             show_admin_adjustment_detail(st.session_state.breakdown)
-        else:
+        elif not simple_mode:
             st.success("Material and delivery have been calculated.")
-        if st.button("Continue to pricing", type="primary"):
+        if not simple_mode and st.button("Continue to pricing", type="primary"):
             navigate_to(3)
 
 
@@ -1617,6 +1679,7 @@ def render_pricing(
     user_email: str,
     user_name: str,
     is_admin: bool,
+    simple_mode: bool = False,
 ) -> None:
     st.subheader("Set spread or selling price")
     breakdown = st.session_state.breakdown
@@ -1711,8 +1774,9 @@ def render_pricing(
                 ("Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}")
             )
         show_detail_cards(pricing_cards)
-        st.markdown("#### Material-only operational spread")
-        if pricing.get("total_machine_hours", 0) > 0:
+        if not simple_mode:
+            st.markdown("#### Material-only operational spread")
+        if not simple_mode and pricing.get("total_machine_hours", 0) > 0:
             operational_cards = [
                 ("Spread / machine hour", f"£{pricing['spread_per_machine_hour']:,.2f}"),
                 (
@@ -1745,7 +1809,7 @@ def render_pricing(
             else:
                 st.caption("Spread per machine hour excludes delivery.")
             show_machine_time_calculation(repository, pricing)
-        else:
+        elif not simple_mode:
             st.info(
                 "No machine time is available for this BOM, so spread/hour cannot be calculated."
             )
@@ -2102,6 +2166,7 @@ def render_save(
     is_admin: bool,
 ) -> None:
     st.subheader("Save, quote and export")
+    simple_mode = not can_create_new and not is_admin
     draft = st.session_state.draft
     st.session_state.setdefault(
         "quote_reference",
@@ -2120,44 +2185,59 @@ def render_save(
     ).strip()
     st.session_state.setdefault("quote_notes", "")
 
-    left, right = st.columns(2)
-    left.text_input("Quote reference", key="quote_reference")
-    right.text_input("Customer contact", key="customer_contact")
-    if str(esign_settings.get("api_key", "") or "").strip():
-        st.caption("Test e-sign recipients")
-        st.text_input("Customer email", key="customer_email")
-        if st.session_state.director_name and valid_email(
-            st.session_state.director_email
-        ):
-            st.caption(
-                "Sales Director: "
-                f"{st.session_state.director_name} "
-                f"({st.session_state.director_email}). "
-                "This is set centrally by an administrator."
-            )
-        else:
-            st.warning(
-                "An administrator must set the Sales Director name and email "
-                "in Streamlit Secrets before e-signing can be used."
-            )
-    quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
+    form_context = (
+        st.form("external_quote_save", border=False)
+        if simple_mode
+        else nullcontext()
+    )
+    with form_context:
+        left, right = st.columns(2)
+        left.text_input("Quote reference", key="quote_reference")
+        right.text_input("Customer contact", key="customer_contact")
+        if str(esign_settings.get("api_key", "") or "").strip():
+            st.caption("Test e-sign recipients")
+            st.text_input("Customer email", key="customer_email")
+            if st.session_state.director_name and valid_email(
+                st.session_state.director_email
+            ):
+                st.caption(
+                    "Sales Director: "
+                    f"{st.session_state.director_name} "
+                    f"({st.session_state.director_email}). "
+                    "This is set centrally by an administrator."
+                )
+            else:
+                st.warning(
+                    "An administrator must set the Sales Director name and email "
+                    "in Streamlit Secrets before e-signing can be used."
+                )
+        quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
 
-    record = current_record()
-    record["notes"] = quote_notes
-    summary_cards = [
-        ("Item", record["item_code"]),
-        ("Quantity", f"{float(record['order_quantity']):,.0f}"),
-        ("Fulfilment", record.get("fulfilment_type", "MTO")),
-        ("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}"),
-    ]
-    if is_admin:
-        summary_cards.insert(
-            3,
-            ("Pricing base / 1,000", f"£{record['pricing_base_per_1000']:,.2f}"),
+        record = current_record()
+        record["notes"] = quote_notes
+        summary_cards = [
+            ("Item", record["item_code"]),
+            ("Quantity", f"{float(record['order_quantity']):,.0f}"),
+            ("Fulfilment", record.get("fulfilment_type", "MTO")),
+            ("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}"),
+        ]
+        if is_admin:
+            summary_cards.insert(
+                3,
+                ("Pricing base / 1,000", f"£{record['pricing_base_per_1000']:,.2f}"),
+            )
+        show_detail_cards(summary_cards)
+        save_submitted = (
+            st.form_submit_button(
+                "Save revision", type="primary", width="stretch"
+            )
+            if simple_mode
+            else st.button(
+                "Save as a new revision", type="primary", width="stretch"
+            )
         )
-    show_detail_cards(summary_cards)
 
-    if st.button("Save as a new revision", type="primary", width="stretch"):
+    if save_submitted:
         record["source_item_code"] = draft.get("source_item_code", "")
         try:
             saved = repository.save_costing(
@@ -2895,23 +2975,28 @@ def render_workflow(
     can_create_new: bool,
     is_admin: bool,
 ) -> None:
+    simple_mode = not can_create_new and not is_admin
     st.markdown(
         '<div class="brand-banner"><div><div class="brand-name">Solidus</div>'
         '<div class="brand-tagline">Your circular packaging partner</div></div>'
         '<div class="brand-tool">Spread Costing Tool</div></div>',
         unsafe_allow_html=True,
     )
-    st.caption("Select a product to start.")
+    st.caption(
+        "Choose a product, enter the order, set the price and save the quotation."
+        if simple_mode
+        else "Select a product to start."
+    )
     workflow_notice = st.session_state.pop("workflow_notice", None)
     if workflow_notice:
         st.success(workflow_notice)
-    stage_navigation()
+    stage_navigation(simple_mode)
     if st.session_state.step == 0:
         render_select(repository, can_create_new, is_admin)
     elif st.session_state.step == 1:
-        render_specification(repository)
+        render_specification(repository, simple_mode)
     elif st.session_state.step == 2:
-        render_costs(repository, rate_table, is_admin)
+        render_costs(repository, rate_table, is_admin, simple_mode)
     elif st.session_state.step == 3:
         render_pricing(
             repository,
@@ -2919,6 +3004,7 @@ def render_workflow(
             user_email,
             user_name,
             is_admin,
+            simple_mode,
         )
     else:
         render_save(
