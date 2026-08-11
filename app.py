@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ from src.calculations import (
     validate_details,
 )
 from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
+from src.esign import DropboxSignClient, ESignError, Signer
 from src.repository import (
     CALCULATION_COLUMNS,
     COST_INPUT_COLUMNS,
@@ -54,6 +55,14 @@ def configured_database_url() -> str:
         return str(dict(st.secrets.get("database", {})).get("url", "")).strip()
     except FileNotFoundError:
         return ""
+
+
+def configured_esign() -> dict[str, Any]:
+    """Read Dropbox Sign test settings without exposing their values."""
+    try:
+        return dict(st.secrets.get("esign", {}))
+    except FileNotFoundError:
+        return {}
 
 
 @st.cache_resource(show_spinner=False)
@@ -1888,6 +1897,9 @@ def current_record() -> dict[str, Any]:
         **st.session_state.pricing,
         "quote_reference": st.session_state.get("quote_reference", ""),
         "customer_contact": st.session_state.get("customer_contact", ""),
+        "customer_email": st.session_state.get("customer_email", ""),
+        "director_name": st.session_state.get("director_name", ""),
+        "director_email": st.session_state.get("director_email", ""),
         "notes": st.session_state.get("quote_notes", ""),
     }
 
@@ -1899,8 +1911,151 @@ SAVED_REVISION_FIELDS = [
     "source_item_code",
     "quote_reference",
     "customer_contact",
+    "customer_email",
+    "director_name",
+    "director_email",
     "notes",
 ]
+
+
+def valid_email(value: str) -> bool:
+    value = str(value or "").strip()
+    return "@" in value and "." in value.rsplit("@", 1)[-1]
+
+
+def render_esign_test(
+    repository: CsvRepository,
+    saved: dict[str, Any],
+    *,
+    user_username: str,
+    user_email: str,
+    user_name: str,
+) -> None:
+    settings = configured_esign()
+    api_key = str(settings.get("api_key", "") or "").strip()
+    if not api_key:
+        return
+    st.markdown("#### Test e-signature")
+    st.caption(
+        "This route is locked to Dropbox Sign test mode. It sends real test emails, "
+        "but the watermarked document is not legally binding."
+    )
+    customer_name = str(saved.get("customer_contact") or saved.get("customer_name") or "").strip()
+    customer_email = str(saved.get("customer_email", "") or "").strip()
+    director_name = str(saved.get("director_name", "") or "").strip()
+    director_email = str(saved.get("director_email", "") or "").strip()
+    request_id = str(saved.get("esign_request_id", "") or "").strip()
+    status = str(saved.get("esign_status", "") or "").strip()
+
+    if request_id:
+        st.info(f"Dropbox Sign test status: **{status or 'sent'}**")
+        for signer in saved.get("esign_signers", []) or []:
+            st.write(
+                f"{signer.get('name') or signer.get('email')}: "
+                f"{str(signer.get('status', 'unknown')).replace('_', ' ')}"
+            )
+        status_columns = st.columns(2)
+        if status_columns[0].button("Refresh signing status", width="stretch"):
+            try:
+                latest = DropboxSignClient(api_key).get_request(request_id)
+                updated = repository.update_costing_esign(
+                    str(saved.get("costing_id", "")),
+                    latest,
+                    owner_email=user_email,
+                )
+            except (ESignError, RepositoryBusyError) as exc:
+                st.error(str(exc))
+            else:
+                st.session_state.last_saved = updated
+                st.rerun()
+        if bool(saved.get("esign_is_complete")):
+            try:
+                signed_pdf = DropboxSignClient(api_key).download_pdf(request_id)
+            except ESignError as exc:
+                status_columns[1].warning(str(exc))
+            else:
+                status_columns[1].download_button(
+                    "Download completed test PDF",
+                    data=signed_pdf,
+                    file_name=f"{saved.get('quote_reference') or 'quotation'}-signed-test.pdf",
+                    mime="application/pdf",
+                    width="stretch",
+                )
+        return
+
+    problems = []
+    if not customer_name:
+        problems.append("customer contact name")
+    if not valid_email(customer_email):
+        problems.append("customer email")
+    if not director_name:
+        problems.append("Sales Director name")
+    if not valid_email(director_email):
+        problems.append("Sales Director email")
+    if customer_email.casefold() == director_email.casefold() and customer_email:
+        problems.append("different Director and Customer email addresses")
+    if problems:
+        st.warning("Save this revision with " + ", ".join(problems) + " before sending it.")
+        return
+
+    approved = st.checkbox(
+        "I approve this exact saved test quotation and want the Director and Customer emails sent."
+    )
+    if st.button(
+        "Approve and send test quotation",
+        type="primary",
+        disabled=not approved,
+        width="stretch",
+    ):
+        approved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        approval = {
+            "esign_status": "sending",
+            "esign_test_mode": True,
+            "esign_approved_by_username": user_username,
+            "esign_approved_by_name": user_name,
+            "esign_approved_by_email": user_email,
+            "esign_approved_at_utc": approved_at,
+        }
+        try:
+            approved_record = repository.update_costing_esign(
+                str(saved.get("costing_id", "")), approval, owner_email=user_email
+            )
+        except RepositoryBusyError as exc:
+            st.error(str(exc))
+            return
+        try:
+            result = DropboxSignClient(api_key).send_test_request(
+                quote_pdf(approved_record, esign_tags=True),
+                title=f"Solidus quotation {saved.get('quote_reference') or saved.get('costing_id')}",
+                subject=f"Test signature request: Solidus quotation {saved.get('quote_reference') or ''}",
+                message=(
+                    "This is a non-binding test of the Solidus quotation signing process. "
+                    "The Sales Director is asked to sign first, followed by the Customer."
+                ),
+                director=Signer(director_name, director_email, 0),
+                customer=Signer(customer_name, customer_email, 1),
+                costing_id=str(saved.get("costing_id", "")),
+                quote_reference=str(saved.get("quote_reference", "")),
+            )
+        except ESignError as exc:
+            st.error(str(exc))
+            return
+        try:
+            updated = repository.update_costing_esign(
+                str(saved.get("costing_id", "")), result, owner_email=user_email
+            )
+        except RepositoryBusyError as exc:
+            # The external request exists, so retain its ID in this browser and
+            # prevent an accidental duplicate even if Neon had a brief outage.
+            st.session_state.last_saved = {**approved_record, **result}
+            st.error(
+                f"The test emails were sent, but their status was not saved to Neon: {exc} "
+                "Do not send this revision again."
+            )
+        else:
+            st.session_state.last_saved = updated
+            st.success("Test request sent. The Sales Director should receive the first email.")
+            st.rerun()
 
 
 def saved_revision_fingerprint(record: dict[str, Any]) -> str:
@@ -1935,11 +2090,25 @@ def render_save(
         f"{uuid.uuid4().hex[:4].upper()}",
     )
     st.session_state.setdefault("customer_contact", "")
+    esign_settings = configured_esign()
+    st.session_state.setdefault("customer_email", "")
+    st.session_state.setdefault(
+        "director_name", str(esign_settings.get("director_name", "") or "")
+    )
+    st.session_state.setdefault(
+        "director_email", str(esign_settings.get("director_email", "") or "")
+    )
     st.session_state.setdefault("quote_notes", "")
 
     left, right = st.columns(2)
     left.text_input("Quote reference", key="quote_reference")
     right.text_input("Customer contact", key="customer_contact")
+    if str(esign_settings.get("api_key", "") or "").strip():
+        st.caption("Test e-sign recipients")
+        recipient_columns = st.columns(3)
+        recipient_columns[0].text_input("Customer email", key="customer_email")
+        recipient_columns[1].text_input("Sales Director name", key="director_name")
+        recipient_columns[2].text_input("Sales Director email", key="director_email")
     quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
 
     record = current_record()
@@ -2027,6 +2196,13 @@ def render_save(
             mime="text/csv",
             width="stretch",
         )
+    render_esign_test(
+        repository,
+        export_record,
+        user_username=user_username,
+        user_email=user_email,
+        user_name=user_name,
+    )
 
 
 def load_saved_costing(record: dict[str, Any]) -> None:
@@ -2046,6 +2222,9 @@ def load_saved_costing(record: dict[str, Any]) -> None:
     st.session_state.draft = clean_record(draft)
     reset_downstream()
     st.session_state.customer_contact = str(record.get("customer_contact", "") or "")
+    st.session_state.customer_email = str(record.get("customer_email", "") or "")
+    st.session_state.director_name = str(record.get("director_name", "") or "")
+    st.session_state.director_email = str(record.get("director_email", "") or "")
     st.session_state.quote_notes = str(record.get("notes", "") or "")
     st.session_state.workflow_notice = (
         f"Loaded {record.get('costing_id', 'saved costing')} revision "
@@ -2090,6 +2269,7 @@ def render_history(
         "spread_per_machine_hour",
         "traffic_light_status",
         "traffic_override_by_username",
+        "esign_status",
         "costing_id",
     ]
     if is_admin:
@@ -2111,6 +2291,7 @@ def render_history(
             "traffic_override_by_username": st.column_config.TextColumn(
                 "Override by"
             ),
+            "esign_status": st.column_config.TextColumn("E-sign"),
         },
     )
 
@@ -2210,6 +2391,7 @@ def render_team_history(repository: CsvRepository, is_admin: bool) -> None:
         "traffic_light_status",
         "traffic_override_by_username",
         "traffic_override_reason",
+        "esign_status",
         "costing_id",
     ]
     st.dataframe(
@@ -2229,6 +2411,7 @@ def render_team_history(repository: CsvRepository, is_admin: bool) -> None:
             "traffic_override_reason": st.column_config.TextColumn(
                 "Override reason"
             ),
+            "esign_status": st.column_config.TextColumn("E-sign"),
             "order_quantity": st.column_config.NumberColumn(format="%.0f"),
         },
     )
