@@ -32,6 +32,8 @@ class _FakeCursor:
     def fetchone(self):
         if "COALESCE(MAX(revision)" in self.last_sql:
             return {"revision": 1}
+        if "RETURNING record" in self.last_sql:
+            return {"record": {"costing_id": "C-DB-ONE", "esign_status": "sent"}}
         return None
 
     def fetchall(self):
@@ -140,6 +142,29 @@ def test_neon_history_reconstructs_saved_record(
 
     assert list(history["costing_id"]) == ["C-DB-ONE"]
     assert list(history["created_by_username"]) == ["connor"]
+
+
+def test_esign_status_is_attached_to_owned_neon_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(repository, "_connect", lambda: _FakeConnection(cursor))
+
+    updated = repository.update_costing_esign(
+        "C-DB-ONE",
+        {"esign_status": "sent", "not_allowed": "discarded"},
+        owner_email="connor@example.com",
+    )
+
+    sql, params = cursor.executed[-1]
+    assert "UPDATE public.costing_revisions" in sql
+    assert "lower(created_by_email)" in sql
+    assert params[1:] == ("C-DB-ONE", "connor@example.com")
+    assert updated["esign_status"] == "sent"
 
 
 def test_neon_user_creation_writes_user_and_audit_record(
