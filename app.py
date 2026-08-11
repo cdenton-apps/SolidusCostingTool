@@ -180,6 +180,28 @@ def _utc_now() -> pd.Timestamp:
     return pd.Timestamp.now(tz="UTC")
 
 
+def format_uk_datetime(
+    value: Any,
+    *,
+    include_time: bool = True,
+    default: str = "—",
+) -> str:
+    """Format stored timestamps consistently without changing their database value."""
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return default
+    return parsed.strftime("%d/%m/%Y %H:%M" if include_time else "%d/%m/%Y")
+
+
+def format_frame_dates(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Return a display/export copy with UK-formatted date columns."""
+    formatted = frame.copy()
+    for column in columns:
+        if column in formatted.columns:
+            formatted[column] = formatted[column].map(format_uk_datetime)
+    return formatted
+
+
 def _sign_out_local_session(repository: CsvRepository, message: str) -> None:
     repository.end_session(st.session_state.get("app_session_id", ""))
     st.session_state.pop("authenticated_user", None)
@@ -2394,11 +2416,13 @@ def render_history(
             visible_columns.index("selling_price_per_1000"),
             "pricing_base_per_1000",
         )
+    display_history = format_frame_dates(filtered[visible_columns], ["created_at_utc"])
     st.dataframe(
-        filtered[visible_columns],
+        display_history,
         hide_index=True,
         width="stretch",
         column_config={
+            "created_at_utc": st.column_config.TextColumn("Saved"),
             "created_by_username": st.column_config.TextColumn("Username"),
             "pricing_base_per_1000": st.column_config.NumberColumn(format="£%.2f"),
             "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
@@ -2415,7 +2439,7 @@ def render_history(
     labels = {
         str(row["costing_id"]): (
             f"{row['item_code']} · revision {int(float(row['revision']))} · "
-            f"{row.get('customer_name', '')} · {str(row['created_at_utc'])[:16]}"
+            f"{row.get('customer_name', '')} · {format_uk_datetime(row['created_at_utc'])}"
         )
         for _, row in filtered.iterrows()
     }
@@ -2450,10 +2474,11 @@ def render_history(
 
     with st.expander("Download this list"):
         export_history = filtered if is_admin else filtered[visible_columns]
+        csv_history = format_frame_dates(export_history, ["created_at_utc"])
         columns = st.columns(2)
         columns[0].download_button(
             "Download CSV",
-            data=export_history.to_csv(index=False).encode("utf-8-sig"),
+            data=csv_history.to_csv(index=False).encode("utf-8-sig"),
             file_name="my-costing-history.csv",
             mime="text/csv",
             width="stretch",
@@ -2511,11 +2536,13 @@ def render_team_history(repository: CsvRepository, is_admin: bool) -> None:
         "esign_status",
         "costing_id",
     ]
+    display_history = format_frame_dates(filtered[visible_columns], ["created_at_utc"])
     st.dataframe(
-        filtered[visible_columns],
+        display_history,
         hide_index=True,
         width="stretch",
         column_config={
+            "created_at_utc": st.column_config.TextColumn("Saved"),
             "created_by_username": st.column_config.TextColumn("Username"),
             "created_by_name": st.column_config.TextColumn("Name"),
             "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
@@ -2535,10 +2562,11 @@ def render_team_history(repository: CsvRepository, is_admin: bool) -> None:
     st.caption("Team history is view-only. Each user can reopen their own work from My costings.")
     with st.expander("Download this view"):
         export_history = filtered if is_admin else filtered[visible_columns]
+        csv_history = format_frame_dates(export_history, ["created_at_utc"])
         columns = st.columns(2)
         columns[0].download_button(
             "Download CSV",
-            data=export_history.to_csv(index=False).encode("utf-8-sig"),
+            data=csv_history.to_csv(index=False).encode("utf-8-sig"),
             file_name="team-costing-history.csv",
             mime="text/csv",
             width="stretch",
@@ -2738,7 +2766,8 @@ def render_user_management(
     audit = repository.load_app_audit_log()
     if not audit.empty:
         with st.expander("Recent user changes"):
-            st.dataframe(audit, hide_index=True, width="stretch")
+            display_audit = format_frame_dates(audit, ["occurred_at_utc"])
+            st.dataframe(display_audit, hide_index=True, width="stretch")
 
 
 def render_admin_activity(
@@ -2805,10 +2834,10 @@ def render_admin_activity(
         pd.to_numeric(sessions["active_seconds"], errors="coerce").fillna(0) / 60
     ).round(1)
     sessions["signed_in"] = sessions["_signed_in_at_utc"].dt.strftime(
-        "%Y-%m-%d %H:%M"
+        "%d/%m/%Y %H:%M"
     )
     sessions["last_activity"] = sessions["_last_activity_utc"].dt.strftime(
-        "%Y-%m-%d %H:%M"
+        "%d/%m/%Y %H:%M"
     )
 
     today = now.date()
@@ -2934,6 +2963,7 @@ def render_admin_activity(
             )
             .sort_values("last_saved", ascending=False)
         )
+        summary = format_frame_dates(summary, ["last_saved"])
         st.dataframe(summary, hide_index=True, width="stretch")
 
     st.caption(

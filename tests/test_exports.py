@@ -11,6 +11,7 @@ from src.exports import SAGE_STOCK_COLUMNS, quote_pdf, sage_stock_import_csv
 def test_quote_and_sage_exports() -> None:
     record = {
         "quote_reference": "Q-TEST",
+        "created_at_utc": "2026-08-11T09:30:00+00:00",
         "customer_name": "Customer",
         "item_code": "BOX-TEST",
         "description": (
@@ -58,6 +59,8 @@ def test_quote_and_sage_exports() -> None:
     assert len(pages) == 4
     assert "0.12346" in quote_text
     assert "0.1234567" not in quote_text
+    assert "Quotation date" in quote_text
+    assert "11/08/2026" in quote_text
     assert "NOTES" in quote_text
     assert "Customer artwork approval is required" in quote_text
     assert "4-15614/" not in quote_text

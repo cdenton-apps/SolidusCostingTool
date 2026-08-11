@@ -77,6 +77,8 @@ class DropboxSignClient:
             "use_text_tags": "1",
             "hide_text_tags": "0",
             "allow_decline": "1",
+            "field_options[date_format]": "DD / MM / YYYY",
+            "locale": "en-GB",
             "metadata[costing_id]": costing_id,
             "metadata[quote_reference]": quote_reference,
             "signers[1][name]": director.name,

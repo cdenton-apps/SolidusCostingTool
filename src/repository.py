@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import math
 import re
 import tempfile
@@ -16,6 +17,9 @@ import psycopg
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RepositoryBusyError(RuntimeError):
@@ -419,26 +423,34 @@ class CsvRepository:
                     )
                     existing = cursor.fetchone()
                     if existing:
-                        cursor.execute(
-                            "UPDATE public.app_users SET email = %s, name = %s, "
-                            "role = %s, can_view_history = %s, is_active = %s, "
-                            "must_change_password = CASE WHEN %s IS NULL "
-                            "THEN must_change_password ELSE %s END, "
-                            "password_hash = COALESCE(%s, password_hash), "
-                            "password_changed_at_utc = CASE WHEN %s IS NULL "
-                            "THEN password_changed_at_utc ELSE now() END, "
-                            "session_version = CASE WHEN %s IS NOT NULL "
-                            "OR (is_active AND NOT %s) "
-                            "THEN session_version + 1 ELSE session_version END, "
-                            "updated_at_utc = now() "
-                            "WHERE lower(username) = lower(%s)",
-                            (
-                                email, name, role, bool(can_view_history),
-                                bool(is_active), password_hash,
-                                bool(must_change_password), password_hash,
-                                password_hash, password_hash, bool(is_active), username,
-                            ),
-                        )
+                        if password_hash:
+                            cursor.execute(
+                                "UPDATE public.app_users SET email = %s, name = %s, "
+                                "role = %s, can_view_history = %s, is_active = %s, "
+                                "must_change_password = %s, password_hash = %s, "
+                                "password_changed_at_utc = now(), "
+                                "session_version = session_version + 1, "
+                                "updated_at_utc = now() "
+                                "WHERE lower(username) = lower(%s)",
+                                (
+                                    email, name, role, bool(can_view_history),
+                                    bool(is_active), bool(must_change_password),
+                                    password_hash, username,
+                                ),
+                            )
+                        else:
+                            cursor.execute(
+                                "UPDATE public.app_users SET email = %s, name = %s, "
+                                "role = %s, can_view_history = %s, is_active = %s, "
+                                "session_version = CASE WHEN is_active AND NOT %s "
+                                "THEN session_version + 1 ELSE session_version END, "
+                                "updated_at_utc = now() "
+                                "WHERE lower(username) = lower(%s)",
+                                (
+                                    email, name, role, bool(can_view_history),
+                                    bool(is_active), bool(is_active), username,
+                                ),
+                            )
                         action = "user_updated"
                     else:
                         if not password_hash:
@@ -478,6 +490,11 @@ class CsvRepository:
         except (psycopg.Error, TypeError, ValueError) as exc:
             if isinstance(exc, ValueError):
                 raise
+            LOGGER.exception(
+                "Could not save app user %s (sqlstate=%s)",
+                username,
+                getattr(exc, "sqlstate", None),
+            )
             raise RepositoryBusyError(
                 "The user could not be saved. Please try again."
             ) from exc

@@ -55,6 +55,8 @@ def test_send_is_forced_to_test_mode_and_orders_signers(monkeypatch) -> None:
 
     assert captured["data"]["test_mode"] == "1"
     assert captured["data"]["use_text_tags"] == "1"
+    assert captured["data"]["field_options[date_format]"] == "DD / MM / YYYY"
+    assert captured["data"]["locale"] == "en-GB"
     assert captured["data"]["signers[1][order]"] == "0"
     assert captured["data"]["signers[2][order]"] == "1"
     assert result["esign_status"] == "awaiting signatures"
@@ -76,6 +78,7 @@ def test_esign_pdf_contains_director_and_customer_tags() -> None:
             "selling_price_per_item": 0.1,
             "esign_approved_by_name": "Sales Rep",
             "esign_approved_at_utc": "2026-08-11T10:00:00+00:00",
+            "created_at_utc": "2026-08-11T09:30:00+00:00",
         },
         esign_tags=True,
     )
@@ -88,4 +91,7 @@ def test_esign_pdf_contains_director_and_customer_tags() -> None:
     assert "[date_signed|req|signer1]" in text
     assert "[date_signed|req|signer2]" in text
     assert "Approved in costing tool by" in text
+    assert "11/08/2026 10:00" in text
+    assert "Quotation date" in text
+    assert "11/08/2026" in text
     assert "SUBJECT TO FINAL COMMERCIAL APPROVAL" not in text

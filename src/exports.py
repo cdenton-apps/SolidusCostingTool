@@ -148,6 +148,13 @@ def _delivery_basis(method: Any) -> str:
     }.get(str(method or ""), str(method or "Not specified"))
 
 
+def _uk_datetime(value: Any, *, include_time: bool = False, default: str = "") -> str:
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return default
+    return parsed.strftime("%d/%m/%Y %H:%M" if include_time else "%d/%m/%Y")
+
+
 def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     buffer = BytesIO()
     document = SimpleDocTemplate(
@@ -310,6 +317,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ("Order / agreement quantity", f"{_number(record.get('order_quantity')):,.0f} units"),
         ("Equivalent pallets", f"{_number(record.get('order_pallets')):,.0f}"),
     ]
+    quotation_date = _uk_datetime(record.get("created_at_utc"))
     commercial_terms: list[str] = [
         "This quotation is subject to the attached Solidus General Terms and Conditions of Sale and Delivery, which form part of this quotation."
     ]
@@ -482,7 +490,12 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                 [
                     Paragraph("CUSTOMER QUOTATION", styles["QuoteTitle"]),
                     Paragraph(
-                        f"Reference<br/><b>{_display(record.get('quote_reference'), 'Draft')}</b>",
+                        f"Reference<br/><b>{_display(record.get('quote_reference'), 'Draft')}</b>"
+                        + (
+                            f"<br/>Quotation date: <b>{html.escape(quotation_date)}</b>"
+                            if quotation_date
+                            else ""
+                        ),
                         styles["QuoteMeta"],
                     ),
                 ],
@@ -549,20 +562,21 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     quote_reference = _display(record.get("quote_reference"), "Draft")
     rep_approved_by = str(record.get("esign_approved_by_name", "") or "").strip()
     rep_approved_at = str(record.get("esign_approved_at_utc", "") or "").strip()
+    rep_approved_at_display = _uk_datetime(rep_approved_at, include_time=True)
     rep_detail = (
-        f"Approved in costing tool by<br/>{html.escape(rep_approved_by)} · {html.escape(rep_approved_at[:16].replace('T', ' '))}"
-        if rep_approved_by and rep_approved_at
-        else "Signed: ____________________<br/>Name / date: ____________________"
+        f"Approved in costing tool by<br/>{html.escape(rep_approved_by)} · {html.escape(rep_approved_at_display)}"
+        if rep_approved_by and rep_approved_at_display
+        else "Signed: ____________________<br/>Name: _____________________<br/>Date (DD/MM/YYYY): __________"
     )
     customer_detail = (
         "Signed: ____________________<br/>"
         "Name: _____________________<br/>"
-        "Date: ______________________"
+        "Date (DD/MM/YYYY): __________"
     )
     director_detail = (
         "Signed: ____________________<br/>"
         "Name: _____________________<br/>"
-        "Date: ______________________"
+        "Date (DD/MM/YYYY): __________"
     )
     if esign_tags:
         customer_detail = (
@@ -692,7 +706,14 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
     ]
     rows = [headings]
     for _, row in frame[available].iterrows():
-        rows.append([str(row[column])[:38] for column in available])
+        rows.append(
+            [
+                _uk_datetime(row[column], include_time=True)
+                if column == "created_at_utc"
+                else str(row[column])[:38]
+                for column in available
+            ]
+        )
     story = [
         Paragraph("Solidus costing history", styles["Title"]),
         Spacer(1, 4 * mm),
