@@ -200,6 +200,7 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
     menu_labels = {button.label for button in app.button}
     assert "Team history" in menu_labels
     assert "User activity" in menu_labels
+    assert "Admin tools" in menu_labels
     assert any(
         "Signed in as Connor Denton" in item.value
         for item in app.caption
@@ -208,6 +209,10 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
     _widget(app.button, "User activity").click().run()
     assert "User activity" in [item.value for item in app.header]
     assert any("Online now" in item.value for item in app.markdown)
+    assert "Users and access" not in [item.value for item in app.subheader]
+
+    _widget(app.button, "Admin tools").click().run()
+    assert "Admin tools" in [item.value for item in app.header]
 
     _widget(app.button, "Sign out").click().run()
     assert "authenticated_user" not in app.session_state

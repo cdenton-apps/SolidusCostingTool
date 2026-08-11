@@ -2884,17 +2884,15 @@ def render_user_management(
             st.dataframe(display_audit, hide_index=True, width="stretch")
 
 
-def render_admin_activity(
+def render_admin_tools(
     repository: CsvRepository,
-    current_session_id: str,
     current_username: str,
 ) -> None:
-    st.header("User activity")
+    st.header("Admin tools")
     st.caption(
-        "Live sessions and saved-costing activity. Times are approximate and use UTC."
+        "Manage user accounts, access and earlier costing-history data."
     )
     if repository.uses_database:
-        st.success("Saved costings and session activity are using Neon.")
         render_user_management(repository, current_username)
         with st.expander("Import earlier CSV costing history"):
             st.caption(
@@ -2916,6 +2914,16 @@ def render_admin_activity(
             "Neon is not configured. Add the database URL in Streamlit Secrets "
             "before relying on saved history."
         )
+
+
+def render_admin_activity(
+    repository: CsvRepository,
+    current_session_id: str,
+) -> None:
+    st.header("User activity")
+    st.caption(
+        "Live sessions and saved-costing activity. Times are approximate and use UTC."
+    )
     try:
         repository.expire_inactive_sessions(session_timeout_minutes())
     except RepositoryBusyError as exc:
@@ -3240,7 +3248,7 @@ def main() -> None:
     if user.can_view_history or user.is_admin:
         navigation.append("Team history")
     if user.is_admin:
-        navigation.append("User activity")
+        navigation.extend(["User activity", "Admin tools"])
     page = render_top_menu(repository, user, navigation)
     try:
         current_session_id = track_user_session(repository, user, page)
@@ -3257,6 +3265,10 @@ def main() -> None:
             render_admin_activity(
                 repository,
                 current_session_id,
+            )
+        elif page == "Admin tools":
+            render_admin_tools(
+                repository,
                 user.username,
             )
         else:
