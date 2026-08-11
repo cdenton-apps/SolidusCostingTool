@@ -263,6 +263,8 @@ def test_red_costing_is_blocked_for_non_admin(
     assert "Pricing base / 1,000" not in rendered_cards
     assert "Spread value / 1,000" not in rendered_cards
     assert "Material spread / 1,000" not in rendered_cards
+    assert "Spread / machine hour" in rendered_cards
+    assert "Machine time for quote" not in rendered_cards
     assert all(
         item.label != "How the material adjustment was calculated"
         for item in app.expander
@@ -481,6 +483,7 @@ def test_user_can_reopen_only_their_own_saved_costing(
             "height_mm": 100,
             "pallet_quantity": 1000,
             "order_quantity": 10000,
+            "annual_volume_units": 75000,
             "delivery_postcode": "BD20 0AA",
             "spread_percent": 32,
             "notes": "Keep this note",
@@ -531,8 +534,8 @@ def test_user_can_reopen_only_their_own_saved_costing(
     assert "quote_reference" not in app.session_state
     assert "Order and fulfilment" in [item.value for item in app.subheader]
     assert {button.label for button in app.button if button.label in {
-        "Quote details", "Price & approval", "Save & send"
-    }} == {"Quote details", "Price & approval", "Save & send"}
+        "Quote details", "Delivery", "Price & approval", "Save & send"
+    }} == {"Quote details", "Delivery", "Price & approval", "Save & send"}
     assert all(
         button.label not in {"Product", "Order", "Costs", "Pricing", "Save / print"}
         for button in app.button
@@ -542,6 +545,9 @@ def test_user_can_reopen_only_their_own_saved_costing(
     )
     assert specification.proto.expanded is False
     assert _widget(app.text_input, "Item code *").disabled
+    _widget(app.button, "Delivery").click().run()
+    assert app.session_state["step"] == 2
+    assert "Delivery details" in [item.value for item in app.subheader]
 
 
 def test_team_history_permission_shows_saved_usernames(

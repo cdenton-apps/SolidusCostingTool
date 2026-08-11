@@ -281,10 +281,10 @@ The `data` folder contains the app-ready feeds:
 
 | File | Used for |
 | --- | --- |
-| `current_items.csv` | 1,305 BOX items from the latest stock export, including the 581 with costing BOMs |
+| `current_items.csv` | 1,313 BOX items from the 11 August stock export, including the 594 with usable costing BOMs |
 | `board_items.csv` | Board dimensions, GSM, FSC and resolved price match |
 | `board_prices.csv` | April 2026 mill price rows and aliases |
-| `bom_costs.csv` | Material BOM lines and imported audit values |
+| `bom_costs.csv.gz` | Compressed material BOM lines and imported audit values |
 | `material_summaries.csv` | Precalculated material and machine-time summary for quick page loading |
 | `haulier_rates.csv` | Postcode, service, vendor and pallet rates |
 | `saved_costings.csv` | Local fallback and optional source for importing older revisions into Neon |
@@ -294,8 +294,8 @@ After replacing the source workbooks, rebuild the app feeds with:
 ```bash
 python scripts/import_workbooks.py \
   --costing-workbook "Costing app test data.xlsx" \
-  --bom-workbook "Costed BOMs 06.08.xlsx" \
-  --stock-csv "stock export 19.06.csv" \
+  --bom-workbook "BOMs 11.08.xlsx" \
+  --stock-csv "stock export 11.08.csv" \
   --board-prices "Mill Price List Comparison Apr 26.XLSX" \
   --output-dir data
 ```
@@ -306,7 +306,7 @@ sheet in the costing workbook instead. Items without a costing BOM
 remain in the source feed but are hidden from the app until a usable costing is
 available.
 
-The full BOM export currently gives the app costings for 581 of the 1,305 BOX
+The full BOM export currently gives the app costings for 594 of the 1,313 BOX
 stock items. If `--bom-workbook` is left out, the script uses the `BOM Info`
 sheet in the costing workbook.
 

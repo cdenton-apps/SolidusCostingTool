@@ -512,16 +512,14 @@ def can_access(step: int) -> bool:
 
 def stage_navigation(simple_mode: bool = False) -> None:
     if simple_mode:
-        labels = ["Quote details", "Price & approval", "Save & send"]
+        labels = ["Quote details", "Delivery", "Price & approval", "Save & send"]
         current = (
             0
-            if st.session_state.step <= 2
-            else 1
-            if st.session_state.step == 3
-            else 2
+            if st.session_state.step <= 1
+            else st.session_state.step - 1
         )
-        targets = [1 if st.session_state.get("draft") else 0, 3, 4]
-        columns = st.columns(3)
+        targets = [1 if st.session_state.get("draft") else 0, 2, 3, 4]
+        columns = st.columns(4)
         for index, label in enumerate(labels):
             target = targets[index]
             if columns[index].button(
@@ -1769,6 +1767,15 @@ def render_pricing(
             ("Selling price / item", format_unit_price(pricing["selling_price_per_item"])),
             ("Spread", f"{pricing['spread_percent']:,.2f}%"),
         ]
+        if simple_mode:
+            pricing_cards.append(
+                (
+                    "Spread / machine hour",
+                    f"£{pricing['spread_per_machine_hour']:,.2f}"
+                    if pricing.get("total_machine_hours", 0) > 0
+                    else "Not available",
+                )
+            )
         if is_admin:
             pricing_cards.append(
                 ("Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}")
@@ -2203,8 +2210,7 @@ def render_save(
                 st.caption(
                     "Sales Director: "
                     f"{st.session_state.director_name} "
-                    f"({st.session_state.director_email}). "
-                    "This is set centrally by an administrator."
+                    f"({st.session_state.director_email}) will also be asked to sign."
                 )
             else:
                 st.warning(
@@ -2676,8 +2682,10 @@ def render_user_management(
     selected_role = str(selected_row.get("role", "external"))
     role_index = list(role_names).index(selected_role) if selected_role in role_names else 0
     with st.form("edit_database_user"):
-        edited_name = st.text_input("Name", value=str(selected_row.get("name", "")))
-        edited_email = st.text_input("Email", value=str(selected_row.get("email", "")))
+        edited_name = str(selected_row.get("name", ""))
+        edited_email = str(selected_row.get("email", ""))
+        st.text_input("Name", value=edited_name, disabled=True)
+        st.text_input("Email", value=edited_email, disabled=True)
         edited_role = st.selectbox(
             "Access level",
             list(role_names),

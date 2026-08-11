@@ -216,7 +216,12 @@ class CsvRepository:
     ):
         self.data_dir = Path(data_dir)
         self.items_path = self.data_dir / "current_items.csv"
-        self.bom_path = self.data_dir / "bom_costs.csv"
+        compressed_bom_path = self.data_dir / "bom_costs.csv.gz"
+        self.bom_path = (
+            compressed_bom_path
+            if compressed_bom_path.exists()
+            else self.data_dir / "bom_costs.csv"
+        )
         self.board_items_path = self.data_dir / "board_items.csv"
         self.board_prices_path = self.data_dir / "board_prices.csv"
         self.haulier_path = self.data_dir / "haulier_rates.csv"

@@ -262,7 +262,7 @@ def test_catalog_hides_stock_items_without_a_costing_bom() -> None:
     catalog = repository.load_catalog()
     stock_items = catalog[catalog["source_type"] == "Stock list"]
 
-    assert len(stock_items) == 581
+    assert len(stock_items) == 594
     assert pd.to_numeric(stock_items["bom_available"]).gt(0).all()
     assert "BOX001/103/YPL/B0070/01/950G" not in set(stock_items["item_code"])
 
@@ -303,11 +303,11 @@ def test_supplied_item_and_bom_feeds_reconcile() -> None:
     prices = repository.load_board_prices()
     item = items[items["item_code"] == "BOX001/101/LPB/1000G/1240P"].iloc[0]
 
-    assert len(items) == 1305
-    assert len(boards) == 986
+    assert len(items) == 1313
+    assert len(boards) == 999
     assert len(prices) == 1163
-    assert pd.to_numeric(boards["price_per_tonne"], errors="coerce").notna().sum() == 579
-    assert int(items["bom_available"].sum()) == 581
+    assert pd.to_numeric(boards["price_per_tonne"], errors="coerce").notna().sum() == 585
+    assert int(items["bom_available"].sum()) == 594
     assert "BOXT701/102/YPT/1000G/1800P" in set(items["item_code"])
     assert item["pallet_quantity"] == 1240
     assert item["materials_cost_per_1000"] == pytest.approx(488.2616)
@@ -340,14 +340,14 @@ def test_full_bom_export_adds_costing_for_newer_box_items() -> None:
     result = repository.material_breakdown("BOX002/101/NPO/T0042/01/900G")
     summary = result["summary"]
 
-    assert len(bom) == 9494
-    assert bom["bom_code"].nunique() == 916
+    assert len(bom) == 9698
+    assert bom["bom_code"].nunique() == 938
     assert summary["board_article_code"] == "4-15953"
     assert summary["board_price_per_tonne"] == pytest.approx(793)
     assert summary["board_cost_per_1000"] == pytest.approx(396.5)
     assert summary["other_components_cost_per_1000"] == pytest.approx(15.0376)
     assert summary["materials_cost_per_1000"] == pytest.approx(411.5376)
-    assert summary["machine_hours_per_1000"] == pytest.approx(1.082598)
+    assert summary["machine_hours_per_1000"] == pytest.approx(0.853854)
     assert item["materials_cost_per_1000"] == pytest.approx(
         summary["materials_cost_per_1000"]
     )

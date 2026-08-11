@@ -312,7 +312,11 @@ def main() -> None:
     finished.to_csv(args.output_dir / "current_items.csv", index=False)
     boards.to_csv(args.output_dir / "board_items.csv", index=False)
     prices.to_csv(args.output_dir / "board_prices.csv", index=False)
-    bom.to_csv(args.output_dir / "bom_costs.csv", index=False)
+    bom.to_csv(
+        args.output_dir / "bom_costs.csv.gz",
+        index=False,
+        compression="gzip",
+    )
     material_summaries = CsvRepository(args.output_dir).rebuild_material_summary()
 
     priced = int(pd.to_numeric(boards["price_per_tonne"], errors="coerce").notna().sum())
