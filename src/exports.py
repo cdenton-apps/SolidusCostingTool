@@ -148,14 +148,14 @@ def _delivery_basis(method: Any) -> str:
     }.get(str(method or ""), str(method or "Not specified"))
 
 
-def quote_pdf(record: dict[str, Any]) -> bytes:
+def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     buffer = BytesIO()
     document = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         rightMargin=15 * mm,
         leftMargin=15 * mm,
-        topMargin=12 * mm,
+        topMargin=10 * mm,
         bottomMargin=17 * mm,
         title=f"Quotation {record.get('quote_reference', '')}",
     )
@@ -292,8 +292,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 7),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ],
         )
 
@@ -415,8 +415,8 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
             ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ],
     )
 
@@ -468,7 +468,7 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
     )
 
     logo = (
-        Image(str(BRAND_HEADER_PATH), width=88 * mm, height=27.5 * mm)
+        Image(str(BRAND_HEADER_PATH), width=80 * mm, height=25 * mm)
         if BRAND_HEADER_PATH.exists()
         else Paragraph("Solidus", styles["QuoteTitle"])
     )
@@ -544,6 +544,24 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
         ],
     )
     quote_reference = _display(record.get("quote_reference"), "Draft")
+    rep_approved_by = str(record.get("esign_approved_by_name", "") or "").strip()
+    rep_approved_at = str(record.get("esign_approved_at_utc", "") or "").strip()
+    rep_detail = (
+        f"Approved in costing tool by<br/>{html.escape(rep_approved_by)} · {html.escape(rep_approved_at[:16].replace('T', ' '))}"
+        if rep_approved_by and rep_approved_at
+        else "Signed: ____________________<br/>Name / date: ____________________"
+    )
+    customer_detail = "Signed: ____________________<br/>Name / date: ____________________"
+    director_detail = "Signed: ____________________<br/>Name / date: ____________________"
+    if esign_tags:
+        customer_detail = (
+            '<font color="#FFFFFF">[sig|req|signer2]</font>'
+            '<br/><font color="#FFFFFF">[date|req|signer2]</font>'
+        )
+        director_detail = (
+            '<font color="#FFFFFF">[sig|req|signer1]</font>'
+            '<br/><font color="#FFFFFF">[date|req|signer1]</font>'
+        )
     signature_table = Table(
         [
             [
@@ -552,9 +570,9 @@ def quote_pdf(record: dict[str, Any]) -> bytes:
                 Paragraph("Sales Director", styles["SignatureLabel"]),
             ],
             [
-                Paragraph("Signed: ____________________<br/>Name / date: ____________________", styles["SignatureMeta"]),
-                Paragraph("Signed: ____________________<br/>Name / date: ____________________", styles["SignatureMeta"]),
-                Paragraph("Signed: ____________________<br/>Name / date: ____________________", styles["SignatureMeta"]),
+                Paragraph(rep_detail, styles["SignatureMeta"]),
+                Paragraph(customer_detail, styles["SignatureMeta"]),
+                Paragraph(director_detail, styles["SignatureMeta"]),
             ],
         ],
         colWidths=[60 * mm, 60 * mm, 60 * mm],
