@@ -158,7 +158,20 @@ HISTORY_COLUMNS = [
     "created_by_name",
     "quote_reference",
     "customer_contact",
+    "customer_email",
+    "director_name",
+    "director_email",
     "notes",
+    "esign_request_id",
+    "esign_status",
+    "esign_is_complete",
+    "esign_is_declined",
+    "esign_signers",
+    "esign_test_mode",
+    "esign_approved_by_username",
+    "esign_approved_by_name",
+    "esign_approved_by_email",
+    "esign_approved_at_utc",
     *SPECIFICATION_COLUMNS,
     *COST_INPUT_COLUMNS,
     *CALCULATION_COLUMNS,
@@ -1641,6 +1654,47 @@ class CsvRepository:
                 "Another user is saving a costing. Please try again in a moment."
             ) from exc
         return saved
+
+    def update_costing_esign(
+        self,
+        costing_id: str,
+        values: dict[str, Any],
+        *,
+        owner_email: str,
+    ) -> dict[str, Any]:
+        """Attach the latest e-sign state to one immutable costing revision."""
+        if not self.uses_database:
+            raise RepositoryBusyError("Neon is required for e-signature tracking.")
+        allowed = {
+            "esign_request_id", "esign_status", "esign_is_complete",
+            "esign_is_declined", "esign_signers", "esign_test_mode",
+            "esign_approved_by_username", "esign_approved_by_name",
+            "esign_approved_by_email", "esign_approved_at_utc",
+        }
+        update = {
+            key: self._json_ready(value)
+            for key, value in values.items()
+            if key in allowed
+        }
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE public.costing_revisions SET record = record || %s "
+                        "WHERE costing_id = %s AND lower(created_by_email) = lower(%s) "
+                        "RETURNING record",
+                        (Jsonb(update), str(costing_id), str(owner_email).strip()),
+                    )
+                    row = cursor.fetchone()
+            if not row:
+                raise RepositoryBusyError(
+                    "This saved revision could not be found for the signed-in user."
+                )
+            return dict(row["record"])
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The e-signature status could not be saved to Neon."
+            ) from exc
 
     @staticmethod
     def _atomic_csv_write(frame: pd.DataFrame, path: Path) -> None:
