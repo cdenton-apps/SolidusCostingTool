@@ -92,3 +92,28 @@ def test_quote_and_sage_exports() -> None:
     assert exported["Asset of stock - account number"]
     assert exported["Revenue - account number"]
     assert exported["AnalysisName\\20"] == "Market Segment"
+
+
+def test_mtc_paperwork_never_uses_a_holding_charge_below_minimum() -> None:
+    pdf = quote_pdf(
+        {
+            "quote_reference": "Q-MINIMUM",
+            "customer_name": "Customer",
+            "item_code": "BOX-TEST",
+            "description": "Test item",
+            "order_quantity": 1_000,
+            "order_pallets": 1,
+            "fulfilment_type": "MTC",
+            "agreement_term_months": 12,
+            "delivery_pallets_per_calloff": 1,
+            "estimated_delivery_count": 1,
+            "pallet_holding_charge_per_pallet_per_week": 1.0,
+        }
+    )
+    text = " ".join(
+        " ".join(page.extract_text().split())
+        for page in PdfReader(BytesIO(pdf)).pages[:-3]
+    )
+
+    assert "£1.75 per pallet per week" in text
+    assert "£1.00 per pallet per week" not in text

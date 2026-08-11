@@ -199,3 +199,22 @@ def test_validation_blocks_missing_fields(valid_costing: dict) -> None:
     errors = validate_details(valid_costing)
     assert "Item code is required." in errors
     assert "Order quantity must be greater than zero." in errors
+
+
+def test_mtc_holding_charge_cannot_be_below_minimum(valid_costing: dict) -> None:
+    valid_costing.update(
+        {
+            "fulfilment_type": "MTC",
+            "agreement_term_months": 12,
+            "delivery_pallets_per_calloff": 1,
+            "pallet_holding_charge_per_pallet_per_week": 1.74,
+        }
+    )
+
+    assert (
+        "Pallet holding charge must be at least £1.75 per pallet per week."
+        in validate_details(valid_costing)
+    )
+
+    valid_costing["pallet_holding_charge_per_pallet_per_week"] = 1.75
+    assert not any("Pallet holding charge" in error for error in validate_details(valid_costing))

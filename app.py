@@ -25,6 +25,7 @@ from src.calculations import (
     ANNUAL_VOLUME_ADJUSTMENTS,
     COMEX_FACTORS,
     DEFAULT_ANNUAL_VOLUME_BAND,
+    MIN_PALLET_HOLDING_CHARGE,
     annual_volume_band_for_units,
     calculate_cost,
     operational_spread_metrics,
@@ -1088,10 +1089,13 @@ def render_specification(
         )
         pallet_holding_charge = st.number_input(
             "Potential holding charge (£ per pallet per week)",
-            min_value=0.0,
-            value=max(0.0, pallet_holding_charge),
-            step=1.0,
-            help="Enter 0 if the rate is still to be agreed; the quotation will still flag that a charge may apply.",
+            min_value=MIN_PALLET_HOLDING_CHARGE,
+            value=max(MIN_PALLET_HOLDING_CHARGE, pallet_holding_charge),
+            step=0.25,
+            help=(
+                f"The minimum storage rate is £{MIN_PALLET_HOLDING_CHARGE:.2f} "
+                "per pallet per week. A higher rate can be entered."
+            ),
         )
     else:
         delivery_pallets_per_calloff = max(1, int(order_pallets))

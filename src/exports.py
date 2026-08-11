@@ -22,6 +22,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from src.calculations import MIN_PALLET_HOLDING_CHARGE
+
 
 INK = colors.HexColor("#000000")
 YELLOW = colors.HexColor("#FDD615")
@@ -325,8 +327,9 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         agreement_months = _number(record.get("agreement_term_months"), 12)
         calloff_pallets = _number(record.get("delivery_pallets_per_calloff"))
         delivery_count = _number(record.get("estimated_delivery_count"), 1)
-        holding_charge = _number(
-            record.get("pallet_holding_charge_per_pallet_per_week")
+        holding_charge = max(
+            MIN_PALLET_HOLDING_CHARGE,
+            _number(record.get("pallet_holding_charge_per_pallet_per_week")),
         )
         calloff_unit = "pallet" if calloff_pallets == 1 else "pallets"
         delivery_unit = "delivery" if delivery_count == 1 else "deliveries"
@@ -345,14 +348,10 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             "planning, not the quotation date. Changes to the call-off profile may "
             "change transport pricing."
         )
-        if holding_charge > 0:
-            commercial_terms.append(
-                f"Pallet stock held beyond the agreed call-off profile may be charged at £{holding_charge:,.2f} per pallet per week."
-            )
-        else:
-            commercial_terms.append(
-                "Pallet stock held beyond the agreed call-off profile may attract a holding charge; the rate will be confirmed in the final contract."
-            )
+        commercial_terms.append(
+            f"Pallet stock held beyond the agreed call-off profile may be charged at "
+            f"£{holding_charge:,.2f} per pallet per week."
+        )
     else:
         commercial_terms.append(
             "MTO pricing assumes the quoted order quantity is released as one delivery event. A changed delivery profile may change transport pricing."

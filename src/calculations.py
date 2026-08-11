@@ -103,8 +103,14 @@ def validate_details(values: dict[str, Any]) -> list[str]:
             errors.append("Agreement term must be greater than zero months.")
         if _number(values, "delivery_pallets_per_calloff") <= 0:
             errors.append("Pallets per delivery must be greater than zero.")
-        if _number(values, "pallet_holding_charge_per_pallet_per_week") < 0:
-            errors.append("Pallet holding charge cannot be negative.")
+        if (
+            _number(values, "pallet_holding_charge_per_pallet_per_week")
+            < MIN_PALLET_HOLDING_CHARGE
+        ):
+            errors.append(
+                f"Pallet holding charge must be at least "
+                f"£{MIN_PALLET_HOLDING_CHARGE:.2f} per pallet per week."
+            )
     return errors
 
 
@@ -271,3 +277,4 @@ def spread_percent_from_price(
         "selling_price_per_1000": round(selling_price, 4),
         "selling_price_per_item": round(selling_price / 1_000, 5),
     }
+MIN_PALLET_HOLDING_CHARGE = 1.75
