@@ -55,7 +55,7 @@ def test_quote_and_sage_exports() -> None:
     terms_text = "\n".join(page.extract_text() or "" for page in pages[1:])
 
     assert pdf.startswith(b"%PDF")
-    assert len(pages) == 5
+    assert len(pages) == 4
     assert "0.12346" in quote_text
     assert "0.1234567" not in quote_text
     assert "NOTES" in quote_text
@@ -71,7 +71,7 @@ def test_quote_and_sage_exports() -> None:
         "THIS QUOTATION IS GENERATED"
     )
     assert "General Terms and Condition of Sale" in terms_text
-    assert "MTC AGREEMENT SIGNATURES" in quote_text
+    assert "acceptance of quotation Q-TEST" in normalised_quote_text
     assert "Sales Representative" in quote_text
     assert "Customer" in quote_text
     assert "Sales Director" in quote_text
