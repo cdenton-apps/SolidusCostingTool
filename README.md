@@ -189,6 +189,34 @@ If both are supplied, the hash takes precedence.
 The real secrets file is ignored by Git and must never be committed. Explicit
 `mode = "demo"` remains available for local development tests only.
 
+## Dropbox Sign test workflow
+
+Dropbox Sign is currently available in non-binding test mode only. Add the API
+key to Streamlit Secrets; never add it to GitHub:
+
+```toml
+[esign]
+provider = "dropbox_sign"
+api_key = "PASTE_THE_DROPBOX_SIGN_API_KEY_HERE"
+test_mode = true
+director_name = "Sales Director"
+director_email = "director@example.com"
+```
+
+The Director fields are optional defaults and can be changed on the quotation.
+A saved revision must contain a customer contact, customer email, Director name
+and Director email before it can be sent. The signed-in sales representative
+must explicitly approve the exact saved revision. Their username, name, email
+and approval time are recorded in Neon and printed in the Sales Representative
+sign-off cell.
+
+The Director receives the first Dropbox Sign email. After they sign, the
+Customer receives the second. The app is hard-coded to send with Dropbox Sign
+`test_mode=1`, so test documents are watermarked and are not legally binding.
+Use **Refresh signing status** to poll Dropbox Sign; once both signers have
+finished, the completed test PDF can be downloaded from the app. A production
+route must be designed and approved separately.
+
 ## Neon database storage
 
 Saved costing revisions and user-session activity use Neon when a database URL
