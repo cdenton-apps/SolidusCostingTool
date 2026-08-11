@@ -484,6 +484,13 @@ def test_user_can_reopen_only_their_own_saved_costing(
             "delivery_postcode": "BD20 0AA",
             "spread_percent": 32,
             "notes": "Keep this note",
+            "esign_signers": [
+                {
+                    "name": "Director",
+                    "email": "director@example.com",
+                    "status": "signed",
+                }
+            ],
         },
         user_username="standard",
         user_email="standard@example.com",

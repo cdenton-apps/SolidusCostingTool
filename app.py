@@ -168,7 +168,10 @@ st.markdown(
 def clean_record(values: dict[str, Any]) -> dict[str, Any]:
     cleaned: dict[str, Any] = {}
     for key, value in values.items():
-        cleaned[key] = "" if pd.isna(value) else value
+        if not pd.api.types.is_scalar(value):
+            cleaned[key] = value
+        else:
+            cleaned[key] = "" if pd.isna(value) else value
     return cleaned
 
 
