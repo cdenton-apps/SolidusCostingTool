@@ -1861,6 +1861,9 @@ def render_pricing(
     simple_mode: bool = False,
 ) -> None:
     st.subheader("Set spread or selling price")
+    st.session_state.setdefault("additional_charge_description", "Forme / stereo")
+    st.session_state.setdefault("additional_charge_amount", 0.0)
+    st.session_state.setdefault("additional_charge_foc", False)
     breakdown = st.session_state.breakdown
     if is_admin:
         show_cost_breakdown(breakdown)
@@ -2003,6 +2006,24 @@ def render_pricing(
             )
         if pricing["spread_percent"] < 0:
             st.warning("The selected selling price produces a negative spread.")
+
+        st.markdown("#### One-off tooling")
+        st.caption(
+            "Add a separate forme, stereo or other one-off charge. This does not "
+            "change the material cost or spread calculation."
+        )
+        tooling_left, tooling_middle, tooling_right = st.columns([2, 1, 1])
+        tooling_left.text_input(
+            "Charge description", key="additional_charge_description"
+        )
+        tooling_middle.number_input(
+            "Charge (£)",
+            min_value=0.0,
+            step=25.0,
+            key="additional_charge_amount",
+            disabled=bool(st.session_state.additional_charge_foc),
+        )
+        tooling_right.checkbox("FOC", key="additional_charge_foc")
 
         traffic = traffic_light_result(
             pricing.get("spread_per_machine_hour", 0),
@@ -2407,9 +2428,6 @@ def render_save(
         esign_settings.get("director_email", "") or ""
     ).strip()
     st.session_state.setdefault("quote_notes", "")
-    st.session_state.setdefault("additional_charge_description", "Forme / stereo")
-    st.session_state.setdefault("additional_charge_amount", 0.0)
-    st.session_state.setdefault("additional_charge_foc", False)
 
     form_context = (
         st.form("external_quote_save", border=False)
@@ -2441,19 +2459,6 @@ def render_save(
                     "An administrator must set the Solidus signatory name and email "
                     "in Streamlit Secrets before e-signing can be used."
                 )
-        st.caption("One-off tooling")
-        tooling_left, tooling_middle, tooling_right = st.columns([2, 1, 1])
-        tooling_left.text_input(
-            "Charge description", key="additional_charge_description"
-        )
-        tooling_middle.number_input(
-            "Charge (£)",
-            min_value=0.0,
-            step=25.0,
-            key="additional_charge_amount",
-            disabled=bool(st.session_state.additional_charge_foc),
-        )
-        tooling_right.checkbox("FOC", key="additional_charge_foc")
         quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
 
         record = current_record()
@@ -3039,10 +3044,16 @@ def render_admin_tools(
 def render_admin_activity(
     repository: CsvRepository,
     current_session_id: str,
+    *,
+    embedded: bool = False,
 ) -> None:
-    st.header("User activity")
+    if embedded:
+        st.divider()
+        st.subheader("Sessions")
+    else:
+        st.header("User activity")
     st.caption(
-        "Live sessions and saved-costing activity. Times are approximate and use UTC."
+        "Live sessions and active time. Times shown are UK local time."
     )
     try:
         repository.expire_inactive_sessions(session_timeout_minutes())
@@ -3106,7 +3117,8 @@ def render_admin_activity(
         ]
     )
 
-    st.subheader("Sessions")
+    if not embedded:
+        st.subheader("Sessions")
     current_sessions = sessions.loc[~ended].copy()
     visible = current_sessions.sort_values("_last_heartbeat_utc", ascending=False)[
         [
@@ -3191,30 +3203,31 @@ def render_admin_activity(
     else:
         st.caption("There are no other open sessions to sign out.")
 
-    st.subheader("Saved work by user")
-    if history.empty:
-        st.info("No costings have been saved yet.")
-    else:
-        work = history.copy()
-        work["created_by_username"] = (
-            work["created_by_username"].fillna("").astype(str)
-        )
-        work["order_quantity"] = pd.to_numeric(
-            work["order_quantity"], errors="coerce"
-        ).fillna(0)
-        summary = (
-            work.groupby("created_by_username", as_index=False)
-            .agg(
-                saved_costings=("costing_id", "count"),
-                products=("item_code", "nunique"),
-                customers=("customer_name", "nunique"),
-                quoted_units=("order_quantity", "sum"),
-                last_saved=("created_at_utc", "max"),
+    if not embedded:
+        st.subheader("Saved work by user")
+        if history.empty:
+            st.info("No costings have been saved yet.")
+        else:
+            activity_work = history.copy()
+            activity_work["created_by_username"] = (
+                activity_work["created_by_username"].fillna("").astype(str)
             )
-            .sort_values("last_saved", ascending=False)
-        )
-        summary = format_frame_dates(summary, ["last_saved"])
-        st.dataframe(summary, hide_index=True, width="stretch")
+            activity_work["order_quantity"] = pd.to_numeric(
+                activity_work["order_quantity"], errors="coerce"
+            ).fillna(0)
+            summary = (
+                activity_work.groupby("created_by_username", as_index=False)
+                .agg(
+                    saved_costings=("costing_id", "count"),
+                    products=("item_code", "nunique"),
+                    customers=("customer_name", "nunique"),
+                    quoted_units=("order_quantity", "sum"),
+                    last_saved=("created_at_utc", "max"),
+                )
+                .sort_values("last_saved", ascending=False)
+            )
+            summary = format_frame_dates(summary, ["last_saved"])
+            st.dataframe(summary, hide_index=True, width="stretch")
 
     st.caption(
         "Active time counts short gaps between actions, not simply an open browser tab. "
@@ -3222,12 +3235,20 @@ def render_admin_activity(
     )
 
 
-def render_admin_dashboard(repository: CsvRepository) -> None:
+def render_admin_dashboard(
+    repository: CsvRepository,
+    current_session_id: str,
+) -> None:
     st.header("Dashboard")
     st.caption("Latest saved revision of each quotation.")
     history = repository.load_history()
     if history.empty:
         st.info("No quotations have been saved yet.")
+        render_admin_activity(
+            repository,
+            current_session_id,
+            embedded=True,
+        )
         return
 
     work = history.copy()
@@ -3250,14 +3271,30 @@ def render_admin_dashboard(repository: CsvRepository) -> None:
 
     period = st.selectbox(
         "Period",
-        ["Last 30 days", "Last 90 days", "Last 12 months", "All time"],
+        [
+            "Today",
+            "This week",
+            "Last 30 days",
+            "Last 90 days",
+            "Last 12 months",
+            "All time",
+        ],
     )
     period_days = {
         "Last 30 days": 30,
         "Last 90 days": 90,
         "Last 12 months": 365,
     }.get(period)
-    if period_days:
+    now_uk = pd.Timestamp.now(tz="Europe/London")
+    if period == "Today":
+        cutoff = now_uk.normalize().tz_convert("UTC")
+        work = work[work["created_at_utc"].ge(cutoff)]
+    elif period == "This week":
+        cutoff = (
+            now_uk.normalize() - pd.Timedelta(days=now_uk.weekday())
+        ).tz_convert("UTC")
+        work = work[work["created_at_utc"].ge(cutoff)]
+    elif period_days:
         cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=period_days)
         work = work[work["created_at_utc"].ge(cutoff)]
 
@@ -3269,6 +3306,11 @@ def render_admin_dashboard(repository: CsvRepository) -> None:
         work = work[work["created_by_username"].isin(selected_users)]
     if work.empty:
         st.info("No quotations match those filters.")
+        render_admin_activity(
+            repository,
+            current_session_id,
+            embedded=True,
+        )
         return
 
     for column in [
@@ -3290,16 +3332,33 @@ def render_admin_dashboard(repository: CsvRepository) -> None:
     traffic = work["traffic_light_status"].fillna("").astype(str).str.lower()
     override = work["traffic_override_approved"].fillna(False).astype(bool)
     complete = work["esign_is_complete"].fillna(False).astype(bool)
+    esign_request_id = work["esign_request_id"].fillna("").astype(str).str.strip()
+    esign_status = work["esign_status"].fillna("").astype(str).str.strip()
+    esign_requested = esign_request_id.ne("") | esign_status.ne("")
+    signed_count = int(complete.sum())
+    signed_value = float(work.loc[complete, "quoted_value"].sum())
+    quote_conversion = signed_count / len(work) * 100 if len(work) else 0.0
+    total_quoted_value = float(work["quoted_value"].sum())
+    value_conversion = (
+        signed_value / total_quoted_value * 100 if total_quoted_value > 0 else 0.0
+    )
 
     metrics = st.columns(5)
     metrics[0].metric("Quotations", f"{len(work):,}")
-    metrics[1].metric("Quoted value", f"£{work['quoted_value'].sum():,.0f}")
+    metrics[1].metric("Quoted value", f"£{total_quoted_value:,.0f}")
     metrics[2].metric("Average spread", f"{work['spread_percent'].mean():,.1f}%")
     metrics[3].metric(
         "Average spread / hour",
         f"£{work['spread_per_machine_hour'].mean():,.0f}",
     )
-    metrics[4].metric("Completed signatures", f"{int(complete.sum()):,}")
+    metrics[4].metric("E-sign requests", f"{int(esign_requested.sum()):,}")
+
+    st.subheader("Conversion")
+    conversion_columns = st.columns(4)
+    conversion_columns[0].metric("Signed quotations", f"{signed_count:,}")
+    conversion_columns[1].metric("Signed value", f"£{signed_value:,.0f}")
+    conversion_columns[2].metric("Quote conversion", f"{quote_conversion:,.1f}%")
+    conversion_columns[3].metric("Value conversion", f"{value_conversion:,.1f}%")
 
     status_columns = st.columns(4)
     status_columns[0].metric("Green", int(traffic.eq("green").sum()))
@@ -3366,6 +3425,11 @@ def render_admin_dashboard(repository: CsvRepository) -> None:
             "spread_percent": st.column_config.NumberColumn(format="%.1f%%"),
             "spread_per_machine_hour": st.column_config.NumberColumn(format="£%.2f"),
         },
+    )
+    render_admin_activity(
+        repository,
+        current_session_id,
+        embedded=True,
     )
 
 
@@ -3523,7 +3587,7 @@ def main() -> None:
     if user.can_view_history or user.is_admin:
         navigation.append("Team history")
     if user.is_admin:
-        navigation.extend(["Dashboard", "User activity", "Admin tools"])
+        navigation.extend(["Dashboard", "Admin tools"])
     page = render_top_menu(repository, user, navigation)
     try:
         current_session_id = track_user_session(repository, user, page)
@@ -3536,18 +3600,13 @@ def main() -> None:
             render_history(repository, user.email, user.is_admin)
         elif page == "Team history":
             render_team_history(repository, user.is_admin)
-        elif page == "User activity":
-            render_admin_activity(
-                repository,
-                current_session_id,
-            )
         elif page == "Admin tools":
             render_admin_tools(
                 repository,
                 user.username,
             )
         elif page == "Dashboard":
-            render_admin_dashboard(repository)
+            render_admin_dashboard(repository, current_session_id)
         else:
             render_workflow(
                 repository,

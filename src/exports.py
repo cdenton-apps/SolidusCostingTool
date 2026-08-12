@@ -658,59 +658,79 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         )
     else:
         signature_intro = f"Signatures below record approval of quotation {quote_reference}."
-    signature_table = Table(
-        [
-            [
-                Paragraph(
-                    f"{html.escape(signature_intro)}<br/>{rep_detail}",
-                    styles["SignatureMeta"],
-                ),
-                "",
-            ],
-            [
-                Paragraph("Customer", styles["SignatureLabel"]),
-                Paragraph(
-                    "Sales Director or delegated individual",
-                    styles["SignatureLabel"],
-                ),
-            ],
-            [
-                Paragraph(customer_signature, styles["SignatureMeta"]),
-                Paragraph(director_signature, styles["SignatureMeta"]),
-            ],
-            [
-                Paragraph(customer_name_line, styles["SignatureMeta"]),
-                Paragraph(director_name_line, styles["SignatureMeta"]),
-            ],
-            [
-                Paragraph(
-                    f"Role: {html.escape(customer_role)}"
-                    if customer_role
-                    else "Role: ________________________________",
-                    styles["SignatureMeta"],
-                ),
-                Paragraph(
-                    "Role: Sales Director or delegated individual",
-                    styles["SignatureMeta"],
-                ),
-            ],
-            [
-                Paragraph(customer_date, styles["SignatureMeta"]),
-                Paragraph(director_date, styles["SignatureMeta"]),
-            ],
-        ],
-        colWidths=[90 * mm, 90 * mm],
-        rowHeights=[10 * mm, 4 * mm, 7 * mm, 4 * mm, 4 * mm, 4 * mm],
+    approval_summary = Table(
+        [[Paragraph(f"{html.escape(signature_intro)}<br/>{rep_detail}", styles["Terms"])]],
+        colWidths=[180 * mm],
         style=[
-            ("SPAN", (0, 0), (1, 0)),
-            ("BACKGROUND", (0, 1), (-1, 1), YELLOW),
-            ("BOX", (0, 0), (-1, -1), 0.4, GREY),
-            ("INNERGRID", (0, 1), (-1, -1), 0.3, GREY),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 1),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+            ("BACKGROUND", (0, 0), (-1, -1), PALE),
+            ("BOX", (0, 0), (-1, -1), 0.35, GREY),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ],
+    )
+
+    card_row_heights = (
+        [5 * mm, 12 * mm, 7 * mm, 6 * mm, 6 * mm]
+        if esign_tags
+        else [4.5 * mm, 8.5 * mm, 5 * mm, 4.5 * mm, 4.5 * mm]
+    )
+
+    def signature_card(
+        heading: str,
+        signature: str,
+        name_line: str,
+        role_line: str,
+        date_line: str,
+    ) -> Table:
+        return Table(
+            [
+                [Paragraph(heading, styles["SignatureLabel"])],
+                [Paragraph(signature, styles["SignatureMeta"])],
+                [Paragraph(name_line, styles["SignatureMeta"])],
+                [Paragraph(role_line, styles["SignatureMeta"])],
+                [Paragraph(date_line, styles["SignatureMeta"])],
+            ],
+            colWidths=[88 * mm],
+            rowHeights=card_row_heights,
+            style=[
+                ("BACKGROUND", (0, 0), (0, 0), YELLOW),
+                ("BOX", (0, 0), (-1, -1), 0.45, GREY),
+                ("INNERGRID", (0, 1), (-1, -1), 0.25, GREY),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 1), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
+            ],
+        )
+
+    customer_card = signature_card(
+        "Customer",
+        customer_signature,
+        customer_name_line,
+        f"Role: {html.escape(customer_role)}"
+        if customer_role
+        else "Role: ________________________________",
+        customer_date,
+    )
+    director_card = signature_card(
+        "Sales Director or delegated individual",
+        director_signature,
+        director_name_line,
+        "Role: Sales Director or delegated individual",
+        director_date,
+    )
+    signature_table = Table(
+        [[customer_card, "", director_card]],
+        colWidths=[88 * mm, 4 * mm, 88 * mm],
+        style=[
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
         ],
     )
     story.extend(
@@ -734,6 +754,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             Spacer(1, 1.5 * mm),
             KeepTogether(
                 [
+                    approval_summary,
+                    Spacer(1, 1 * mm),
                     signature_table,
                 ]
             ),
