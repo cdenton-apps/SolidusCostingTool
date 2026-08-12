@@ -158,6 +158,31 @@ def _uk_datetime(value: Any, *, include_time: bool = False, default: str = "") -
     return parsed.strftime("%d/%m/%Y %H:%M" if include_time else "%d/%m/%Y")
 
 
+def _uk_date_after(value: Any, days: int) -> str:
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return ""
+    return (parsed.tz_convert("Europe/London") + pd.Timedelta(days=days)).strftime(
+        "%d/%m/%Y"
+    )
+
+
+def _print_colours(value: Any) -> str:
+    """Translate the internal print code into customer-facing wording."""
+    text = str(value or "").strip()
+    try:
+        text = str(int(float(text)))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    digits = "".join(character for character in text if character.isdigit())
+    if digits == "901":
+        return "CMYK"
+    if not digits or digits[0] == "0":
+        return "Not specified"
+    count = int(digits[0])
+    return f"{count} colour" if count == 1 else f"{count} colours"
+
+
 def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     buffer = BytesIO()
     document = SimpleDocTemplate(
@@ -175,8 +200,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             name="QuoteTitle",
             parent=styles["Heading1"],
             fontName="Helvetica-Bold",
-            fontSize=18,
-            leading=20,
+            fontSize=16,
+            leading=18,
             alignment=TA_RIGHT,
             textColor=INK,
             spaceAfter=4,
@@ -186,8 +211,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ParagraphStyle(
             name="QuoteMeta",
             parent=styles["BodyText"],
-            fontSize=9,
-            leading=12,
+            fontSize=7.5,
+            leading=9.2,
             alignment=TA_RIGHT,
             textColor=colors.HexColor("#4A5050"),
         )
@@ -236,8 +261,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ParagraphStyle(
             name="Terms",
             parent=styles["BodyText"],
-            fontSize=7.8,
-            leading=9.6,
+            fontSize=7.2,
+            leading=8.5,
             textColor=colors.HexColor("#303434"),
             spaceAfter=2,
         )
@@ -247,8 +272,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             name="ApprovalNotice",
             parent=styles["BodyText"],
             fontName="Helvetica-Bold",
-            fontSize=9,
-            leading=11,
+            fontSize=7.5,
+            leading=9,
             alignment=TA_CENTER,
             textColor=INK,
         )
@@ -302,8 +327,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 7),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ],
         )
 
@@ -321,6 +346,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ("Equivalent pallets", f"{_number(record.get('order_pallets')):,.0f}"),
     ]
     quotation_date = _uk_datetime(record.get("created_at_utc"))
+    valid_until = _uk_date_after(record.get("created_at_utc"), 30)
     commercial_terms: list[str] = [
         "This quotation is subject to the attached Solidus General Terms and Conditions of Sale and Delivery, which form part of this quotation."
     ]
@@ -352,6 +378,10 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         commercial_terms.append(
             f"Pallet stock held beyond the agreed call-off profile may be charged at "
             f"£{holding_charge:,.2f} per pallet per week."
+        )
+        commercial_terms.append(
+            "If the Customer breaches the agreement, Solidus reserves the right to "
+            "despatch and invoice any stock held or produced under it."
         )
     else:
         commercial_terms.append(
@@ -399,7 +429,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ("Board code", board_code_display),
         ("Pallet quantity", _whole_number(record.get("pallet_quantity"))),
         ("Pallet size", record.get("pallet_size")),
-        ("Print colours", _whole_number(record.get("number_of_colours"))),
+        ("Print colours", _print_colours(record.get("number_of_colours"))),
         ("FSC", record.get("fsc")),
         ("Net mass / item", net_mass_display),
         ("Product group", record.get("product_group")),
@@ -426,17 +456,30 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
             ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ],
     )
 
-    price_card = Table(
-        [
+    price_rows = [
             [paragraph("PRICE", "SectionLabel"), ""],
             [paragraph("Per 1,000", "CellLabel"), paragraph(_money(record.get("selling_price_per_1000")), "CardValue")],
             [paragraph("Per item", "CellLabel"), paragraph(_unit_money(record.get("selling_price_per_item")), "CardValue")],
-        ],
+    ]
+    additional_description = str(
+        record.get("additional_charge_description", "") or ""
+    ).strip()
+    additional_amount = _number(record.get("additional_charge_amount"))
+    additional_foc = bool(record.get("additional_charge_foc", False))
+    if additional_description and (additional_foc or additional_amount > 0):
+        price_rows.append(
+            [
+                paragraph(additional_description, "CellLabel"),
+                paragraph("FOC" if additional_foc else _money(additional_amount), "CardValue"),
+            ]
+        )
+    price_card = Table(
+        price_rows,
         colWidths=[45 * mm, 42 * mm],
         style=[
             ("SPAN", (0, 0), (1, 0)),
@@ -445,8 +488,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ],
     )
     booking = str(record.get("transport_booking", "Standard") or "Standard")
@@ -479,7 +522,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     )
 
     logo = (
-        Image(str(BRAND_HEADER_PATH), width=80 * mm, height=25 * mm)
+        Image(str(BRAND_HEADER_PATH), width=70.4 * mm, height=22 * mm)
         if BRAND_HEADER_PATH.exists()
         else Paragraph("Solidus", styles["QuoteTitle"])
     )
@@ -490,10 +533,22 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                 [
                     Paragraph("CUSTOMER QUOTATION", styles["QuoteTitle"]),
                     Paragraph(
-                        f"Reference<br/><b>{_display(record.get('quote_reference'), 'Draft')}</b>"
+                        "<b>PRIVATE AND CONFIDENTIAL</b><br/>"
+                        f"Reference: <b>{_display(record.get('quote_reference'), 'Draft')}</b>"
                         + (
                             f"<br/>Quotation date: <b>{html.escape(quotation_date)}</b>"
                             if quotation_date
+                            else ""
+                        ),
+                        styles["QuoteMeta"],
+                    ),
+                    Paragraph(
+                        "Solidus Packaging Solutions Limited<br/>"
+                        "Engine Shed Lane, Skipton, North Yorkshire, BD23 1TX<br/>"
+                        "+44 (0)1756 799411"
+                        + (
+                            f"<br/>Quotation valid until: <b>{html.escape(valid_until)}</b>"
+                            if valid_until
                             else ""
                         ),
                         styles["QuoteMeta"],
@@ -511,13 +566,13 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ],
     )
 
-    story = [header, Spacer(1, 3 * mm), section("Quote details"), details_table(order_rows)]
+    story = [header, Spacer(1, 2 * mm), section("Quote details"), details_table(order_rows)]
     story.extend(
         [
-            Spacer(1, 3 * mm),
+            Spacer(1, 2 * mm),
             section("Technical specification"),
             technical_table,
-            Spacer(1, 3 * mm),
+            Spacer(1, 2 * mm),
             Table(
                 [[price_card, "", delivery_card]],
                 colWidths=[87 * mm, 6 * mm, 87 * mm],
@@ -554,67 +609,44 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ("BOX", (0, 0), (-1, -1), 0.7, INK),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ],
     )
     quote_reference = _display(record.get("quote_reference"), "Draft")
     rep_approved_by = str(record.get("esign_approved_by_name", "") or "").strip()
     rep_approved_at = str(record.get("esign_approved_at_utc", "") or "").strip()
-    rep_approved_at_display = _uk_datetime(rep_approved_at, include_time=True)
+    rep_approved_at_display = _uk_datetime(rep_approved_at)
     rep_detail = (
-        f"Approved in costing tool by<br/>{html.escape(rep_approved_by)} · {html.escape(rep_approved_at_display)}"
+        f"Sales Representative — Approved in costing tool by "
+        f"{html.escape(rep_approved_by)} · {html.escape(rep_approved_at_display)}"
         if rep_approved_by and rep_approved_at_display
-        else "Signed: ____________________<br/>Name: _____________________<br/>Date (DD/MM/YYYY): __________"
+        else "Sales Representative — Signed: ____________________  "
+        "Name: _____________________  Date (DD/MM/YYYY): __________"
     )
-    customer_detail = (
-        "Signed: ____________________<br/>"
-        "Name: _____________________<br/>"
-        "Date (DD/MM/YYYY): __________"
-    )
-    director_detail = (
-        "Signed: ____________________<br/>"
-        "Name: _____________________<br/>"
-        "Date (DD/MM/YYYY): __________"
-    )
+    customer_role = str(record.get("customer_role", "") or "").strip()
+    customer_signature = "Signed: ______________________________"
+    customer_name_line = "Name: _______________________________"
+    customer_date = "Date (DD/MM/YYYY): ___________________"
+    director_signature = "Signed: ______________________________"
+    director_name_line = "Name: _______________________________"
+    director_date = "Date (DD/MM/YYYY): ___________________"
     if esign_tags:
-        customer_detail = (
-            '<font color="#FFFFFF">[sig|req|signer2]</font>'
-            '<br/>Name: <font color="#FFFFFF">[text|req|signer2|Full name]</font>'
-            '<br/>Date: <font color="#FFFFFF">[date|req|signer2|Signing date]</font>'
+        customer_signature = '<font color="#FFFFFF">[sig|req|signer2]</font>'
+        customer_name_line = (
+            'Name: <font color="#FFFFFF">[text|req|signer2|Full name]</font>'
         )
-        director_detail = (
-            '<font color="#FFFFFF">[sig|req|signer1]</font>'
-            '<br/>Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
-            '<br/>Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
+        customer_date = (
+            'Date: <font color="#FFFFFF">[date|req|signer2|Signing date]</font>'
         )
-    signature_table = Table(
-        [
-            [
-                Paragraph("Sales Representative", styles["SignatureLabel"]),
-                Paragraph("Customer", styles["SignatureLabel"]),
-                Paragraph("Sales Director", styles["SignatureLabel"]),
-            ],
-            [
-                Paragraph(rep_detail, styles["SignatureMeta"]),
-                Paragraph(customer_detail, styles["SignatureMeta"]),
-                Paragraph(director_detail, styles["SignatureMeta"]),
-            ],
-        ],
-        colWidths=[60 * mm, 60 * mm, 60 * mm],
-        rowHeights=[5 * mm, (22 if esign_tags else 16) * mm],
-        style=[
-            ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
-            ("BOX", (0, 0), (-1, -1), 0.4, GREY),
-            ("INNERGRID", (0, 0), (-1, -1), 0.3, GREY),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 1),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-        ],
-    )
+        director_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
+        director_name_line = (
+            'Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
+        )
+        director_date = (
+            'Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
+        )
     if fulfilment_type == "MTC":
         signature_intro = (
             f"By signing below, the parties confirm acceptance of quotation {quote_reference}, "
@@ -626,6 +658,61 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         )
     else:
         signature_intro = f"Signatures below record approval of quotation {quote_reference}."
+    signature_table = Table(
+        [
+            [
+                Paragraph(
+                    f"{html.escape(signature_intro)}<br/>{rep_detail}",
+                    styles["SignatureMeta"],
+                ),
+                "",
+            ],
+            [
+                Paragraph("Customer", styles["SignatureLabel"]),
+                Paragraph(
+                    "Sales Director or delegated individual",
+                    styles["SignatureLabel"],
+                ),
+            ],
+            [
+                Paragraph(customer_signature, styles["SignatureMeta"]),
+                Paragraph(director_signature, styles["SignatureMeta"]),
+            ],
+            [
+                Paragraph(customer_name_line, styles["SignatureMeta"]),
+                Paragraph(director_name_line, styles["SignatureMeta"]),
+            ],
+            [
+                Paragraph(
+                    f"Role: {html.escape(customer_role)}"
+                    if customer_role
+                    else "Role: ________________________________",
+                    styles["SignatureMeta"],
+                ),
+                Paragraph(
+                    "Role: Sales Director or delegated individual",
+                    styles["SignatureMeta"],
+                ),
+            ],
+            [
+                Paragraph(customer_date, styles["SignatureMeta"]),
+                Paragraph(director_date, styles["SignatureMeta"]),
+            ],
+        ],
+        colWidths=[90 * mm, 90 * mm],
+        rowHeights=[10 * mm, 4 * mm, 7 * mm, 4 * mm, 4 * mm, 4 * mm],
+        style=[
+            ("SPAN", (0, 0), (1, 0)),
+            ("BACKGROUND", (0, 1), (-1, 1), YELLOW),
+            ("BOX", (0, 0), (-1, -1), 0.4, GREY),
+            ("INNERGRID", (0, 1), (-1, -1), 0.3, GREY),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ],
+    )
     story.extend(
         [
             Spacer(1, 3 * mm),
@@ -647,8 +734,6 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             Spacer(1, 1.5 * mm),
             KeepTogether(
                 [
-                    Paragraph(signature_intro, styles["Terms"]),
-                    Spacer(1, 0.5 * mm),
                     signature_table,
                 ]
             ),

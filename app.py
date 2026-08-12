@@ -547,7 +547,13 @@ def reset_downstream() -> None:
     st.session_state.pop("fulfilment_type_input", None)
     st.session_state.pop("quantity_input_mode_input", None)
     st.session_state.pop("quote_reference", None)
+    st.session_state.pop("quote_number", None)
+    st.session_state.pop("quote_revision", None)
     st.session_state.pop("customer_contact", None)
+    st.session_state.pop("customer_role", None)
+    st.session_state.pop("additional_charge_description", None)
+    st.session_state.pop("additional_charge_amount", None)
+    st.session_state.pop("additional_charge_foc", None)
     st.session_state.pop("quote_notes", None)
     st.session_state.pop("customer_item_customer_code", None)
     st.session_state.pop("customer_item_print_number", None)
@@ -1111,10 +1117,11 @@ def render_specification(
             disabled=simple_mode,
         )
         number_of_colours = col3.number_input(
-            "Number of colours",
+            "Print colour code",
             min_value=0,
             value=max(0, int(draft_number("number_of_colours"))),
             step=1,
+            help="The first digit is the number of colours. Code 901 prints as CMYK.",
             disabled=simple_mode,
         )
 
@@ -2155,17 +2162,37 @@ def render_pricing(
 
 
 def current_record() -> dict[str, Any]:
-    return {
+    record = {
         **st.session_state.draft,
         **st.session_state.breakdown,
         **st.session_state.pricing,
         "quote_reference": st.session_state.get("quote_reference", ""),
+        "quote_number": st.session_state.get("quote_number", ""),
+        "quote_revision": st.session_state.get("quote_revision", ""),
         "customer_contact": st.session_state.get("customer_contact", ""),
+        "customer_role": st.session_state.get("customer_role", ""),
         "customer_email": st.session_state.get("customer_email", ""),
         "director_name": st.session_state.get("director_name", ""),
         "director_email": st.session_state.get("director_email", ""),
         "notes": st.session_state.get("quote_notes", ""),
+        "additional_charge_description": st.session_state.get(
+            "additional_charge_description", ""
+        ),
+        "additional_charge_amount": st.session_state.get(
+            "additional_charge_amount", 0.0
+        ),
+        "additional_charge_foc": st.session_state.get(
+            "additional_charge_foc", False
+        ),
     }
+    if record["additional_charge_foc"]:
+        record["additional_charge_amount"] = 0.0
+    if (
+        record["additional_charge_foc"]
+        or float(record["additional_charge_amount"] or 0) > 0
+    ) and not str(record["additional_charge_description"] or "").strip():
+        record["additional_charge_description"] = "Forme / stereo"
+    return record
 
 
 SAVED_REVISION_FIELDS = [
@@ -2174,11 +2201,17 @@ SAVED_REVISION_FIELDS = [
     *CALCULATION_COLUMNS,
     "source_item_code",
     "quote_reference",
+    "quote_number",
+    "quote_revision",
     "customer_contact",
+    "customer_role",
     "customer_email",
     "director_name",
     "director_email",
     "notes",
+    "additional_charge_description",
+    "additional_charge_amount",
+    "additional_charge_foc",
 ]
 
 
@@ -2205,6 +2238,7 @@ def render_esign_test(
         "but the watermarked document is not legally binding."
     )
     customer_name = str(saved.get("customer_contact") or saved.get("customer_name") or "").strip()
+    customer_role = str(saved.get("customer_role", "") or "").strip()
     customer_email = str(saved.get("customer_email", "") or "").strip()
     director_name = str(saved.get("director_name", "") or "").strip()
     director_email = str(saved.get("director_email", "") or "").strip()
@@ -2253,14 +2287,16 @@ def render_esign_test(
     problems = []
     if not customer_name:
         problems.append("customer contact name")
+    if not customer_role:
+        problems.append("customer contact role")
     if not valid_email(customer_email):
         problems.append("customer email")
     if not director_name:
-        problems.append("Sales Director name")
+        problems.append("Solidus signatory name")
     if not valid_email(director_email):
-        problems.append("Sales Director email")
+        problems.append("Solidus signatory email")
     if customer_email.casefold() == director_email.casefold() and customer_email:
-        problems.append("different Director and Customer email addresses")
+        problems.append("different Solidus signatory and Customer email addresses")
     if problems:
         st.warning("Save this revision with " + ", ".join(problems) + " before sending it.")
         return
@@ -2300,7 +2336,7 @@ def render_esign_test(
                 subject=f"Test signature request: Solidus quotation {saved.get('quote_reference') or ''}",
                 message=(
                     "This is a non-binding test of the Solidus quotation signing process. "
-                    "The Sales Director is asked to sign first, followed by the Customer."
+                    "The Solidus signatory is asked to sign first, followed by the Customer."
                 ),
                 director=Signer(director_name, director_email, 0),
                 customer=Signer(customer_name, customer_email, 1),
@@ -2325,7 +2361,7 @@ def render_esign_test(
             )
         else:
             st.session_state.last_saved = updated
-            st.success("Test request sent. The Sales Director should receive the first email.")
+            st.success("Test request sent. The Solidus signatory should receive the first email.")
             st.rerun()
 
 
@@ -2356,12 +2392,11 @@ def render_save(
     st.subheader("Save, quote and export")
     simple_mode = not can_create_new and not is_admin
     draft = st.session_state.draft
-    st.session_state.setdefault(
-        "quote_reference",
-        f"Q-{datetime.now():%Y%m%d}-{str(draft['item_code'])[-6:]}-"
-        f"{uuid.uuid4().hex[:4].upper()}",
-    )
+    st.session_state.setdefault("quote_reference", "")
+    st.session_state.setdefault("quote_number", "")
+    st.session_state.setdefault("quote_revision", "")
     st.session_state.setdefault("customer_contact", "")
+    st.session_state.setdefault("customer_role", "")
     esign_settings = configured_esign()
     st.session_state.setdefault("customer_email", "")
     # The Director is a centrally managed recipient, not a per-quotation choice.
@@ -2372,6 +2407,9 @@ def render_save(
         esign_settings.get("director_email", "") or ""
     ).strip()
     st.session_state.setdefault("quote_notes", "")
+    st.session_state.setdefault("additional_charge_description", "Forme / stereo")
+    st.session_state.setdefault("additional_charge_amount", 0.0)
+    st.session_state.setdefault("additional_charge_foc", False)
 
     form_context = (
         st.form("external_quote_save", border=False)
@@ -2380,8 +2418,13 @@ def render_save(
     )
     with form_context:
         left, right = st.columns(2)
-        left.text_input("Quote reference", key="quote_reference")
+        left.text_input(
+            "Quote reference",
+            value=st.session_state.quote_reference or "Assigned when saved",
+            disabled=True,
+        )
         right.text_input("Customer contact", key="customer_contact")
+        st.text_input("Customer role", key="customer_role")
         if str(esign_settings.get("api_key", "") or "").strip():
             st.caption("Test e-sign recipients")
             st.text_input("Customer email", key="customer_email")
@@ -2389,15 +2432,28 @@ def render_save(
                 st.session_state.director_email
             ):
                 st.caption(
-                    "Sales Director: "
+                    "Sales Director or delegated individual: "
                     f"{st.session_state.director_name} "
                     f"({st.session_state.director_email}) will also be asked to sign."
                 )
             else:
                 st.warning(
-                    "An administrator must set the Sales Director name and email "
+                    "An administrator must set the Solidus signatory name and email "
                     "in Streamlit Secrets before e-signing can be used."
                 )
+        st.caption("One-off tooling")
+        tooling_left, tooling_middle, tooling_right = st.columns([2, 1, 1])
+        tooling_left.text_input(
+            "Charge description", key="additional_charge_description"
+        )
+        tooling_middle.number_input(
+            "Charge (£)",
+            min_value=0.0,
+            step=25.0,
+            key="additional_charge_amount",
+            disabled=bool(st.session_state.additional_charge_foc),
+        )
+        tooling_right.checkbox("FOC", key="additional_charge_foc")
         quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
 
         record = current_record()
@@ -2437,6 +2493,9 @@ def render_save(
             st.warning(str(exc))
         else:
             st.session_state.last_saved = saved
+            st.session_state.quote_reference = str(saved.get("quote_reference", ""))
+            st.session_state.quote_number = saved.get("quote_number", "")
+            st.session_state.quote_revision = saved.get("quote_revision", "")
             cached_product_catalog.clear()
             st.session_state.saved_revision_fingerprint = (
                 saved_revision_fingerprint(saved)
@@ -2448,6 +2507,9 @@ def render_save(
 
     st.markdown("#### Downloads")
     saved = st.session_state.get("last_saved")
+    # Saving assigns the Neon quote reference, so rebuild the current record
+    # before comparing it with the immutable saved revision.
+    record = current_record()
     current_fingerprint = saved_revision_fingerprint(record)
     if (
         not saved
@@ -2520,10 +2582,24 @@ def load_saved_costing(record: dict[str, Any]) -> None:
     st.session_state.draft = clean_record(draft)
     reset_downstream()
     st.session_state.customer_contact = str(record.get("customer_contact", "") or "")
+    st.session_state.customer_role = str(record.get("customer_role", "") or "")
     st.session_state.customer_email = str(record.get("customer_email", "") or "")
     st.session_state.director_name = str(record.get("director_name", "") or "")
     st.session_state.director_email = str(record.get("director_email", "") or "")
     st.session_state.quote_notes = str(record.get("notes", "") or "")
+    st.session_state.quote_reference = str(record.get("quote_reference", "") or "")
+    st.session_state.quote_number = record.get("quote_number", "") or ""
+    st.session_state.quote_revision = record.get("quote_revision", "") or ""
+    st.session_state.additional_charge_description = str(
+        record.get("additional_charge_description", "Forme / stereo")
+        or "Forme / stereo"
+    )
+    st.session_state.additional_charge_amount = float(
+        record.get("additional_charge_amount", 0) or 0
+    )
+    st.session_state.additional_charge_foc = bool(
+        record.get("additional_charge_foc", False)
+    )
     st.session_state.workflow_notice = (
         f"Loaded {record.get('costing_id', 'saved costing')} revision "
         f"{int(float(record.get('revision', 0) or 0))}. "
@@ -3146,6 +3222,153 @@ def render_admin_activity(
     )
 
 
+def render_admin_dashboard(repository: CsvRepository) -> None:
+    st.header("Dashboard")
+    st.caption("Latest saved revision of each quotation.")
+    history = repository.load_history()
+    if history.empty:
+        st.info("No quotations have been saved yet.")
+        return
+
+    work = history.copy()
+    work["created_at_utc"] = pd.to_datetime(
+        work["created_at_utc"], utc=True, errors="coerce"
+    )
+    quote_number = pd.to_numeric(work.get("quote_number"), errors="coerce")
+    work["quotation_key"] = quote_number.map(
+        lambda value: f"number:{int(value)}" if pd.notna(value) else ""
+    )
+    missing_key = work["quotation_key"].eq("")
+    work.loc[missing_key, "quotation_key"] = (
+        "legacy:" + work.loc[missing_key, "costing_id"].fillna("").astype(str)
+    )
+    work = (
+        work.sort_values(["created_at_utc", "revision"])
+        .drop_duplicates("quotation_key", keep="last")
+        .copy()
+    )
+
+    period = st.selectbox(
+        "Period",
+        ["Last 30 days", "Last 90 days", "Last 12 months", "All time"],
+    )
+    period_days = {
+        "Last 30 days": 30,
+        "Last 90 days": 90,
+        "Last 12 months": 365,
+    }.get(period)
+    if period_days:
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=period_days)
+        work = work[work["created_at_utc"].ge(cutoff)]
+
+    user_options = sorted(
+        work["created_by_username"].fillna("").astype(str).loc[lambda s: s.ne("")].unique()
+    )
+    selected_users = st.multiselect("Users", user_options)
+    if selected_users:
+        work = work[work["created_by_username"].isin(selected_users)]
+    if work.empty:
+        st.info("No quotations match those filters.")
+        return
+
+    for column in [
+        "order_quantity",
+        "selling_price_per_1000",
+        "spread_percent",
+        "spread_per_machine_hour",
+        "additional_charge_amount",
+    ]:
+        work[column] = pd.to_numeric(work.get(column), errors="coerce").fillna(0)
+    foc = work.get("additional_charge_foc", False)
+    if not isinstance(foc, pd.Series):
+        foc = pd.Series(bool(foc), index=work.index)
+    foc = foc.fillna(False).astype(bool)
+    work["quoted_value"] = (
+        work["selling_price_per_1000"] * work["order_quantity"] / 1_000
+        + work["additional_charge_amount"].where(~foc, 0)
+    )
+    traffic = work["traffic_light_status"].fillna("").astype(str).str.lower()
+    override = work["traffic_override_approved"].fillna(False).astype(bool)
+    complete = work["esign_is_complete"].fillna(False).astype(bool)
+
+    metrics = st.columns(5)
+    metrics[0].metric("Quotations", f"{len(work):,}")
+    metrics[1].metric("Quoted value", f"£{work['quoted_value'].sum():,.0f}")
+    metrics[2].metric("Average spread", f"{work['spread_percent'].mean():,.1f}%")
+    metrics[3].metric(
+        "Average spread / hour",
+        f"£{work['spread_per_machine_hour'].mean():,.0f}",
+    )
+    metrics[4].metric("Completed signatures", f"{int(complete.sum()):,}")
+
+    status_columns = st.columns(4)
+    status_columns[0].metric("Green", int(traffic.eq("green").sum()))
+    status_columns[1].metric("Amber", int(traffic.eq("amber").sum()))
+    status_columns[2].metric("Red", int(traffic.eq("red").sum()))
+    status_columns[3].metric("Admin overrides", int(override.sum()))
+
+    left, right = st.columns(2)
+    by_user = (
+        work.groupby("created_by_username", dropna=False)
+        .agg(
+            quotations=("quotation_key", "count"),
+            quoted_value=("quoted_value", "sum"),
+            average_spread=("spread_percent", "mean"),
+            average_spread_per_hour=("spread_per_machine_hour", "mean"),
+        )
+        .reset_index()
+        .sort_values("quoted_value", ascending=False)
+    )
+    with left:
+        st.subheader("By user")
+        st.dataframe(
+            by_user,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "quoted_value": st.column_config.NumberColumn(format="£%.2f"),
+                "average_spread": st.column_config.NumberColumn(format="%.1f%%"),
+                "average_spread_per_hour": st.column_config.NumberColumn(format="£%.2f"),
+            },
+        )
+    with right:
+        st.subheader("Fulfilment")
+        fulfilment = (
+            work["fulfilment_type"].fillna("Not set").value_counts().rename_axis("type").reset_index(name="quotations")
+        )
+        st.bar_chart(fulfilment, x="type", y="quotations")
+
+    recent = work.sort_values("created_at_utc", ascending=False).head(25).copy()
+    recent["date"] = recent["created_at_utc"].dt.tz_convert("Europe/London").dt.strftime(
+        "%d/%m/%Y"
+    )
+    recent["quote_reference"] = recent["quote_reference"].fillna("")
+    st.subheader("Recent quotations")
+    st.dataframe(
+        recent[
+            [
+                "date",
+                "quote_reference",
+                "created_by_username",
+                "customer_name",
+                "item_code",
+                "quoted_value",
+                "spread_percent",
+                "spread_per_machine_hour",
+                "traffic_light_status",
+                "esign_status",
+            ]
+        ],
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "quoted_value": st.column_config.NumberColumn(format="£%.2f"),
+            "spread_percent": st.column_config.NumberColumn(format="%.1f%%"),
+            "spread_per_machine_hour": st.column_config.NumberColumn(format="£%.2f"),
+        },
+    )
+
+
 def render_required_password_change(
     repository: CsvRepository,
     user: Any,
@@ -3300,7 +3523,7 @@ def main() -> None:
     if user.can_view_history or user.is_admin:
         navigation.append("Team history")
     if user.is_admin:
-        navigation.extend(["User activity", "Admin tools"])
+        navigation.extend(["Dashboard", "User activity", "Admin tools"])
     page = render_top_menu(repository, user, navigation)
     try:
         current_session_id = track_user_session(repository, user, page)
@@ -3323,6 +3546,8 @@ def main() -> None:
                 repository,
                 user.username,
             )
+        elif page == "Dashboard":
+            render_admin_dashboard(repository)
         else:
             render_workflow(
                 repository,

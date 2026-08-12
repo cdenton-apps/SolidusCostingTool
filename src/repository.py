@@ -22,6 +22,14 @@ from psycopg.types.json import Jsonb
 LOGGER = logging.getLogger(__name__)
 
 
+def _safe_integer(value: Any, default: int = 0) -> int:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return int(number) if math.isfinite(number) else default
+
+
 class RepositoryBusyError(RuntimeError):
     """Raised when another user's save holds the costing-history lock."""
 
@@ -161,11 +169,17 @@ HISTORY_COLUMNS = [
     "created_by_username",
     "created_by_name",
     "quote_reference",
+    "quote_number",
+    "quote_revision",
     "customer_contact",
+    "customer_role",
     "customer_email",
     "director_name",
     "director_email",
     "notes",
+    "additional_charge_description",
+    "additional_charge_amount",
+    "additional_charge_foc",
     "esign_request_id",
     "esign_status",
     "esign_is_complete",
@@ -1650,14 +1664,51 @@ class CsvRepository:
                             "SELECT pg_advisory_xact_lock(hashtext(%s))",
                             (item_code,),
                         )
+                        # Quote numbers are allocated under one short global lock.
+                        # This keeps references unique when several users save at
+                        # the same time, without requiring another database object.
+                        cursor.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                            ("solidus_quote_number",),
+                        )
                         cursor.execute(
                             "SELECT COALESCE(MAX(revision), 0) + 1 AS revision "
                             "FROM public.costing_revisions WHERE item_code = %s",
                             (item_code,),
                         )
                         revision = int(cursor.fetchone()["revision"])
+                        requested_quote_number = _safe_integer(
+                            record.get("quote_number"), 0
+                        )
+                        if requested_quote_number > 0:
+                            quote_number = requested_quote_number
+                            cursor.execute(
+                                "SELECT COALESCE(MAX(CASE WHEN record->>'quote_revision' "
+                                "~ '^[0-9]+$' THEN (record->>'quote_revision')::integer "
+                                "ELSE 0 END), 0) + 1 AS quote_revision "
+                                "FROM public.costing_revisions "
+                                "WHERE record->>'quote_number' = %s",
+                                (str(quote_number),),
+                            )
+                            quote_revision = int(cursor.fetchone()["quote_revision"])
+                        else:
+                            cursor.execute(
+                                "SELECT GREATEST(COALESCE(MAX(CASE "
+                                "WHEN record->>'quote_number' ~ '^[0-9]+$' "
+                                "THEN (record->>'quote_number')::integer "
+                                "WHEN quote_reference ~ '^[0-9]+-[0-9]+$' "
+                                "THEN split_part(quote_reference, '-', 1)::integer "
+                                "ELSE 0 END), 0), 999) + 1 AS quote_number "
+                                "FROM public.costing_revisions"
+                            )
+                            quote_number = int(cursor.fetchone()["quote_number"])
+                            quote_revision = 1
+                        quote_reference = f"{quote_number}-{quote_revision}"
                         saved = {
                             **record,
+                            "quote_reference": quote_reference,
+                            "quote_number": quote_number,
+                            "quote_revision": quote_revision,
                             "costing_id": costing_id,
                             "revision": revision,
                             "created_at_utc": now.isoformat(timespec="seconds"),
@@ -1701,9 +1752,41 @@ class CsvRepository:
                     errors="coerce",
                 )
                 revision = int(revisions.max()) + 1 if not revisions.empty else 1
+                requested_quote_number = _safe_integer(record.get("quote_number"), 0)
+                references = history.get(
+                    "quote_reference", pd.Series(dtype=str)
+                ).fillna("").astype(str)
+                quote_numbers = pd.to_numeric(
+                    references.str.extract(r"^(\d+)-\d+$", expand=False),
+                    errors="coerce",
+                )
+                stored_quote_numbers = pd.to_numeric(
+                    history.get("quote_number", pd.Series(dtype=float)),
+                    errors="coerce",
+                )
+                if requested_quote_number > 0:
+                    quote_number = requested_quote_number
+                    matching = pd.to_numeric(
+                        history.loc[
+                            stored_quote_numbers.eq(quote_number), "quote_revision"
+                        ],
+                        errors="coerce",
+                    )
+                    quote_revision = (
+                        int(matching.max()) + 1
+                        if not matching.empty and pd.notna(matching.max())
+                        else 1
+                    )
+                else:
+                    largest = pd.concat([quote_numbers, stored_quote_numbers]).max()
+                    quote_number = max(999, int(largest) if pd.notna(largest) else 999) + 1
+                    quote_revision = 1
                 now = datetime.now(timezone.utc)
                 saved = {
                     **record,
+                    "quote_reference": f"{quote_number}-{quote_revision}",
+                    "quote_number": quote_number,
+                    "quote_revision": quote_revision,
                     "costing_id": f"C-{now:%Y%m%d}-{uuid.uuid4().hex[:8].upper()}",
                     "revision": revision,
                     "created_at_utc": now.isoformat(timespec="seconds"),

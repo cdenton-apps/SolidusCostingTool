@@ -13,6 +13,8 @@ def test_quote_and_sage_exports() -> None:
         "quote_reference": "Q-TEST",
         "created_at_utc": "2026-08-11T09:30:00+00:00",
         "customer_name": "Customer",
+        "customer_contact": "Jane Smith",
+        "customer_role": "Procurement Director",
         "item_code": "BOX-TEST",
         "description": (
             "A long customer-facing product description for a printed solid board "
@@ -43,9 +45,12 @@ def test_quote_and_sage_exports() -> None:
         "board_width_mm": 620,
         "board_length_mm": 850,
         "board_code": "4-15614/",
-        "number_of_colours": 3,
+        "number_of_colours": 901,
         "fsc": "FSC Mix",
         "notes": "Customer artwork approval is required before manufacture.",
+        "additional_charge_description": "Forme / stereo",
+        "additional_charge_amount": 250,
+        "additional_charge_foc": False,
     }
 
     pdf = quote_pdf(record)
@@ -61,6 +66,9 @@ def test_quote_and_sage_exports() -> None:
     assert "0.1234567" not in quote_text
     assert "Quotation date" in quote_text
     assert "11/08/2026" in quote_text
+    assert "10/09/2026" in quote_text
+    assert "PRIVATE AND CONFIDENTIAL" in quote_text
+    assert "Engine Shed Lane" in quote_text
     assert "NOTES" in quote_text
     assert "Customer artwork approval is required" in quote_text
     assert "4-15614/" not in quote_text
@@ -77,10 +85,15 @@ def test_quote_and_sage_exports() -> None:
     assert "acceptance of quotation Q-TEST" in normalised_quote_text
     assert "Sales Representative" in quote_text
     assert "Customer" in quote_text
-    assert "Sales Director" in quote_text
+    assert "Sales Director or delegated individual" in quote_text
+    assert "Role: Procurement Director" in quote_text
+    assert "CMYK" in quote_text
+    assert "Forme / stereo" in quote_text
+    assert "£250.00" in quote_text
     assert "Minimum of 1 pallet per delivery" in normalised_quote_text
     assert "Up to 1 pallet" not in normalised_quote_text
     assert "not the quotation date" in normalised_quote_text
+    assert "reserves the right to despatch and invoice" in normalised_quote_text
     assert "Stock item code" in csv
     assert "BOX-TEST" in csv
     assert "AnalysisName\\18" in csv

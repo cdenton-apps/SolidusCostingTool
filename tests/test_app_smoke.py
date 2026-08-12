@@ -606,7 +606,8 @@ def test_user_can_reopen_only_their_own_saved_costing(
     assert app.session_state["draft"]["source_item_code"] == "HISTORY-MINE"
     assert app.session_state["quote_notes"] == "Keep this note"
     assert app.session_state["customer_contact"] == "Alex Example"
-    assert "quote_reference" not in app.session_state
+    assert app.session_state["quote_reference"] == mine["quote_reference"]
+    assert app.session_state["quote_number"] == mine["quote_number"]
     assert "Order and fulfilment" in [item.value for item in app.subheader]
     assert {button.label for button in app.button if button.label in {
         "Quote details", "Delivery", "Price & approval", "Save & send"

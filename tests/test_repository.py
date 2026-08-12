@@ -33,6 +33,10 @@ class _FakeCursor:
     def fetchone(self):
         if "COALESCE(MAX(revision)" in self.last_sql:
             return {"revision": 1}
+        if "AS quote_number" in self.last_sql:
+            return {"quote_number": 1000}
+        if "AS quote_revision" in self.last_sql:
+            return {"quote_revision": 2}
         if "RETURNING record" in self.last_sql:
             return {"record": {"costing_id": "C-DB-ONE", "esign_status": "sent"}}
         return None
@@ -84,6 +88,8 @@ def test_saves_append_only_revisions(tmp_path: Path) -> None:
 
     assert first["revision"] == 1
     assert second["revision"] == 2
+    assert first["quote_reference"] == "1000-1"
+    assert second["quote_reference"] == "1001-1"
     assert len(history) == 2
     assert list(history["created_by_username"]) == ["one", "two"]
     assert list(history["created_by_name"]) == ["User One", "User Two"]
@@ -111,6 +117,7 @@ def test_neon_save_uses_database_without_writing_history_csv(
 
     assert repository.uses_database
     assert saved["revision"] == 1
+    assert saved["quote_reference"] == "1000-1"
     assert any(
         "INSERT INTO public.costing_revisions" in sql
         for sql, _ in cursor.executed
@@ -217,6 +224,7 @@ def test_simultaneous_users_receive_distinct_revisions(tmp_path: Path) -> None:
     history = repository.load_history()
     assert sorted(item["revision"] for item in saved) == [1, 2, 3, 4, 5, 6]
     assert len({item["costing_id"] for item in saved}) == 6
+    assert len({item["quote_reference"] for item in saved}) == 6
     assert len(history) == 6
 
 
