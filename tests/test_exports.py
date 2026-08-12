@@ -94,7 +94,8 @@ def test_quote_and_sage_exports() -> None:
     assert "Minimum of 1 pallet per delivery" in normalised_quote_text
     assert "Up to 1 pallet" not in normalised_quote_text
     assert "not the quotation date" in normalised_quote_text
-    assert "reserves the right to despatch and invoice" in normalised_quote_text
+    assert "reserves the right either to charge" in normalised_quote_text
+    assert "or to despatch and invoice" in normalised_quote_text
     assert "Stock item code" in csv
     assert "BOX-TEST" in csv
     assert "AnalysisName\\18" in csv
@@ -131,6 +132,8 @@ def test_mtc_paperwork_never_uses_a_holding_charge_below_minimum() -> None:
 
     assert "£1.75 per pallet per week" in text
     assert "£1.00 per pallet per week" not in text
+    assert text.count("£1.75 per pallet per week") == 1
+    assert "or to despatch and invoice" in text
 
 
 def test_one_off_costs_show_foc_separately_from_unit_prices() -> None:

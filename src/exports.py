@@ -377,12 +377,10 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             "change transport pricing."
         )
         commercial_terms.append(
-            f"Pallet stock held beyond the agreed call-off profile may be charged at "
-            f"£{holding_charge:,.2f} per pallet per week."
-        )
-        commercial_terms.append(
-            "If the Customer breaches the agreement, Solidus reserves the right to "
-            "despatch and invoice any stock held or produced under it."
+            "Where stock is held beyond the agreed call-off profile or the Customer "
+            "breaches the agreement, Solidus reserves the right either to charge "
+            f"£{holding_charge:,.2f} per pallet per week or to despatch and invoice "
+            "any stock held or produced under the agreement."
         )
     else:
         commercial_terms.append(
