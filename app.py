@@ -2265,6 +2265,9 @@ def render_esign_test(
         st.warning("Save this revision with " + ", ".join(problems) + " before sending it.")
         return
 
+    st.caption(
+        f"A completed copy will be emailed to you at {user_email}."
+    )
     approved = st.checkbox(
         "I approve this exact saved test quotation and want the Director and Customer emails sent."
     )
@@ -2301,6 +2304,7 @@ def render_esign_test(
                 ),
                 director=Signer(director_name, director_email, 0),
                 customer=Signer(customer_name, customer_email, 1),
+                cc_email=user_email,
                 costing_id=str(saved.get("costing_id", "")),
                 quote_reference=str(saved.get("quote_reference", "")),
             )

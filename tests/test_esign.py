@@ -49,6 +49,7 @@ def test_send_is_forced_to_test_mode_and_orders_signers(monkeypatch) -> None:
         message="Test",
         director=Signer("Director", "director@example.com", 0),
         customer=Signer("Customer", "customer@example.com", 1),
+        cc_email="sales.rep@example.com",
         costing_id="C-1",
         quote_reference="Q-1",
     )
@@ -59,6 +60,7 @@ def test_send_is_forced_to_test_mode_and_orders_signers(monkeypatch) -> None:
     assert captured["data"]["locale"] == "en-GB"
     assert captured["data"]["signers[1][order]"] == "0"
     assert captured["data"]["signers[2][order]"] == "1"
+    assert captured["data"]["cc_email_addresses[0]"] == "sales.rep@example.com"
     assert result["esign_status"] == "awaiting signatures"
     assert result["esign_request_id"] == "req-test"
 

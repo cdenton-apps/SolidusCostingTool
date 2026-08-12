@@ -62,6 +62,7 @@ class DropboxSignClient:
         message: str,
         director: Signer,
         customer: Signer,
+        cc_email: str = "",
         costing_id: str,
         quote_reference: str,
     ) -> dict[str, Any]:
@@ -88,6 +89,10 @@ class DropboxSignClient:
             "signers[2][email_address]": customer.email,
             "signers[2][order]": str(customer.order),
         }
+        cc_email = str(cc_email or "").strip()
+        signer_emails = {director.email.casefold(), customer.email.casefold()}
+        if cc_email and cc_email.casefold() not in signer_emails:
+            data["cc_email_addresses[0]"] = cc_email
         response = requests.post(
             f"{API_BASE}/signature_request/send",
             auth=self.auth,
