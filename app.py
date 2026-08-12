@@ -1861,7 +1861,7 @@ def render_pricing(
     simple_mode: bool = False,
 ) -> None:
     st.subheader("Set spread or selling price")
-    st.session_state.setdefault("additional_charge_description", "Forme / stereo")
+    st.session_state.setdefault("additional_charge_description", "Forme / Stereo")
     st.session_state.setdefault("additional_charge_amount", 0.0)
     st.session_state.setdefault("additional_charge_foc", False)
     breakdown = st.session_state.breakdown
@@ -2009,7 +2009,7 @@ def render_pricing(
 
         st.markdown("#### One-off tooling")
         st.caption(
-            "Add a separate forme, stereo or other one-off charge. This does not "
+            "Add a separate forme, Stereo or other one-off charge. This does not "
             "change the material cost or spread calculation."
         )
         tooling_left, tooling_middle, tooling_right = st.columns([2, 1, 1])
@@ -2212,7 +2212,7 @@ def current_record() -> dict[str, Any]:
         record["additional_charge_foc"]
         or float(record["additional_charge_amount"] or 0) > 0
     ) and not str(record["additional_charge_description"] or "").strip():
-        record["additional_charge_description"] = "Forme / stereo"
+        record["additional_charge_description"] = "Forme / Stereo"
     return record
 
 
@@ -2596,8 +2596,8 @@ def load_saved_costing(record: dict[str, Any]) -> None:
     st.session_state.quote_number = record.get("quote_number", "") or ""
     st.session_state.quote_revision = record.get("quote_revision", "") or ""
     st.session_state.additional_charge_description = str(
-        record.get("additional_charge_description", "Forme / stereo")
-        or "Forme / stereo"
+        record.get("additional_charge_description", "Forme / Stereo")
+        or "Forme / Stereo"
     )
     st.session_state.additional_charge_amount = float(
         record.get("additional_charge_amount", 0) or 0

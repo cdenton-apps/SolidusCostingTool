@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import re
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -469,15 +470,11 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     additional_description = str(
         record.get("additional_charge_description", "") or ""
     ).strip()
+    additional_description = re.sub(
+        r"\bstereo\b", "Stereo", additional_description, flags=re.IGNORECASE
+    )
     additional_amount = _number(record.get("additional_charge_amount"))
     additional_foc = bool(record.get("additional_charge_foc", False))
-    if additional_description and (additional_foc or additional_amount > 0):
-        price_rows.append(
-            [
-                paragraph(additional_description, "CellLabel"),
-                paragraph("FOC" if additional_foc else _money(additional_amount), "CardValue"),
-            ]
-        )
     price_card = Table(
         price_rows,
         colWidths=[45 * mm, 42 * mm],
@@ -492,6 +489,32 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ],
     )
+    one_off_card = None
+    if additional_description and (additional_foc or additional_amount > 0):
+        one_off_card = Table(
+            [
+                [paragraph("ONE-OFF COSTS", "SectionLabel"), ""],
+                [
+                    paragraph(additional_description, "CellLabel"),
+                    paragraph(
+                        "FOC" if additional_foc else _money(additional_amount),
+                        "CardValue",
+                    ),
+                ],
+            ],
+            colWidths=[45 * mm, 42 * mm],
+            style=[
+                ("SPAN", (0, 0), (1, 0)),
+                ("BACKGROUND", (0, 0), (-1, 0), PALE),
+                ("BACKGROUND", (1, 1), (1, 1), YELLOW if additional_foc else colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ],
+        )
     booking = str(record.get("transport_booking", "Standard") or "Standard")
     profile_pallets = _number(record.get("delivery_pallets_per_calloff"))
     profile_unit = "pallet" if profile_pallets == 1 else "pallets"
@@ -574,7 +597,13 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             technical_table,
             Spacer(1, 2 * mm),
             Table(
-                [[price_card, "", delivery_card]],
+                [[
+                    [price_card, Spacer(1, 2 * mm), one_off_card]
+                    if one_off_card is not None
+                    else price_card,
+                    "",
+                    delivery_card,
+                ]],
                 colWidths=[87 * mm, 6 * mm, 87 * mm],
                 style=[("VALIGN", (0, 0), (-1, -1), "TOP")],
             ),

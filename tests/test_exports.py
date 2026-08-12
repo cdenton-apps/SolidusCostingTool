@@ -88,7 +88,8 @@ def test_quote_and_sage_exports() -> None:
     assert "Sales Director or delegated individual" in quote_text
     assert "Role: Procurement Director" in quote_text
     assert "CMYK" in quote_text
-    assert "Forme / stereo" in quote_text
+    assert "ONE-OFF COSTS" in quote_text
+    assert "Forme / Stereo" in quote_text
     assert "£250.00" in quote_text
     assert "Minimum of 1 pallet per delivery" in normalised_quote_text
     assert "Up to 1 pallet" not in normalised_quote_text
@@ -130,3 +131,28 @@ def test_mtc_paperwork_never_uses_a_holding_charge_below_minimum() -> None:
 
     assert "£1.75 per pallet per week" in text
     assert "£1.00 per pallet per week" not in text
+
+
+def test_one_off_costs_show_foc_separately_from_unit_prices() -> None:
+    pdf = quote_pdf(
+        {
+            "quote_reference": "1000-2",
+            "created_at_utc": "2026-08-12T09:30:00+00:00",
+            "customer_name": "Customer",
+            "item_code": "BOX-TEST",
+            "description": "Test item",
+            "order_quantity": 1_000,
+            "order_pallets": 1,
+            "fulfilment_type": "MTO",
+            "selling_price_per_1000": 100,
+            "selling_price_per_item": 0.1,
+            "additional_charge_description": "Forme / stereo",
+            "additional_charge_foc": True,
+        }
+    )
+    pages = PdfReader(BytesIO(pdf)).pages
+    text = " ".join((pages[0].extract_text() or "").split())
+
+    assert len(pages) == 4
+    assert "PRICE Per 1,000 £100.00 Per item £0.10000 ONE-OFF COSTS" in text
+    assert "Forme / Stereo FOC" in text
