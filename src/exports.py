@@ -583,13 +583,11 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             '<font color="#FFFFFF">[sig|req|signer2]</font>'
             '<br/>Name: <font color="#FFFFFF">[text|req|signer2|Full name]</font>'
             '<br/>Date: <font color="#FFFFFF">[date|req|signer2|Signing date]</font>'
-            ' &nbsp; Time: <font color="#FFFFFF">[text|req|signer2|Signing time (HH:MM)]</font>'
         )
         director_detail = (
             '<font color="#FFFFFF">[sig|req|signer1]</font>'
             '<br/>Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
             '<br/>Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
-            ' &nbsp; Time: <font color="#FFFFFF">[text|req|signer1|Signing time (HH:MM)]</font>'
         )
     signature_table = Table(
         [
@@ -605,7 +603,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ],
         ],
         colWidths=[60 * mm, 60 * mm, 60 * mm],
-        rowHeights=[5 * mm, (24 if esign_tags else 16) * mm],
+        rowHeights=[5 * mm, (22 if esign_tags else 16) * mm],
         style=[
             ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
             ("BOX", (0, 0), (-1, -1), 0.4, GREY),
