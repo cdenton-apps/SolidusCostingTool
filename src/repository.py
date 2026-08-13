@@ -164,6 +164,7 @@ HISTORY_COLUMNS = [
     "costing_id",
     "revision",
     "source_item_code",
+    "catalogue_product",
     "created_at_utc",
     "created_by",
     "created_by_username",
@@ -1577,7 +1578,12 @@ class CsvRepository:
         return history.loc[created_by.eq(owner)].copy()
 
     def load_catalog(self) -> pd.DataFrame:
-        """Return usable BOM-costed feed items and usable saved products."""
+        """Return master feed items plus products deliberately added to the catalogue.
+
+        Ordinary quotation revisions must never replace a stock-list product.  Those
+        records contain customer and order-specific fields which belong in history,
+        not in the shared product selector.
+        """
         feed = self.load_current_items().copy()
         feed_bom_values = (
             feed["bom_available"]
@@ -1589,6 +1595,7 @@ class CsvRepository:
         ).fillna(0)
         feed = feed.loc[feed_bom_available.gt(0)].copy()
         feed["source_type"] = "Stock list"
+        feed_item_codes = set(feed["item_code"].fillna("").astype(str))
 
         if self.uses_database:
             try:
@@ -1597,6 +1604,8 @@ class CsvRepository:
                         cursor.execute(
                             "SELECT DISTINCT ON (item_code) record "
                             "FROM public.costing_revisions "
+                            "WHERE lower(COALESCE(record->>'catalogue_product', 'false')) "
+                            "IN ('true', '1', 'yes') "
                             "ORDER BY item_code, created_at_utc DESC, revision DESC"
                         )
                         records = [row["record"] for row in cursor.fetchall()]
@@ -1607,6 +1616,15 @@ class CsvRepository:
             history = self._history_frame(records)
         else:
             history = self.load_history()
+            if not history.empty:
+                catalogue_flag = (
+                    history["catalogue_product"]
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                    .isin({"true", "1", "yes"})
+                )
+                history = history.loc[catalogue_flag].copy()
         if history.empty:
             return feed
         latest = (
@@ -1639,8 +1657,10 @@ class CsvRepository:
         latest = latest.loc[
             latest_bom_available.gt(0) | latest_material_cost.gt(0)
         ].copy()
+        # The stock/BOM feed remains authoritative even if an old or malformed
+        # saved record was incorrectly marked as a catalogue product.
+        latest = latest.loc[~latest["item_code"].isin(feed_item_codes)].copy()
         latest["source_type"] = "Saved costing"
-        feed = feed[~feed["item_code"].isin(latest["item_code"])]
         return pd.concat([feed, latest], ignore_index=True, sort=False)
 
     def save_costing(

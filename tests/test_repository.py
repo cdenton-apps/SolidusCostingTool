@@ -256,6 +256,7 @@ def test_saved_item_appears_in_catalog(tmp_path: Path) -> None:
             "item_code": "NEW-001",
             "description": "New item",
             "materials_cost_per_1000": 125.0,
+            "catalogue_product": True,
         },
         user_email="one@example.com",
         user_name="User One",
@@ -263,6 +264,37 @@ def test_saved_item_appears_in_catalog(tmp_path: Path) -> None:
     catalog = repository.load_catalog()
     assert catalog.iloc[0]["item_code"] == "NEW-001"
     assert catalog.iloc[0]["source_type"] == "Saved costing"
+
+
+def test_saved_quote_does_not_replace_stock_catalogue_product(tmp_path: Path) -> None:
+    for source in PROJECT_DATA.glob("*.csv"):
+        if source.name not in {"saved_costings.csv", "active_sessions.csv"}:
+            (tmp_path / source.name).write_bytes(source.read_bytes())
+    compressed_bom = PROJECT_DATA / "bom_costs.csv.gz"
+    (tmp_path / compressed_bom.name).write_bytes(compressed_bom.read_bytes())
+
+    repository = CsvRepository(tmp_path)
+    before = repository.load_catalog()
+    master = before.iloc[0].to_dict()
+    item_code = str(master["item_code"])
+    master_customer = str(master.get("customer_name", "") or "")
+    repository.save_costing(
+        {
+            **master,
+            "customer_name": "A quotation-specific customer",
+            "order_quantity": 99_000,
+            "catalogue_product": False,
+        },
+        user_username="alice",
+        user_email="alice@example.com",
+        user_name="Alice",
+    )
+
+    after = repository.load_catalog()
+    selected = after.loc[after["item_code"].eq(item_code)].iloc[0]
+    assert selected["source_type"] == "Stock list"
+    assert str(selected.get("customer_name", "") or "") == master_customer
+    assert float(selected.get("order_quantity", 0) or 0) != 99_000
 
 
 def test_catalog_hides_stock_items_without_a_costing_bom() -> None:

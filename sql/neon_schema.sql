@@ -22,6 +22,9 @@ CREATE INDEX IF NOT EXISTS costing_revisions_created_by_email_created_at_idx
     ON public.costing_revisions (created_by_email, created_at_utc DESC);
 CREATE INDEX IF NOT EXISTS costing_revisions_item_code_created_at_idx
     ON public.costing_revisions (item_code, created_at_utc DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS costing_revisions_quote_reference_unique_idx
+    ON public.costing_revisions (quote_reference)
+    WHERE quote_reference IS NOT NULL AND btrim(quote_reference) <> '';
 
 CREATE TABLE IF NOT EXISTS public.app_sessions (
     session_id text PRIMARY KEY,
@@ -82,4 +85,3 @@ CREATE INDEX IF NOT EXISTS app_audit_log_occurred_idx
     ON public.app_audit_log (occurred_at_utc DESC);
 CREATE INDEX IF NOT EXISTS app_audit_log_target_idx
     ON public.app_audit_log (lower(target_username), occurred_at_utc DESC);
-
