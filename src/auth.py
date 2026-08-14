@@ -169,14 +169,31 @@ def authenticate_admin(
     config = _secret_section("app_auth")
     if str(config.get("mode", "password")).lower() != "password":
         return None
-    if repository is not None and repository.has_app_users():
-        entry = repository.get_app_user(username)
-        if (
-            not entry
-            or not bool(entry.get("is_active"))
-            or str(entry.get("role", "")).lower() != "admin"
-            or not verify_password(password, str(entry.get("password_hash", "")))
-        ):
+    try:
+        database_users = bool(repository is not None and repository.has_app_users())
+    except RuntimeError:
+        return None
+    if database_users:
+        try:
+            status = repository.app_user_login_security(username)
+            entry = (
+                None
+                if status.get("is_locked")
+                else repository.get_app_user(username)
+            )
+            valid = bool(
+                not status.get("is_locked")
+                and entry
+                and bool(entry.get("is_active"))
+                and str(entry.get("role", "")).lower() == "admin"
+                and verify_password(password, str(entry.get("password_hash", "")))
+            )
+            if not valid:
+                if not status.get("is_locked"):
+                    repository.record_login_failure(username)
+                return None
+            repository.record_user_login(str(entry["username"]))
+        except RuntimeError:
             return None
         return _authenticated_user(str(entry["username"]), dict(entry))
 
@@ -254,7 +271,11 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
             last_check = float(stored.get("last_auth_check_monotonic", 0) or 0)
             check_due = time.monotonic() - last_check >= 60
             if repository is not None and database_backed and check_due:
-                entry = repository.get_app_user(username)
+                try:
+                    entry = repository.get_app_user(username)
+                except RuntimeError:
+                    st.error("The sign-in service is temporarily unavailable. Try again.")
+                    st.stop()
                 if (
                     not entry
                     or not bool(entry.get("is_active"))
@@ -285,7 +306,13 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
             return _authenticated_user(username, dict(stored))
 
         users = _secret_section("users")
-        database_users = bool(repository is not None and repository.has_app_users())
+        try:
+            database_users = bool(
+                repository is not None and repository.has_app_users()
+            )
+        except RuntimeError:
+            st.error("The sign-in service is temporarily unavailable. Try again.")
+            st.stop()
         login_notice = st.session_state.pop("login_notice", None)
         st.markdown("## Solidus")
         st.title("Spread Costing Tool")
@@ -306,13 +333,32 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
             entry: dict[str, Any] = {}
             valid = False
             if database_users:
-                database_entry = repository.get_app_user(username)
-                if database_entry:
-                    entry = dict(database_entry)
-                    matched_key = str(entry["username"])
-                    valid = bool(entry.get("is_active")) and verify_password(
-                        password, str(entry.get("password_hash", ""))
+                try:
+                    status = repository.app_user_login_security(username)
+                    database_entry = (
+                        None
+                        if status.get("is_locked")
+                        else repository.get_app_user(username)
                     )
+                    if database_entry:
+                        entry = dict(database_entry)
+                        matched_key = str(entry["username"])
+                        valid = bool(
+                            not status.get("is_locked")
+                            and entry.get("is_active")
+                            and verify_password(
+                                password, str(entry.get("password_hash", ""))
+                            )
+                        )
+                    if valid and matched_key:
+                        repository.record_user_login(matched_key)
+                    elif not status.get("is_locked"):
+                        repository.record_login_failure(username)
+                except RuntimeError:
+                    st.error(
+                        "The sign-in service is temporarily unavailable. Try again."
+                    )
+                    st.stop()
             else:
                 matched_key = next(
                     (
@@ -339,8 +385,6 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
                     "database_backed": database_users,
                     "last_auth_check_monotonic": time.monotonic(),
                 }
-                if database_users:
-                    repository.record_user_login(user.username)
                 st.rerun()
             st.error("The username or password was not recognised.")
         st.stop()

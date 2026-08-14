@@ -378,6 +378,132 @@ class CsvRepository:
                 "The user database could not be checked. Please try again."
             ) from exc
 
+    def app_user_login_security(self, username: str) -> dict[str, Any]:
+        """Return recent failed-attempt and temporary-lock information."""
+        status = {
+            "failed_attempts": 0,
+            "is_locked": False,
+            "locked_until_utc": None,
+        }
+        if not self.uses_database or not str(username or "").strip():
+            return status
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "WITH reset AS ("
+                        " SELECT max(occurred_at_utc) AS occurred_at_utc "
+                        " FROM public.app_audit_log "
+                        " WHERE lower(target_username) = lower(%s) "
+                        " AND action IN ('login_success', 'login_unlocked', "
+                        "'password_changed')"
+                        "), failures AS ("
+                        " SELECT count(*)::integer AS failed_attempts, "
+                        "max(log.occurred_at_utc) AS last_failed_at_utc "
+                        " FROM public.app_audit_log AS log CROSS JOIN reset "
+                        " WHERE lower(log.target_username) = lower(%s) "
+                        " AND log.action = 'login_failed' "
+                        " AND log.occurred_at_utc >= now() - interval '15 minutes' "
+                        " AND (reset.occurred_at_utc IS NULL OR "
+                        "log.occurred_at_utc > reset.occurred_at_utc)"
+                        ") SELECT failed_attempts, "
+                        "CASE WHEN failed_attempts >= 5 "
+                        "THEN last_failed_at_utc + interval '15 minutes' END "
+                        "AS locked_until_utc FROM failures",
+                        (str(username).strip(), str(username).strip()),
+                    )
+                    row = cursor.fetchone() or {}
+            failed_attempts = int(row.get("failed_attempts", 0) or 0)
+            locked_until = self._timestamp(row.get("locked_until_utc"))
+            return {
+                "failed_attempts": failed_attempts,
+                "is_locked": bool(
+                    failed_attempts >= 5
+                    and locked_until is not None
+                    and locked_until > datetime.now(timezone.utc)
+                ),
+                "locked_until_utc": locked_until,
+            }
+        except psycopg.errors.UndefinedTable:
+            return status
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The login security status could not be checked. Please try again."
+            ) from exc
+
+    def record_login_failure(self, username: str) -> dict[str, Any]:
+        """Audit a failed password attempt and return the resulting lock status."""
+        if not self.uses_database:
+            return {
+                "failed_attempts": 0,
+                "is_locked": False,
+                "locked_until_utc": None,
+            }
+        username = str(username or "").strip()
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"app-login:{username.casefold()}",),
+                    )
+                    cursor.execute(
+                        "INSERT INTO public.app_audit_log "
+                        "(actor_username, action, target_username, detail) "
+                        "VALUES (%s, 'login_failed', %s, '{}'::jsonb)",
+                        (username or "unknown", username or "unknown"),
+                    )
+            status = self.app_user_login_security(username)
+            if status["is_locked"] and status["failed_attempts"] == 5:
+                self._record_app_audit(
+                    username or "unknown",
+                    "login_locked",
+                    username or "unknown",
+                    {"lock_minutes": 15},
+                )
+            return status
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The login attempt could not be checked. Please try again."
+            ) from exc
+
+    def unlock_app_user(self, username: str, *, actor_username: str) -> None:
+        """Clear a temporary login lock by recording an administrative reset."""
+        if not self.uses_database:
+            raise RepositoryBusyError("Neon must be configured to unlock users.")
+        self._record_app_audit(
+            actor_username,
+            "login_unlocked",
+            str(username).strip(),
+            {},
+        )
+
+    def _record_app_audit(
+        self,
+        actor_username: str,
+        action: str,
+        target_username: str,
+        detail: dict[str, Any],
+    ) -> None:
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "INSERT INTO public.app_audit_log "
+                        "(actor_username, action, target_username, detail) "
+                        "VALUES (%s, %s, %s, %s)",
+                        (
+                            str(actor_username).strip() or "system",
+                            str(action).strip(),
+                            str(target_username).strip(),
+                            Jsonb(detail),
+                        ),
+                    )
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The user audit could not be recorded. Please try again."
+            ) from exc
+
     def list_app_users(self) -> pd.DataFrame:
         columns = [
             "username", "email", "name", "role", "can_view_history",
@@ -488,6 +614,12 @@ class CsvRepository:
                             "WHERE lower(username) = lower(%s) AND ended_at_utc IS NULL",
                             (username,),
                         )
+                    elif password_hash:
+                        cursor.execute(
+                            "UPDATE public.app_sessions SET force_logout = true "
+                            "WHERE lower(username) = lower(%s) AND ended_at_utc IS NULL",
+                            (username,),
+                        )
                     cursor.execute(
                         "INSERT INTO public.app_audit_log "
                         "(actor_username, action, target_username, detail) "
@@ -552,6 +684,12 @@ class CsvRepository:
                         "updated_at_utc = now() WHERE lower(username) = lower(%s)",
                         (str(username).strip(),),
                     )
+                    cursor.execute(
+                        "INSERT INTO public.app_audit_log "
+                        "(actor_username, action, target_username, detail) "
+                        "VALUES (%s, 'login_success', %s, '{}'::jsonb)",
+                        (str(username).strip(), str(username).strip()),
+                    )
         except psycopg.Error as exc:
             raise RepositoryBusyError(
                 "The login could not be recorded. Please try again."
@@ -572,8 +710,14 @@ class CsvRepository:
                     cursor.execute(
                         "UPDATE public.app_users SET password_hash = %s, "
                         "must_change_password = false, password_changed_at_utc = now(), "
-                        "updated_at_utc = now() WHERE lower(username) = lower(%s)",
+                        "session_version = session_version + 1, updated_at_utc = now() "
+                        "WHERE lower(username) = lower(%s)",
                         (password_hash, str(username).strip()),
+                    )
+                    cursor.execute(
+                        "UPDATE public.app_sessions SET force_logout = true "
+                        "WHERE lower(username) = lower(%s) AND ended_at_utc IS NULL",
+                        (str(username).strip(),),
                     )
                     cursor.execute(
                         "INSERT INTO public.app_audit_log "

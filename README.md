@@ -263,9 +263,14 @@ main access levels are:
 
 A separate **Can view team history** permission can be added to a non-admin
 account. New users receive a temporary password and must choose another one at
-their first login. Disabling an account requests sign-out for its open sessions.
-User creation, access changes and password resets are retained in the user audit
-log.
+their first login. Passwords must contain at least 10 characters. Five failed
+password attempts within 15 minutes temporarily lock the account for 15
+minutes; an administrator can unlock it sooner from **Admin tools**. Password
+changes and administrator resets invalidate every existing session for that
+account, so the user must sign in again. Disabling an account also requests
+sign-out for its open sessions. Successful and failed sign-ins, temporary
+locks, unlocks, user creation, access changes and password resets are retained
+in the user audit log.
 
 An administrator can also open **User activity > Import earlier CSV costing
 history** to copy revisions still held in `saved_costings.csv`. Existing Neon

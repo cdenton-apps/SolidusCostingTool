@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -31,6 +31,11 @@ class _FakeCursor:
         self.executed.append((sql, params))
 
     def fetchone(self):
+        if "last_failed_at_utc" in self.last_sql:
+            return {
+                "failed_attempts": 5,
+                "locked_until_utc": datetime.now(timezone.utc) + timedelta(minutes=15),
+            }
         if "COALESCE(MAX(revision)" in self.last_sql:
             return {"revision": 1}
         if "AS quote_number" in self.last_sql:
@@ -200,6 +205,99 @@ def test_neon_user_creation_writes_user_and_audit_record(
     sql = "\n".join(statement for statement, _ in cursor.executed)
     assert "INSERT INTO public.app_users" in sql
     assert "INSERT INTO public.app_audit_log" in sql
+
+
+def test_login_security_reports_a_temporary_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(repository, "_connect", lambda: _FakeConnection(cursor))
+
+    status = repository.app_user_login_security("locked-user")
+
+    assert status["failed_attempts"] == 5
+    assert status["is_locked"] is True
+    assert "interval '15 minutes'" in cursor.last_sql
+
+
+def test_failed_login_is_audited_and_can_trigger_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(repository, "_connect", lambda: _FakeConnection(cursor))
+
+    status = repository.record_login_failure("alice")
+
+    sql = "\n".join(statement for statement, _ in cursor.executed)
+    assert status["is_locked"] is True
+    assert "login_failed" in sql
+    assert any(
+        params and "login_locked" in params
+        for _, params in cursor.executed
+    )
+
+
+def test_admin_unlock_is_written_to_the_existing_audit_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(repository, "_connect", lambda: _FakeConnection(cursor))
+
+    repository.unlock_app_user("alice", actor_username="admin")
+
+    sql, params = cursor.executed[-1]
+    assert "INSERT INTO public.app_audit_log" in sql
+    assert params[1:3] == ("login_unlocked", "alice")
+
+
+def test_password_change_invalidates_existing_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(repository, "_connect", lambda: _FakeConnection(cursor))
+
+    repository.change_app_user_password(
+        "alice",
+        "pbkdf2_sha256$600000$salt$digest",
+        actor_username="alice",
+    )
+
+    sql = "\n".join(statement for statement, _ in cursor.executed)
+    assert "session_version = session_version + 1" in sql
+    assert "UPDATE public.app_sessions SET force_logout = true" in sql
+
+
+def test_successful_login_updates_user_and_is_audited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = CsvRepository(
+        tmp_path,
+        database_url="postgresql://example.invalid/neondb",
+    )
+    cursor = _FakeCursor()
+    monkeypatch.setattr(repository, "_connect", lambda: _FakeConnection(cursor))
+
+    repository.record_user_login("alice")
+
+    sql = "\n".join(statement for statement, _ in cursor.executed)
+    assert "last_login_at_utc = now()" in sql
+    assert "login_success" in sql
 
 
 def test_simultaneous_users_receive_distinct_revisions(tmp_path: Path) -> None:

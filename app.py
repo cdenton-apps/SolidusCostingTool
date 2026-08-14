@@ -2960,6 +2960,28 @@ def render_user_management(
     selected_row = users.loc[users["username"].astype(str).eq(selected)].iloc[0]
     selected_role = str(selected_row.get("role", "external"))
     role_index = list(role_names).index(selected_role) if selected_role in role_names else 0
+    try:
+        login_security = repository.app_user_login_security(selected)
+    except RepositoryBusyError as exc:
+        st.warning(str(exc))
+        login_security = {}
+    if login_security.get("is_locked"):
+        locked_until = format_uk_datetime(login_security.get("locked_until_utc"))
+        st.warning(
+            f"This account is temporarily locked after repeated failed sign-ins. "
+            f"It will unlock at {locked_until}."
+        )
+        if st.button("Unlock account", key=f"unlock_{selected}"):
+            try:
+                repository.unlock_app_user(
+                    selected,
+                    actor_username=current_username,
+                )
+            except RepositoryBusyError as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"Unlocked @{selected}.")
+                st.rerun()
     with st.form("edit_database_user"):
         edited_name = str(selected_row.get("name", ""))
         edited_email = str(selected_row.get("email", ""))
@@ -3011,8 +3033,14 @@ def render_user_management(
             except (RepositoryBusyError, ValueError) as exc:
                 st.error(str(exc))
             else:
-                st.success(f"Updated @{selected}.")
-                st.rerun()
+                if replacement_password and selected.casefold() == current_username.casefold():
+                    _sign_out_local_session(
+                        repository,
+                        "Password reset. Sign in with the new password.",
+                    )
+                else:
+                    st.success(f"Updated @{selected}.")
+                    st.rerun()
 
     audit = repository.load_app_audit_log()
     if not audit.empty:
@@ -3471,9 +3499,10 @@ def render_required_password_change(
             except RepositoryBusyError as exc:
                 st.error(str(exc))
             else:
-                st.session_state.authenticated_user["must_change_password"] = False
-                st.success("Password changed.")
-                st.rerun()
+                _sign_out_local_session(
+                    repository,
+                    "Password changed. Sign in with your new password.",
+                )
     st.stop()
 
 

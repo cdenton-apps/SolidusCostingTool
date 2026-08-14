@@ -119,8 +119,20 @@ def test_database_admin_credentials_take_precedence() -> None:
     password_hash = make_password_hash("database-admin-password")
 
     class Repository:
+        login_recorded = False
+        failures = 0
+
         def has_app_users(self):
             return True
+
+        def app_user_login_security(self, username):
+            return {"is_locked": False, "failed_attempts": 0}
+
+        def record_login_failure(self, username):
+            self.failures += 1
+
+        def record_user_login(self, username):
+            self.login_recorded = True
 
         def get_app_user(self, username):
             if username.casefold() != "manager":
@@ -144,6 +156,27 @@ def test_database_admin_credentials_take_precedence() -> None:
     assert approved is not None
     assert approved.is_admin
     assert authenticate_admin("manager", "wrong", Repository()) is None
+
+
+def test_database_admin_credentials_respect_temporary_lock() -> None:
+    class Repository:
+        failures = 0
+
+        def has_app_users(self):
+            return True
+
+        def app_user_login_security(self, username):
+            return {"is_locked": True, "failed_attempts": 5}
+
+        def get_app_user(self, username):
+            raise AssertionError("a locked password must not be checked")
+
+        def record_login_failure(self, username):
+            self.failures += 1
+
+    repository = Repository()
+    assert authenticate_admin("manager", "anything", repository) is None
+    assert repository.failures == 0
 
 
 def test_app_is_locked_when_no_users_are_configured() -> None:
