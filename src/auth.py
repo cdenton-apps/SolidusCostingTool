@@ -160,6 +160,34 @@ def session_timeout_minutes() -> int:
         return 60
 
 
+def _database_password_attempt(
+    repository: Any,
+    username: str,
+    password: str,
+    *,
+    require_admin: bool = False,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Check one Neon password attempt and report whether it is now locked."""
+    status = repository.app_user_login_security(username)
+    if status.get("is_locked"):
+        return None, True
+    entry = repository.get_app_user(username)
+    valid = bool(
+        entry
+        and bool(entry.get("is_active"))
+        and (
+            not require_admin
+            or str(entry.get("role", "")).lower() == "admin"
+        )
+        and verify_password(password, str(entry.get("password_hash", "")))
+    )
+    if valid:
+        repository.record_user_login(str(entry["username"]))
+        return dict(entry), False
+    failure_status = repository.record_login_failure(username) or {}
+    return None, bool(failure_status.get("is_locked"))
+
+
 def authenticate_admin(
     username: str,
     password: str,
@@ -175,24 +203,14 @@ def authenticate_admin(
         return None
     if database_users:
         try:
-            status = repository.app_user_login_security(username)
-            entry = (
-                None
-                if status.get("is_locked")
-                else repository.get_app_user(username)
+            entry, _ = _database_password_attempt(
+                repository,
+                username,
+                password,
+                require_admin=True,
             )
-            valid = bool(
-                not status.get("is_locked")
-                and entry
-                and bool(entry.get("is_active"))
-                and str(entry.get("role", "")).lower() == "admin"
-                and verify_password(password, str(entry.get("password_hash", "")))
-            )
-            if not valid:
-                if not status.get("is_locked"):
-                    repository.record_login_failure(username)
+            if not entry:
                 return None
-            repository.record_user_login(str(entry["username"]))
         except RuntimeError:
             return None
         return _authenticated_user(str(entry["username"]), dict(entry))
@@ -332,28 +350,18 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
             matched_key = None
             entry: dict[str, Any] = {}
             valid = False
+            locked = False
             if database_users:
                 try:
-                    status = repository.app_user_login_security(username)
-                    database_entry = (
-                        None
-                        if status.get("is_locked")
-                        else repository.get_app_user(username)
+                    database_entry, locked = _database_password_attempt(
+                        repository,
+                        username,
+                        password,
                     )
                     if database_entry:
                         entry = dict(database_entry)
                         matched_key = str(entry["username"])
-                        valid = bool(
-                            not status.get("is_locked")
-                            and entry.get("is_active")
-                            and verify_password(
-                                password, str(entry.get("password_hash", ""))
-                            )
-                        )
-                    if valid and matched_key:
-                        repository.record_user_login(matched_key)
-                    elif not status.get("is_locked"):
-                        repository.record_login_failure(username)
+                        valid = True
                 except RuntimeError:
                     st.error(
                         "The sign-in service is temporarily unavailable. Try again."
@@ -386,7 +394,14 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
                     "last_auth_check_monotonic": time.monotonic(),
                 }
                 st.rerun()
-            st.error("The username or password was not recognised.")
+            if locked:
+                st.error(
+                    "Too many unsuccessful sign-in attempts. Sign-in is locked "
+                    "for 15 minutes. Try again later or ask an administrator to "
+                    "unlock the account."
+                )
+            else:
+                st.error("The username or password was not recognised.")
         st.stop()
 
     if mode == "demo":

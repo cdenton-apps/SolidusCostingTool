@@ -5,6 +5,7 @@ from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
 from src.auth import (
+    _database_password_attempt,
     _verify_configured_password,
     authenticate_admin,
     configured_users_for_import,
@@ -177,6 +178,44 @@ def test_database_admin_credentials_respect_temporary_lock() -> None:
     repository = Repository()
     assert authenticate_admin("manager", "anything", repository) is None
     assert repository.failures == 0
+
+
+def test_fifth_failed_attempt_reports_the_new_lock() -> None:
+    class Repository:
+        def app_user_login_security(self, username):
+            return {"is_locked": False, "failed_attempts": 4}
+
+        def get_app_user(self, username):
+            return None
+
+        def record_login_failure(self, username):
+            return {"is_locked": True, "failed_attempts": 5}
+
+    entry, locked = _database_password_attempt(
+        Repository(), "unknown-user", "wrong-password"
+    )
+
+    assert entry is None
+    assert locked is True
+
+
+def test_attempt_during_lock_reports_lock_without_checking_password() -> None:
+    class Repository:
+        def app_user_login_security(self, username):
+            return {"is_locked": True, "failed_attempts": 5}
+
+        def get_app_user(self, username):
+            raise AssertionError("locked credentials must not be checked")
+
+        def record_login_failure(self, username):
+            raise AssertionError("a blocked attempt must not extend the lock")
+
+    entry, locked = _database_password_attempt(
+        Repository(), "unknown-user", "anything"
+    )
+
+    assert entry is None
+    assert locked is True
 
 
 def test_app_is_locked_when_no_users_are_configured() -> None:
