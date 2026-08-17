@@ -1183,14 +1183,9 @@ def render_specification(
                 getattr(st, notice[0])(notice[1])
 
     st.markdown("#### Required order details")
-    customer_col, delivered_col, postcode_col = st.columns([1.2, 1.2, 0.8])
+    customer_col, postcode_col = st.columns([1.4, 1.0])
     customer_name = customer_col.text_input(
         "Customer *", value=str(draft.get("customer_name", ""))
-    )
-    delivered_to = delivered_col.text_input(
-        "Delivered to",
-        value=str(draft.get("delivered_to") or draft.get("customer_name", "")),
-        help="The site or customer name to show on the quotation.",
     )
     delivery_postcode = postcode_col.text_input(
         "Delivery postcode *", value=str(draft.get("delivery_postcode", ""))
@@ -1393,7 +1388,7 @@ def render_specification(
             "comex_over_credit_limit": bool(over_credit_limit),
             "comex_poor_payment_history": bool(poor_payment_history),
             "delivery_postcode": delivery_postcode.strip().upper(),
-            "delivered_to": delivered_to.strip() or customer_name.strip(),
+            "delivered_to": customer_name.strip(),
         }
         errors = validate_details(updated)
         if errors:
