@@ -85,3 +85,30 @@ CREATE INDEX IF NOT EXISTS app_audit_log_occurred_idx
     ON public.app_audit_log (occurred_at_utc DESC);
 CREATE INDEX IF NOT EXISTS app_audit_log_target_idx
     ON public.app_audit_log (lower(target_username), occurred_at_utc DESC);
+
+CREATE TABLE IF NOT EXISTS public.commercial_approval_requests (
+    request_id text PRIMARY KEY,
+    approval_basis text NOT NULL,
+    requester_username text NOT NULL,
+    requester_name text NOT NULL,
+    requester_email text NOT NULL,
+    item_code text NOT NULL,
+    customer_name text NOT NULL,
+    request_reason text NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    requested_at_utc timestamptz NOT NULL DEFAULT now(),
+    decided_at_utc timestamptz,
+    decided_by_username text,
+    decided_by_name text,
+    decided_by_email text,
+    decision_reason text,
+    snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
+    CONSTRAINT commercial_approval_status_check
+        CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled'))
+);
+
+CREATE INDEX IF NOT EXISTS commercial_approval_pending_idx
+    ON public.commercial_approval_requests (status, requested_at_utc DESC);
+CREATE INDEX IF NOT EXISTS commercial_approval_requester_idx
+    ON public.commercial_approval_requests
+    (lower(requester_username), approval_basis, requested_at_utc DESC);
