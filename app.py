@@ -1962,9 +1962,8 @@ def render_pricing(
             return
         eur_rate_source = "ECB via Frankfurter"
         exchange_col.metric("Live rate · EUR per GBP", f"{eur_per_gbp:.4f}")
-        rate_date_text = f" for {eur_rate_date}" if eur_rate_date else ""
         exchange_col.caption(
-            f"Latest available ECB reference rate{rate_date_text}. Cached for one hour. "
+            "ECB reference rate. "
             "Internal costs and the £600/hour gate remain in GBP."
         )
     else:
