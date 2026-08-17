@@ -81,7 +81,7 @@ def test_quote_and_sage_exports() -> None:
     assert "BOM-defined materials" not in quote_text
     assert "Product group" not in quote_text
     assert "attached Solidus General Terms and Conditions" in quote_text
-    assert "Delivered to Hilton Meats" in normalised_quote_text
+    assert "Delivered to" not in normalised_quote_text
     assert "Currency / delivery basis GBP / DAP" in normalised_quote_text
     assert "exclusive of VAT and based on DAP Incoterms" in normalised_quote_text
     assert "thirty (30) days after the invoice date" in normalised_quote_text
