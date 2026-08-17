@@ -1964,7 +1964,7 @@ def render_pricing(
         exchange_col.metric("Live rate · EUR per GBP", f"{eur_per_gbp:.4f}")
         rate_date_text = f" for {eur_rate_date}" if eur_rate_date else ""
         exchange_col.caption(
-            f"ECB reference rate. "
+            f"Latest available ECB reference rate{rate_date_text}. Cached for one hour. "
             "Internal costs and the £600/hour gate remain in GBP."
         )
     else:
@@ -2192,7 +2192,7 @@ def render_pricing(
                 remote_approval = repository.latest_commercial_approval(
                     user_username, basis
                 )
-            except RepositoryBusyError as exc:
+            except RuntimeError as exc:
                 st.warning(str(exc))
             if remote_approval and remote_approval.get("status") == "approved":
                 pricing.update(
@@ -2327,7 +2327,7 @@ def render_pricing(
                                         "traffic_reason": traffic.get("reason", ""),
                                     },
                                 )
-                            except RepositoryBusyError as exc:
+                            except RuntimeError as exc:
                                 st.error(str(exc))
                             else:
                                 st.success("Approval request sent.")
@@ -3172,7 +3172,7 @@ def render_user_management(
     role_index = list(role_names).index(selected_role) if selected_role in role_names else 0
     try:
         login_security = repository.app_user_login_security(selected)
-    except RepositoryBusyError as exc:
+    except RuntimeError as exc:
         st.warning(str(exc))
         login_security = {}
     if login_security.get("is_locked"):
@@ -3263,7 +3263,7 @@ def render_remote_approval_queue(repository: CsvRepository, user: Any) -> None:
     st.subheader("Commercial approvals")
     try:
         pending = repository.load_commercial_approval_requests("pending")
-    except RepositoryBusyError as exc:
+    except RuntimeError as exc:
         st.warning(str(exc))
         return
     if pending.empty:
@@ -3353,7 +3353,7 @@ def render_remote_approval_queue(repository: CsvRepository, user: Any) -> None:
                 admin_email=user.email,
                 decision_reason=admin_note.strip(),
             )
-        except RepositoryBusyError as exc:
+        except RuntimeError as exc:
             st.error(str(exc))
         else:
             st.success("Costing approved." if approve else "Approval declined.")
