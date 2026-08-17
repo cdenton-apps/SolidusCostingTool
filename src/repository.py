@@ -92,6 +92,8 @@ SPECIFICATION_COLUMNS = [
     "comex_poor_payment_history",
     "quote_currency",
     "eur_per_gbp",
+    "eur_rate_date",
+    "eur_rate_source",
 ]
 
 COST_INPUT_COLUMNS = [
@@ -2012,6 +2014,146 @@ class CsvRepository:
         except psycopg.Error as exc:
             raise RepositoryBusyError(
                 "The e-signature status could not be saved to Neon."
+            ) from exc
+
+    def submit_commercial_approval_request(
+        self,
+        *,
+        approval_basis: str,
+        requester_username: str,
+        requester_name: str,
+        requester_email: str,
+        item_code: str,
+        customer_name: str,
+        request_reason: str,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Store a red-costing request for a separate administrator session."""
+        if not self.uses_database:
+            raise RepositoryBusyError("Neon is required for remote approvals.")
+        request_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE public.commercial_approval_requests "
+                        "SET status = 'cancelled', decided_at_utc = %s, "
+                        "decision_reason = 'Replaced by a newer request' "
+                        "WHERE lower(requester_username) = lower(%s) "
+                        "AND status = 'pending'",
+                        (now, requester_username),
+                    )
+                    cursor.execute(
+                        "INSERT INTO public.commercial_approval_requests "
+                        "(request_id, approval_basis, requester_username, requester_name, "
+                        "requester_email, item_code, customer_name, request_reason, status, "
+                        "requested_at_utc, snapshot) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s) "
+                        "RETURNING *",
+                        (
+                            request_id,
+                            approval_basis,
+                            requester_username,
+                            requester_name,
+                            requester_email,
+                            item_code,
+                            customer_name,
+                            request_reason,
+                            now,
+                            Jsonb(self._json_ready(snapshot)),
+                        ),
+                    )
+                    row = cursor.fetchone()
+            return dict(row or {})
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The approval request could not be sent. Please try again."
+            ) from exc
+
+    def latest_commercial_approval(
+        self,
+        requester_username: str,
+        approval_basis: str,
+    ) -> dict[str, Any] | None:
+        if not self.uses_database:
+            return None
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT * FROM public.commercial_approval_requests "
+                        "WHERE lower(requester_username) = lower(%s) "
+                        "AND approval_basis = %s ORDER BY requested_at_utc DESC LIMIT 1",
+                        (requester_username, approval_basis),
+                    )
+                    row = cursor.fetchone()
+            return dict(row) if row else None
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The approval status could not be checked. Please try again."
+            ) from exc
+
+    def load_commercial_approval_requests(self, status: str = "pending") -> pd.DataFrame:
+        if not self.uses_database:
+            return pd.DataFrame()
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT * FROM public.commercial_approval_requests "
+                        "WHERE status = %s ORDER BY requested_at_utc ASC",
+                        (status,),
+                    )
+                    rows = cursor.fetchall()
+            return pd.DataFrame(rows)
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "Approval requests could not be loaded. Please try again."
+            ) from exc
+
+    def decide_commercial_approval_request(
+        self,
+        request_id: str,
+        *,
+        approved: bool,
+        admin_username: str,
+        admin_name: str,
+        admin_email: str,
+        decision_reason: str,
+    ) -> dict[str, Any]:
+        if not self.uses_database:
+            raise RepositoryBusyError("Neon is required for remote approvals.")
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE public.commercial_approval_requests SET status = %s, "
+                        "decided_at_utc = %s, decided_by_username = %s, "
+                        "decided_by_name = %s, decided_by_email = %s, "
+                        "decision_reason = %s WHERE request_id = %s AND status = 'pending' "
+                        "RETURNING *",
+                        (
+                            "approved" if approved else "rejected",
+                            datetime.now(timezone.utc),
+                            admin_username,
+                            admin_name,
+                            admin_email,
+                            decision_reason,
+                            request_id,
+                        ),
+                    )
+                    row = cursor.fetchone()
+            if not row:
+                raise RepositoryBusyError(
+                    "This request has already been decided or is no longer available."
+                )
+            return dict(row)
+        except RepositoryBusyError:
+            raise
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The approval decision could not be saved. Please try again."
             ) from exc
 
     @staticmethod
