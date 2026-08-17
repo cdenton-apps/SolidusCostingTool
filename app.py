@@ -3171,7 +3171,7 @@ def render_user_management(
     role_index = list(role_names).index(selected_role) if selected_role in role_names else 0
     try:
         login_security = repository.app_user_login_security(selected)
-    except RuntimeError as exc:
+    except RepositoryBusyError as exc:
         st.warning(str(exc))
         login_security = {}
     if login_security.get("is_locked"):
