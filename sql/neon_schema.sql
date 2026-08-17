@@ -112,3 +112,6 @@ CREATE INDEX IF NOT EXISTS commercial_approval_pending_idx
 CREATE INDEX IF NOT EXISTS commercial_approval_requester_idx
     ON public.commercial_approval_requests
     (lower(requester_username), approval_basis, requested_at_utc DESC);
+
+GRANT SELECT, INSERT, UPDATE ON TABLE public.commercial_approval_requests
+    TO costing_app;
