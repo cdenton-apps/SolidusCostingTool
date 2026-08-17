@@ -356,7 +356,9 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                             "",
                         ]
                     )
-                    spans.append(("SPAN", (1, len(data) - 1), (3, len(data) - 1)))
+                    row_index = len(data) - 1
+                    spans.append(("SPAN", (1, row_index), (3, row_index)))
+                    full_width_value_rows.append(row_index)
                     pending = None
                 data.append(
                     [paragraph(label, "CellLabel"), paragraph(value), "", ""]
@@ -380,7 +382,9 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             data.append(
                 [paragraph(pending[0], "CellLabel"), paragraph(pending[1]), "", ""]
             )
-            spans.append(("SPAN", (1, len(data) - 1), (3, len(data) - 1)))
+            row_index = len(data) - 1
+            spans.append(("SPAN", (1, row_index), (3, row_index)))
+            full_width_value_rows.append(row_index)
         table = Table(
             data,
             colWidths=[30 * mm, 60 * mm, 30 * mm, 60 * mm],
@@ -413,16 +417,12 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         or incoterm == "EXW"
     )
     delivery_basis = "Collected" if collected else "DAP"
-    delivered_to = str(
-        record.get("delivered_to") or record.get("customer_name") or ""
-    ).strip()
     fulfilment_label = (
         "MTC - Make to Contract" if fulfilment_type == "MTC" else "MTO - Make to Order"
     )
     order_rows: list[tuple[str, Any]] = [
         ("Customer", record.get("customer_name")),
         ("For the attention of", record.get("customer_contact")),
-        ("Delivered to", delivered_to),
         ("Item code", record.get("item_code")),
         ("Description", record.get("description")),
         ("Fulfilment", fulfilment_label),
