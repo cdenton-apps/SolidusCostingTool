@@ -10,6 +10,8 @@ from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
@@ -50,6 +52,7 @@ from src.transport import HaulierRateTable, TransportLookupError
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 STAGES = ["Product", "Order", "Costs", "Price", "Quote"]
+EUR_RATE_URL = "https://api.frankfurter.dev/v2/rate/GBP/EUR?providers=ECB"
 
 
 def configured_database_url() -> str:
@@ -66,6 +69,26 @@ def configured_esign() -> dict[str, Any]:
         return dict(st.secrets.get("esign", {}))
     except FileNotFoundError:
         return {}
+
+
+@st.cache_data(ttl=3_600, show_spinner=False)
+def live_eur_per_gbp() -> tuple[float, str]:
+    """Return the latest available ECB GBP/EUR reference rate."""
+    request = Request(
+        EUR_RATE_URL,
+        headers={"Accept": "application/json", "User-Agent": "SolidusCostingTool/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        rate = float(payload["rate"])
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError("The exchange-rate service returned an invalid rate.")
+        return rate, str(payload.get("date", "")).strip()
+    except (HTTPError, URLError, OSError, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "The live GBP to EUR rate is temporarily unavailable. Use GBP or try again shortly."
+        ) from exc
 
 
 @st.cache_resource(show_spinner=False)
@@ -254,11 +277,7 @@ def customer_specific_item_code(
 
 def _sign_out_local_session(repository: CsvRepository, message: str) -> None:
     repository.end_session(st.session_state.get("app_session_id", ""))
-    st.session_state.pop("authenticated_user", None)
-    st.session_state.pop("app_session_id", None)
-    st.session_state.pop("app_signed_in_at", None)
-    st.session_state.pop("app_last_activity_at", None)
-    st.session_state.pop("app_active_seconds", None)
+    st.session_state.clear()
     st.session_state["login_notice"] = message
     if bool(getattr(st.user, "is_logged_in", False)):
         st.logout()
@@ -418,7 +437,9 @@ def default_draft() -> dict[str, Any]:
         "transport_total": 0.0,
         "spread_percent": 30.0,
         "quote_currency": "GBP",
-        "eur_per_gbp": 1.17,
+        "eur_per_gbp": 1.0,
+        "eur_rate_date": "",
+        "eur_rate_source": "",
         "source_item_code": "",
         "based_on_existing_new_product": False,
         "catalogue_product": False,
@@ -458,9 +479,9 @@ def quote_exchange_factor(draft: dict[str, Any] | None = None) -> float:
     if str(values.get("quote_currency", "GBP") or "GBP").upper() != "EUR":
         return 1.0
     try:
-        return max(0.0001, float(values.get("eur_per_gbp", 1.17) or 1.17))
+        return max(0.0001, float(values.get("eur_per_gbp", 1.0) or 1.0))
     except (TypeError, ValueError):
-        return 1.17
+        return 1.0
 
 
 def format_machine_duration(hours: Any, *, include_seconds: bool = False) -> str:
@@ -1584,27 +1605,21 @@ def render_costs(
             f"MTO order: {estimated_pallets:,} pallet(s) released as one delivery event. "
             "Rates cover 1–26 pallets per vehicle load; larger movements are split into additional loads."
         )
-    methods = ["Haulier", "Customer collection", "Included elsewhere"]
     current_method = str(draft.get("delivery_method", "Haulier"))
-    delivery_method = st.selectbox(
-        "Delivery method",
-        methods,
-        index=methods.index(current_method) if current_method in methods else 0,
+    collected = st.checkbox(
+        "Collected",
+        value=(
+            current_method == "Customer collection"
+            or str(draft.get("incoterm", "DAP") or "DAP").upper() == "EXW"
+        ),
+        help="Tick when the customer will collect. Otherwise the quotation is DAP and delivery is costed below.",
     )
-    incoterm_options = ["DAP", "EXW", "FCA"]
-    default_incoterm = "EXW" if delivery_method == "Customer collection" else "DAP"
-    current_incoterm = (
-        default_incoterm
-        if delivery_method != str(draft.get("delivery_method", "Haulier"))
-        else str(draft.get("incoterm", default_incoterm) or default_incoterm).upper()
-    )
-    if current_incoterm not in incoterm_options:
-        incoterm_options.append(current_incoterm)
-    incoterm = st.selectbox(
-        "Incoterm",
-        incoterm_options,
-        index=incoterm_options.index(current_incoterm),
-        help="DAP is the normal delivered basis. Use EXW for customer collection.",
+    delivery_method = "Customer collection" if collected else "Haulier"
+    incoterm = "EXW" if collected else "DAP"
+    st.caption(
+        "Customer collection: delivery is excluded from the quotation."
+        if collected
+        else "Delivery basis: DAP."
     )
 
     service = str(draft.get("transport_service", "Economy"))
@@ -1933,22 +1948,31 @@ def render_pricing(
         index=currency_options.index(current_currency),
         help="GBP is the normal currency. Choose EUR only when the quotation is to be raised in euros.",
     )
-    eur_per_gbp = float(st.session_state.draft.get("eur_per_gbp", 1.17) or 1.17)
+    eur_per_gbp = 1.0
+    eur_rate_date = ""
+    eur_rate_source = ""
     if quote_currency == "EUR":
-        eur_per_gbp = exchange_col.number_input(
-            "Conversion rate (EUR per GBP)",
-            min_value=0.0001,
-            value=max(0.0001, eur_per_gbp),
-            step=0.01,
-            format="%.4f",
-            help="This converts the GBP pricing base into EUR. Confirm the rate before issuing the quotation.",
+        try:
+            eur_per_gbp, eur_rate_date = live_eur_per_gbp()
+        except RuntimeError as exc:
+            exchange_col.error(str(exc))
+            st.session_state.draft["eur_per_gbp"] = 0.0
+            st.session_state.draft["eur_rate_date"] = ""
+            st.session_state.draft["eur_rate_source"] = ""
+            return
+        eur_rate_source = "ECB via Frankfurter"
+        exchange_col.metric("Live rate · EUR per GBP", f"{eur_per_gbp:.4f}")
+        rate_date_text = f" for {eur_rate_date}" if eur_rate_date else ""
+        exchange_col.caption(
+            f"Latest available ECB reference rate{rate_date_text}. Cached for one hour. "
+            "Internal costs and the £600/hour gate remain in GBP."
         )
-        exchange_col.caption("Internal costs and the £600/hour gate remain in GBP.")
     else:
         exchange_col.text_input("Conversion rate", value="Not required for GBP", disabled=True)
-        eur_per_gbp = 1.0
     st.session_state.draft["quote_currency"] = quote_currency
     st.session_state.draft["eur_per_gbp"] = eur_per_gbp
+    st.session_state.draft["eur_rate_date"] = eur_rate_date
+    st.session_state.draft["eur_rate_source"] = eur_rate_source
     symbol = currency_symbol(quote_currency)
     pricing_base_gbp = float(breakdown["pricing_base_per_1000"])
     pricing_base = pricing_base_gbp * quote_exchange_factor()
@@ -2162,6 +2186,39 @@ def render_pricing(
                 f"{traffic['reason'].capitalize()}."
             )
 
+        remote_approval: dict[str, Any] | None = None
+        if traffic["status"] == "red" and not is_admin and repository.uses_database:
+            try:
+                remote_approval = repository.latest_commercial_approval(
+                    user_username, basis
+                )
+            except RepositoryBusyError as exc:
+                st.warning(str(exc))
+            if remote_approval and remote_approval.get("status") == "approved":
+                pricing.update(
+                    {
+                        "traffic_override_approved": True,
+                        "traffic_override_reason": (
+                            remote_approval.get("decision_reason")
+                            or remote_approval.get("request_reason")
+                            or "Approved remotely"
+                        ),
+                        "traffic_override_by_username": remote_approval.get(
+                            "decided_by_username", ""
+                        ),
+                        "traffic_override_by_name": remote_approval.get(
+                            "decided_by_name", ""
+                        ),
+                        "traffic_override_by_email": remote_approval.get(
+                            "decided_by_email", ""
+                        ),
+                        "traffic_override_at_utc": str(
+                            remote_approval.get("decided_at_utc", "")
+                        ),
+                        "traffic_override_basis": basis,
+                    }
+                )
+                st.session_state.pricing = pricing
         override_approved = bool(pricing.get("traffic_override_approved"))
         amber_acknowledged = bool(pricing.get("traffic_amber_acknowledged"))
         if traffic["status"] == "amber":
@@ -2211,50 +2268,102 @@ def render_pricing(
                     )
                     st.session_state.pricing = pricing
                     st.rerun()
-        elif traffic["status"] == "red":
+        elif traffic["status"] == "red" and repository.uses_database:
             if override_approved:
                 st.success(
                     f"Override approved by {pricing.get('traffic_override_by_name', '')}. "
                     f"Reason: {pricing.get('traffic_override_reason', '')}"
                 )
             else:
-                st.write(
-                    "An administrator can approve this costing below without signing "
-                    "the current user out."
-                )
-                with st.form("red_admin_approval", clear_on_submit=True):
-                    admin_username = st.text_input("Admin username")
-                    admin_password = st.text_input("Admin password", type="password")
-                    override_reason = st.text_area(
-                        "Reason for admin override *", height=90
+                if remote_approval and remote_approval.get("status") == "pending":
+                    st.warning(
+                        "Approval requested. An administrator can decide this from "
+                        "their own Admin tools page."
                     )
-                    submitted = st.form_submit_button("Approve red costing")
-                if submitted:
-                    approving_admin = authenticate_admin(
-                        admin_username,
-                        admin_password,
-                        repository,
-                    )
-                    if not override_reason.strip():
-                        st.error("Enter a reason for the override.")
-                    elif approving_admin is None:
-                        st.error(
-                            "The administrator username or password was not recognised."
-                        )
-                    else:
-                        pricing.update(
-                            {
-                                "traffic_override_approved": True,
-                                "traffic_override_reason": override_reason.strip(),
-                                "traffic_override_by_username": approving_admin.username,
-                                "traffic_override_by_name": approving_admin.name,
-                                "traffic_override_by_email": approving_admin.email,
-                                "traffic_override_at_utc": _utc_now().isoformat(),
-                                "traffic_override_basis": basis,
-                            }
-                        )
-                        st.session_state.pricing = pricing
+                    if st.button("Check approval status"):
                         st.rerun()
+                else:
+                    if remote_approval and remote_approval.get("status") == "rejected":
+                        st.error(
+                            "The previous request was declined. "
+                            f"{remote_approval.get('decision_reason', '')}"
+                        )
+                    with st.form("remote_red_approval_request", clear_on_submit=True):
+                        request_reason = st.text_area(
+                            "Reason for approval request *", height=90
+                        )
+                        submitted = st.form_submit_button(
+                            "Send to admin for approval", type="primary"
+                        )
+                    if submitted:
+                        if not request_reason.strip():
+                            st.error("Enter a reason for the request.")
+                        else:
+                            try:
+                                repository.submit_commercial_approval_request(
+                                    approval_basis=basis,
+                                    requester_username=user_username,
+                                    requester_name=user_name,
+                                    requester_email=user_email,
+                                    item_code=str(
+                                        st.session_state.draft.get("item_code", "")
+                                    ),
+                                    customer_name=str(
+                                        st.session_state.draft.get("customer_name", "")
+                                    ),
+                                    request_reason=request_reason.strip(),
+                                    snapshot={
+                                        "order_quantity": draft_number("order_quantity"),
+                                        "spread_percent": pricing.get("spread_percent", 0),
+                                        "selling_price_per_1000": pricing.get(
+                                            "selling_price_per_1000", 0
+                                        ),
+                                        "quote_currency": st.session_state.draft.get(
+                                            "quote_currency", "GBP"
+                                        ),
+                                        "spread_per_machine_hour": pricing.get(
+                                            "spread_per_machine_hour", 0
+                                        ),
+                                        "traffic_reason": traffic.get("reason", ""),
+                                    },
+                                )
+                            except RepositoryBusyError as exc:
+                                st.error(str(exc))
+                            else:
+                                st.success("Approval request sent.")
+                                st.rerun()
+        elif traffic["status"] == "red":
+            st.write(
+                "Remote approval requires Neon. For this local session, an "
+                "administrator can approve below."
+            )
+            with st.form("red_admin_approval", clear_on_submit=True):
+                admin_username = st.text_input("Admin username")
+                admin_password = st.text_input("Admin password", type="password")
+                override_reason = st.text_area("Reason for admin override *", height=90)
+                submitted = st.form_submit_button("Approve red costing")
+            if submitted:
+                approving_admin = authenticate_admin(
+                    admin_username, admin_password, repository
+                )
+                if not override_reason.strip():
+                    st.error("Enter a reason for the override.")
+                elif approving_admin is None:
+                    st.error("The administrator username or password was not recognised.")
+                else:
+                    pricing.update(
+                        {
+                            "traffic_override_approved": True,
+                            "traffic_override_reason": override_reason.strip(),
+                            "traffic_override_by_username": approving_admin.username,
+                            "traffic_override_by_name": approving_admin.name,
+                            "traffic_override_by_email": approving_admin.email,
+                            "traffic_override_at_utc": _utc_now().isoformat(),
+                            "traffic_override_basis": basis,
+                        }
+                    )
+                    st.session_state.pricing = pricing
+                    st.rerun()
 
         can_continue = (
             traffic["status"] == "green"
@@ -3150,16 +3259,119 @@ def render_user_management(
             st.dataframe(display_audit, hide_index=True, width="stretch")
 
 
+def render_remote_approval_queue(repository: CsvRepository, user: Any) -> None:
+    st.subheader("Commercial approvals")
+    try:
+        pending = repository.load_commercial_approval_requests("pending")
+    except RepositoryBusyError as exc:
+        st.warning(str(exc))
+        return
+    if pending.empty:
+        st.caption("There are no red costings waiting for approval.")
+        return
+
+    display = pending.copy()
+    display["requested_at"] = display["requested_at_utc"].map(format_uk_datetime)
+    display["spread"] = display["snapshot"].map(
+        lambda value: float((value or {}).get("spread_percent", 0) or 0)
+    )
+    display["spread_per_hour"] = display["snapshot"].map(
+        lambda value: float((value or {}).get("spread_per_machine_hour", 0) or 0)
+    )
+    st.dataframe(
+        display[
+            [
+                "requested_at",
+                "requester_name",
+                "customer_name",
+                "item_code",
+                "spread",
+                "spread_per_hour",
+                "request_reason",
+            ]
+        ],
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "requested_at": st.column_config.TextColumn("Requested"),
+            "requester_name": st.column_config.TextColumn("Requested by"),
+            "customer_name": st.column_config.TextColumn("Customer"),
+            "item_code": st.column_config.TextColumn("Item"),
+            "spread": st.column_config.NumberColumn("Spread", format="%.2f%%"),
+            "spread_per_hour": st.column_config.NumberColumn(
+                "Spread / hour", format="£%.2f"
+            ),
+            "request_reason": st.column_config.TextColumn("Reason"),
+        },
+    )
+    request_ids = pending["request_id"].astype(str).tolist()
+    labels = {
+        str(row["request_id"]): (
+            f"{row['customer_name']} · {row['item_code']} · {row['requester_name']}"
+        )
+        for _, row in pending.iterrows()
+    }
+    selected_id = st.selectbox(
+        "Request to review",
+        request_ids,
+        format_func=lambda value: labels.get(value, value),
+    )
+    selected = pending.loc[
+        pending["request_id"].astype(str).eq(selected_id)
+    ].iloc[0]
+    snapshot = selected.get("snapshot") or {}
+    quote_symbol = currency_symbol(snapshot.get("quote_currency", "GBP"))
+    show_detail_cards(
+        [
+            ("Order quantity", f"{float(snapshot.get('order_quantity', 0) or 0):,.0f}"),
+            ("Spread", f"{float(snapshot.get('spread_percent', 0) or 0):,.2f}%"),
+            (
+                "Selling price / 1,000",
+                f"{quote_symbol}{float(snapshot.get('selling_price_per_1000', 0) or 0):,.2f}",
+            ),
+            (
+                "Spread / machine hour",
+                f"£{float(snapshot.get('spread_per_machine_hour', 0) or 0):,.2f}",
+            ),
+        ]
+    )
+    st.write(f"**User's reason:** {selected.get('request_reason', '')}")
+    with st.form("commercial_approval_decision", clear_on_submit=True):
+        admin_note = st.text_area("Admin note (optional)", height=80)
+        approve_col, reject_col = st.columns(2)
+        approve = approve_col.form_submit_button(
+            "Approve costing", type="primary", width="stretch"
+        )
+        reject = reject_col.form_submit_button("Decline", width="stretch")
+    if approve or reject:
+        try:
+            repository.decide_commercial_approval_request(
+                selected_id,
+                approved=approve,
+                admin_username=user.username,
+                admin_name=user.name,
+                admin_email=user.email,
+                decision_reason=admin_note.strip(),
+            )
+        except RepositoryBusyError as exc:
+            st.error(str(exc))
+        else:
+            st.success("Costing approved." if approve else "Approval declined.")
+            st.rerun()
+
+
 def render_admin_tools(
     repository: CsvRepository,
-    current_username: str,
+    user: Any,
 ) -> None:
     st.header("Admin tools")
     st.caption(
         "Manage user accounts, access and earlier costing-history data."
     )
     if repository.uses_database:
-        render_user_management(repository, current_username)
+        render_remote_approval_queue(repository, user)
+        st.divider()
+        render_user_management(repository, user.username)
         with st.expander("Import earlier CSV costing history"):
             st.caption(
                 "This safely copies any revisions still present in saved_costings.csv. "
@@ -3755,10 +3967,7 @@ def main() -> None:
         elif page == "Team history":
             render_team_history(repository, user.is_admin)
         elif page == "Admin tools":
-            render_admin_tools(
-                repository,
-                user.username,
-            )
+            render_admin_tools(repository, user)
         elif page == "Dashboard":
             render_admin_dashboard(repository, current_session_id)
         else:
