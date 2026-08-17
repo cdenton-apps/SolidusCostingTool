@@ -352,6 +352,14 @@ is kept in the commercial terms. For MTC, any holding rate entered is shown as
 £ per pallet per week; otherwise the paperwork says a rate may be agreed in the
 final contract.
 
+GBP remains the normal quotation currency. EUR can be selected at the pricing
+stage with an explicit EUR-per-GBP conversion rate. Material, transport and the
+spread-per-hour gate remain based on GBP costs; only the customer quotation
+values are converted. The quotation also records the delivery destination and
+Incoterm. Its commercial terms state that prices exclude VAT, payment is due
+within 30 days unless agreed otherwise, lead time is confirmed when a valid
+purchase order is accepted, and the quotation remains valid for three months.
+
 Per-item prices retain the decimal places needed for sub-penny pricing. The
 notes section is always included, and the Solidus General Terms and
 Conditions of Sale and Delivery are appended behind every quotation and
@@ -388,7 +396,7 @@ exports and the Streamlit workflow.
 
 ## Before production use
 
-The business should still confirm surcharge/VAT treatment, permissions for
+The business should still confirm surcharge treatment, permissions for
 overrides, approval thresholds, the treatment of unmatched board prices and
 the Sage account defaults for each manufacturing site. The Sage download now
 uses the standard 72-column Sage stock export/import layout, but it

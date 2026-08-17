@@ -98,17 +98,21 @@ SAGE_ANALYSIS_FIELDS = [
 ]
 
 
-def _money(value: Any) -> str:
+def _currency_symbol(currency: Any = "GBP") -> str:
+    return "€" if str(currency or "GBP").upper() == "EUR" else "£"
+
+
+def _money(value: Any, currency: Any = "GBP") -> str:
     try:
-        return f"£{float(value):,.2f}"
+        return f"{_currency_symbol(currency)}{float(value):,.2f}"
     except (TypeError, ValueError):
         return "—"
 
 
-def _unit_money(value: Any) -> str:
+def _unit_money(value: Any, currency: Any = "GBP") -> str:
     """Format every per-item price to the agreed five decimal places."""
     try:
-        return f"£{float(value):,.5f}"
+        return f"{_currency_symbol(currency)}{float(value):,.5f}"
     except (TypeError, ValueError):
         return "—"
 
@@ -166,6 +170,15 @@ def _uk_date_after(value: Any, days: int) -> str:
     return (parsed.tz_convert("Europe/London") + pd.Timedelta(days=days)).strftime(
         "%d/%m/%Y"
     )
+
+
+def _uk_date_after_months(value: Any, months: int) -> str:
+    parsed = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(parsed):
+        return ""
+    return (
+        parsed.tz_convert("Europe/London") + pd.DateOffset(months=months)
+    ).strftime("%d/%m/%Y")
 
 
 def _print_colours(value: Any) -> str:
@@ -262,10 +275,10 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ParagraphStyle(
             name="Terms",
             parent=styles["BodyText"],
-            fontSize=7.2,
-            leading=8.5,
+            fontSize=6.7,
+            leading=7.6,
             textColor=colors.HexColor("#303434"),
-            spaceAfter=2,
+            spaceAfter=1.5,
         )
     )
     styles.add(
@@ -306,7 +319,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         return Table(
             [[Paragraph(title.upper(), styles["SectionLabel"])]],
             colWidths=[180 * mm],
-            rowHeights=[7 * mm],
+            rowHeights=[6 * mm],
             style=[
                 ("BACKGROUND", (0, 0), (-1, -1), YELLOW),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -316,40 +329,95 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         )
 
     def details_table(rows: list[tuple[str, Any]]) -> Table:
-        data = [
-            [paragraph(label, "CellLabel"), paragraph(value)] for label, value in rows
-        ]
-        return Table(
+        data: list[list[Any]] = []
+        spans: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
+        pending: tuple[str, Any] | None = None
+        full_width_labels = {"Description", "Planned call-off"}
+        for label, value in rows:
+            if label in full_width_labels:
+                if pending is not None:
+                    data.append(
+                        [
+                            paragraph(pending[0], "CellLabel"),
+                            paragraph(pending[1]),
+                            "",
+                            "",
+                        ]
+                    )
+                    spans.append(("SPAN", (1, len(data) - 1), (3, len(data) - 1)))
+                    pending = None
+                data.append(
+                    [paragraph(label, "CellLabel"), paragraph(value), "", ""]
+                )
+                spans.append(("SPAN", (1, len(data) - 1), (3, len(data) - 1)))
+            elif pending is None:
+                pending = (label, value)
+            else:
+                data.append(
+                    [
+                        paragraph(pending[0], "CellLabel"),
+                        paragraph(pending[1]),
+                        paragraph(label, "CellLabel"),
+                        paragraph(value),
+                    ]
+                )
+                pending = None
+        if pending is not None:
+            data.append(
+                [paragraph(pending[0], "CellLabel"), paragraph(pending[1]), "", ""]
+            )
+            spans.append(("SPAN", (1, len(data) - 1), (3, len(data) - 1)))
+        table = Table(
             data,
-            colWidths=[45 * mm, 135 * mm],
+            colWidths=[30 * mm, 60 * mm, 30 * mm, 60 * mm],
             style=[
                 ("BACKGROUND", (0, 0), (0, -1), PALE),
+                ("BACKGROUND", (2, 0), (2, -1), PALE),
                 ("GRID", (0, 0), (-1, -1), 0.3, GREY),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 7),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 7),
                 ("TOPPADDING", (0, 0), (-1, -1), 2),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                *spans,
             ],
         )
+        return table
 
     fulfilment_type = str(record.get("fulfilment_type", "MTO") or "MTO").upper()
+    quote_currency = str(record.get("quote_currency", "GBP") or "GBP").upper()
+    if quote_currency not in {"GBP", "EUR"}:
+        quote_currency = "GBP"
+    incoterm = str(record.get("incoterm", "DAP") or "DAP").upper()
+    delivered_to = str(
+        record.get("delivered_to") or record.get("customer_name") or ""
+    ).strip()
     fulfilment_label = (
         "MTC - Make to Contract" if fulfilment_type == "MTC" else "MTO - Make to Order"
     )
     order_rows: list[tuple[str, Any]] = [
         ("Customer", record.get("customer_name")),
         ("For the attention of", record.get("customer_contact")),
+        ("Delivered to", delivered_to),
         ("Item code", record.get("item_code")),
         ("Description", record.get("description")),
         ("Fulfilment", fulfilment_label),
         ("Order / agreement quantity", f"{_number(record.get('order_quantity')):,.0f} units"),
         ("Equivalent pallets", f"{_number(record.get('order_pallets')):,.0f}"),
+        ("Currency / Incoterm", f"{quote_currency} / {incoterm}"),
     ]
     quotation_date = _uk_datetime(record.get("created_at_utc"))
-    valid_until = _uk_date_after(record.get("created_at_utc"), 30)
+    valid_until = _uk_date_after_months(record.get("created_at_utc"), 3)
     commercial_terms: list[str] = [
-        "This quotation is subject to the attached Solidus General Terms and Conditions of Sale and Delivery, which form part of this quotation."
+        "This quotation supplements the attached Solidus General Terms and Conditions of Sale and Delivery, which form part of this quotation and prevail in the event of any conflict.",
+        f"Unless otherwise agreed in writing, prices are in {quote_currency}, exclusive of VAT and based on {incoterm} Incoterms.",
+        "All payments must be made within thirty (30) days after the invoice date, unless another payment term has been agreed in writing by Solidus in an order confirmation, sales agreement or service level agreement.",
+        "Lead time will be confirmed upon acceptance of a valid purchase order and remains subject to change.",
+        (
+            f"This quotation is valid until {valid_until}. Delivery dates will be confirmed upon receipt and acceptance of a purchase order."
+            if valid_until
+            else "This quotation is valid for three months from the quotation date. Delivery dates will be confirmed upon receipt and acceptance of a purchase order."
+        ),
     ]
     if fulfilment_type == "MTC":
         agreement_months = _number(record.get("agreement_term_months"), 12)
@@ -462,8 +530,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
 
     price_rows = [
             [paragraph("PRICE", "SectionLabel"), ""],
-            [paragraph("Per 1,000", "CellLabel"), paragraph(_money(record.get("selling_price_per_1000")), "CardValue")],
-            [paragraph("Per item", "CellLabel"), paragraph(_unit_money(record.get("selling_price_per_item")), "CardValue")],
+            [paragraph("Per 1,000", "CellLabel"), paragraph(_money(record.get("selling_price_per_1000"), quote_currency), "CardValue")],
+            [paragraph("Per item", "CellLabel"), paragraph(_unit_money(record.get("selling_price_per_item"), quote_currency), "CardValue")],
     ]
     additional_description = str(
         record.get("additional_charge_description", "") or ""
@@ -495,7 +563,9 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                 [
                     paragraph(additional_description, "CellLabel"),
                     paragraph(
-                        "FOC" if additional_foc else _money(additional_amount),
+                        "FOC"
+                        if additional_foc
+                        else _money(additional_amount, quote_currency),
                         "CardValue",
                     ),
                 ],
@@ -543,7 +613,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     )
 
     logo = (
-        Image(str(BRAND_HEADER_PATH), width=70.4 * mm, height=22 * mm)
+        Image(str(BRAND_HEADER_PATH), width=64 * mm, height=20 * mm)
         if BRAND_HEADER_PATH.exists()
         else Paragraph("Solidus", styles["QuoteTitle"])
     )
@@ -587,13 +657,13 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ],
     )
 
-    story = [header, Spacer(1, 2 * mm), section("Quote details"), details_table(order_rows)]
+    story = [header, Spacer(1, 1 * mm), section("Quote details"), details_table(order_rows)]
     story.extend(
         [
-            Spacer(1, 2 * mm),
+            Spacer(1, 1 * mm),
             section("Technical specification"),
             technical_table,
-            Spacer(1, 2 * mm),
+            Spacer(1, 1 * mm),
             Table(
                 [[
                     [price_card, Spacer(1, 2 * mm), one_off_card]
@@ -676,15 +746,14 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         )
     if fulfilment_type == "MTC":
         signature_intro = (
-            f"By signing below, the parties confirm acceptance of quotation {quote_reference}, "
-            "including its MTC term, call-off profile and the attached terms and conditions."
-            if esign_tags
-            else f"By signing below, the parties confirm acceptance of quotation {quote_reference}, "
-            "including its MTC term and call-off profile, subject to final commercial approval "
+            f"Acceptance: quotation {quote_reference}, its MTC term, call-off profile "
             "and the attached terms and conditions."
+            if esign_tags
+            else f"Acceptance: quotation {quote_reference}, its MTC term and call-off "
+            "profile, subject to final commercial approval and the attached terms and conditions."
         )
     else:
-        signature_intro = f"Signatures below record approval of quotation {quote_reference}."
+        signature_intro = f"Acceptance: quotation {quote_reference} and the attached terms."
     approval_summary = Table(
         [[Paragraph(f"{html.escape(signature_intro)}<br/>{rep_detail}", styles["Terms"])]],
         colWidths=[180 * mm],
@@ -699,9 +768,9 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     )
 
     card_row_heights = (
-        [5 * mm, 12 * mm, 7 * mm, 6 * mm, 6 * mm]
+        [3.5 * mm, 8 * mm, 5 * mm, 4.25 * mm, 4.25 * mm]
         if esign_tags
-        else [4.5 * mm, 8.5 * mm, 5 * mm, 4.5 * mm, 4.5 * mm]
+        else [3 * mm, 5.5 * mm, 3.5 * mm, 3 * mm, 3 * mm]
     )
 
     def signature_card(
@@ -762,7 +831,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     )
     story.extend(
         [
-            Spacer(1, 3 * mm),
+            Spacer(1, 2 * mm),
             KeepTogether([section("Notes"), notes_table]),
         ]
     )
@@ -771,18 +840,18 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         commercial_heading.extend([Spacer(1, 2 * mm), approval_notice])
     story.extend(
         [
-            Spacer(1, 1.5 * mm),
+            Spacer(1, 0.8 * mm),
             KeepTogether(commercial_heading),
-            Spacer(1, 1 * mm),
+            Spacer(1, 0.5 * mm),
             *[
                 Paragraph(f"- {html.escape(term)}", styles["Terms"])
                 for term in commercial_terms
             ],
-            Spacer(1, 1.5 * mm),
+            Spacer(1, 0.8 * mm),
             KeepTogether(
                 [
                     approval_summary,
-                    Spacer(1, 1 * mm),
+                    Spacer(1, 0.5 * mm),
                     signature_table,
                 ]
             ),

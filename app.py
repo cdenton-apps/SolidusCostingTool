@@ -406,7 +406,9 @@ def default_draft() -> dict[str, Any]:
         "machine_hours_per_1000": 0.0,
         "machine_time_source": "No BOM machine-time profile",
         "delivery_postcode": "",
+        "delivered_to": "",
         "delivery_method": "Haulier",
+        "incoterm": "DAP",
         "transport_service": "Economy",
         "transport_vendor_preference": "Cheapest available",
         "transport_vendor": "",
@@ -415,6 +417,8 @@ def default_draft() -> dict[str, Any]:
         "transport_manual_override": 0,
         "transport_total": 0.0,
         "spread_percent": 30.0,
+        "quote_currency": "GBP",
+        "eur_per_gbp": 1.17,
         "source_item_code": "",
         "based_on_existing_new_product": False,
         "catalogue_product": False,
@@ -437,12 +441,26 @@ def draft_flag(key: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def format_unit_price(value: Any) -> str:
+def currency_symbol(currency: Any = "GBP") -> str:
+    return "€" if str(currency or "GBP").upper() == "EUR" else "£"
+
+
+def format_unit_price(value: Any, currency: Any = "GBP") -> str:
     """Show every per-item amount to the agreed five decimal places."""
     try:
-        return f"£{float(value):,.5f}"
+        return f"{currency_symbol(currency)}{float(value):,.5f}"
     except (TypeError, ValueError):
         return "—"
+
+
+def quote_exchange_factor(draft: dict[str, Any] | None = None) -> float:
+    values = draft if draft is not None else st.session_state.get("draft", {})
+    if str(values.get("quote_currency", "GBP") or "GBP").upper() != "EUR":
+        return 1.0
+    try:
+        return max(0.0001, float(values.get("eur_per_gbp", 1.17) or 1.17))
+    except (TypeError, ValueError):
+        return 1.17
 
 
 def format_machine_duration(hours: Any, *, include_seconds: bool = False) -> str:
@@ -526,6 +544,8 @@ def traffic_override_basis(pricing: dict[str, float]) -> str:
         "selling_price_per_1000": float(
             pricing.get("selling_price_per_1000", 0) or 0
         ),
+        "quote_currency": st.session_state.draft.get("quote_currency", "GBP"),
+        "eur_per_gbp": quote_exchange_factor(),
         "spread_per_machine_hour": float(
             pricing.get("spread_per_machine_hour", 0) or 0
         ),
@@ -1142,11 +1162,16 @@ def render_specification(
                 getattr(st, notice[0])(notice[1])
 
     st.markdown("#### Required order details")
-    left, right = st.columns(2)
-    customer_name = left.text_input(
+    customer_col, delivered_col, postcode_col = st.columns([1.2, 1.2, 0.8])
+    customer_name = customer_col.text_input(
         "Customer *", value=str(draft.get("customer_name", ""))
     )
-    delivery_postcode = right.text_input(
+    delivered_to = delivered_col.text_input(
+        "Delivered to",
+        value=str(draft.get("delivered_to") or draft.get("customer_name", "")),
+        help="The site or customer name to show on the quotation.",
+    )
+    delivery_postcode = postcode_col.text_input(
         "Delivery postcode *", value=str(draft.get("delivery_postcode", ""))
     )
 
@@ -1347,6 +1372,7 @@ def render_specification(
             "comex_over_credit_limit": bool(over_credit_limit),
             "comex_poor_payment_history": bool(poor_payment_history),
             "delivery_postcode": delivery_postcode.strip().upper(),
+            "delivered_to": delivered_to.strip() or customer_name.strip(),
         }
         errors = validate_details(updated)
         if errors:
@@ -1565,6 +1591,21 @@ def render_costs(
         methods,
         index=methods.index(current_method) if current_method in methods else 0,
     )
+    incoterm_options = ["DAP", "EXW", "FCA"]
+    default_incoterm = "EXW" if delivery_method == "Customer collection" else "DAP"
+    current_incoterm = (
+        default_incoterm
+        if delivery_method != str(draft.get("delivery_method", "Haulier"))
+        else str(draft.get("incoterm", default_incoterm) or default_incoterm).upper()
+    )
+    if current_incoterm not in incoterm_options:
+        incoterm_options.append(current_incoterm)
+    incoterm = st.selectbox(
+        "Incoterm",
+        incoterm_options,
+        index=incoterm_options.index(current_incoterm),
+        help="DAP is the normal delivered basis. Use EXW for customer collection.",
+    )
 
     service = str(draft.get("transport_service", "Economy"))
     booking = str(draft.get("transport_booking", "Standard"))
@@ -1629,6 +1670,7 @@ def render_costs(
         updated = {
             **material_summary,
             "delivery_method": delivery_method,
+            "incoterm": incoterm,
             "transport_service": service,
             "transport_booking": booking,
             "transport_vendor_preference": vendor_preference,
@@ -1768,7 +1810,8 @@ def render_costs(
 def sync_selling_from_spread() -> None:
     try:
         pricing = price_from_spread_percent(
-            float(st.session_state.breakdown["pricing_base_per_1000"]),
+            float(st.session_state.breakdown["pricing_base_per_1000"])
+            * quote_exchange_factor(),
             float(st.session_state.spread_percent_input),
         )
         pricing = with_operational_spread(pricing)
@@ -1783,7 +1826,8 @@ def sync_selling_from_spread() -> None:
 def sync_spread_from_selling_price() -> None:
     try:
         pricing = spread_percent_from_price(
-            float(st.session_state.breakdown["pricing_base_per_1000"]),
+            float(st.session_state.breakdown["pricing_base_per_1000"])
+            * quote_exchange_factor(),
             float(st.session_state.selling_price_input),
         )
         pricing = with_operational_spread(pricing)
@@ -1876,7 +1920,38 @@ def render_pricing(
     else:
         st.caption("Enter either the spread or selling price. The other figure will update.")
 
-    pricing_base = float(breakdown["pricing_base_per_1000"])
+    currency_options = ["GBP", "EUR"]
+    current_currency = str(
+        st.session_state.draft.get("quote_currency", "GBP") or "GBP"
+    ).upper()
+    if current_currency not in currency_options:
+        current_currency = "GBP"
+    currency_col, exchange_col = st.columns(2)
+    quote_currency = currency_col.selectbox(
+        "Quotation currency",
+        currency_options,
+        index=currency_options.index(current_currency),
+        help="GBP is the normal currency. Choose EUR only when the quotation is to be raised in euros.",
+    )
+    eur_per_gbp = float(st.session_state.draft.get("eur_per_gbp", 1.17) or 1.17)
+    if quote_currency == "EUR":
+        eur_per_gbp = exchange_col.number_input(
+            "Conversion rate (EUR per GBP)",
+            min_value=0.0001,
+            value=max(0.0001, eur_per_gbp),
+            step=0.01,
+            format="%.4f",
+            help="This converts the GBP pricing base into EUR. Confirm the rate before issuing the quotation.",
+        )
+        exchange_col.caption("Internal costs and the £600/hour gate remain in GBP.")
+    else:
+        exchange_col.text_input("Conversion rate", value="Not required for GBP", disabled=True)
+        eur_per_gbp = 1.0
+    st.session_state.draft["quote_currency"] = quote_currency
+    st.session_state.draft["eur_per_gbp"] = eur_per_gbp
+    symbol = currency_symbol(quote_currency)
+    pricing_base_gbp = float(breakdown["pricing_base_per_1000"])
+    pricing_base = pricing_base_gbp * quote_exchange_factor()
     stored_pricing = st.session_state.get("pricing") or {}
     try:
         inputs_match_pricing = (
@@ -1900,7 +1975,8 @@ def render_pricing(
         "spread_per_machine_hour",
     }.issubset(stored_pricing)
     if (
-        st.session_state.get("pricing_base_for_inputs") != pricing_base
+        st.session_state.get("pricing_base_for_inputs")
+        != (pricing_base, quote_currency, round(eur_per_gbp, 8))
         or not stored_pricing
         or not pricing_is_complete
         or not inputs_match_pricing
@@ -1915,7 +1991,11 @@ def render_pricing(
         except ValueError:
             pricing = price_from_spread_percent(pricing_base, 0.0)
         pricing = with_operational_spread(pricing)
-        st.session_state.pricing_base_for_inputs = pricing_base
+        st.session_state.pricing_base_for_inputs = (
+            pricing_base,
+            quote_currency,
+            round(eur_per_gbp, 8),
+        )
         st.session_state.spread_percent_input = pricing["spread_percent"]
         st.session_state.selling_price_input = pricing[
             "selling_price_per_1000"
@@ -1934,7 +2014,7 @@ def render_pricing(
         on_change=sync_selling_from_spread,
     )
     right.number_input(
-        "Selling price per 1,000 (£)",
+        f"Selling price per 1,000 ({symbol})",
         min_value=0.01,
         step=1.0,
         format="%.2f",
@@ -1948,8 +2028,11 @@ def render_pricing(
     pricing = st.session_state.get("pricing")
     if pricing:
         pricing_cards = [
-            ("Selling price / 1,000", f"£{pricing['selling_price_per_1000']:,.2f}"),
-            ("Selling price / item", format_unit_price(pricing["selling_price_per_item"])),
+            ("Selling price / 1,000", f"{symbol}{pricing['selling_price_per_1000']:,.2f}"),
+            (
+                "Selling price / item",
+                format_unit_price(pricing["selling_price_per_item"], quote_currency),
+            ),
             ("Spread", f"{pricing['spread_percent']:,.2f}%"),
         ]
         if simple_mode:
@@ -1963,7 +2046,10 @@ def render_pricing(
             )
         if is_admin:
             pricing_cards.append(
-                ("Spread value / 1,000", f"£{pricing['spread_value_per_1000']:,.2f}")
+                (
+                    "Spread value / 1,000",
+                    f"{symbol}{pricing['spread_value_per_1000']:,.2f}",
+                )
             )
         show_detail_cards(pricing_cards)
         if not simple_mode:
@@ -2018,7 +2104,7 @@ def render_pricing(
             "Charge description", key="additional_charge_description"
         )
         tooling_middle.number_input(
-            "Charge (£)",
+            f"Charge ({symbol})",
             min_value=0.0,
             step=25.0,
             key="additional_charge_amount",
@@ -2468,12 +2554,20 @@ def render_save(
             ("Item", record["item_code"]),
             ("Quantity", f"{float(record['order_quantity']):,.0f}"),
             ("Fulfilment", record.get("fulfilment_type", "MTO")),
-            ("Sell / 1,000", f"£{record['selling_price_per_1000']:,.2f}"),
+            (
+                "Sell / 1,000",
+                f"{currency_symbol(record.get('quote_currency'))}"
+                f"{record['selling_price_per_1000']:,.2f}",
+            ),
         ]
         if is_admin:
             summary_cards.insert(
                 3,
-                ("Pricing base / 1,000", f"£{record['pricing_base_per_1000']:,.2f}"),
+                (
+                    "Pricing base / 1,000",
+                    f"{currency_symbol(record.get('quote_currency'))}"
+                    f"{record['pricing_base_per_1000'] * quote_exchange_factor(record):,.2f}",
+                ),
             )
         show_detail_cards(summary_cards)
         save_submitted = (
@@ -2655,6 +2749,7 @@ def render_history(
         "description",
         "fulfilment_type",
         "order_quantity",
+        "quote_currency",
         "selling_price_per_1000",
         "spread_percent",
         "spread_per_machine_hour",
@@ -2677,7 +2772,8 @@ def render_history(
             "created_at_utc": st.column_config.TextColumn("Saved"),
             "created_by_username": st.column_config.TextColumn("Username"),
             "pricing_base_per_1000": st.column_config.NumberColumn(format="£%.2f"),
-            "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
+            "quote_currency": st.column_config.TextColumn("Currency"),
+            "selling_price_per_1000": st.column_config.NumberColumn(format="%.2f"),
             "spread_percent": st.column_config.NumberColumn(format="%.2f%%"),
             "order_quantity": st.column_config.NumberColumn(format="%.0f"),
             "traffic_light_status": st.column_config.TextColumn("Check"),
@@ -2711,7 +2807,10 @@ def render_history(
                 ("Quantity", f"{float(selected_record.get('order_quantity', 0)):,.0f}"),
                 (
                     "Selling / item",
-                    format_unit_price(selected_record.get("selling_price_per_item")),
+                    format_unit_price(
+                        selected_record.get("selling_price_per_item"),
+                        selected_record.get("quote_currency", "GBP"),
+                    ),
                 ),
             ]
         )
@@ -2779,6 +2878,7 @@ def render_team_history(repository: CsvRepository, is_admin: bool) -> None:
         "customer_name",
         "fulfilment_type",
         "order_quantity",
+        "quote_currency",
         "selling_price_per_1000",
         "spread_percent",
         "spread_per_machine_hour",
@@ -2797,7 +2897,8 @@ def render_team_history(repository: CsvRepository, is_admin: bool) -> None:
             "created_at_utc": st.column_config.TextColumn("Saved"),
             "created_by_username": st.column_config.TextColumn("Username"),
             "created_by_name": st.column_config.TextColumn("Name"),
-            "selling_price_per_1000": st.column_config.NumberColumn(format="£%.2f"),
+            "quote_currency": st.column_config.TextColumn("Currency"),
+            "selling_price_per_1000": st.column_config.NumberColumn(format="%.2f"),
             "spread_percent": st.column_config.NumberColumn(format="%.2f%%"),
             "spread_per_machine_hour": st.column_config.NumberColumn(format="£%.2f"),
             "traffic_light_status": st.column_config.TextColumn("Check"),
@@ -3365,9 +3466,21 @@ def render_admin_dashboard(
     if not isinstance(foc, pd.Series):
         foc = pd.Series(bool(foc), index=work.index)
     foc = foc.fillna(False).astype(bool)
-    work["quoted_value"] = (
+    quote_currency = work.get("quote_currency", "GBP")
+    if not isinstance(quote_currency, pd.Series):
+        quote_currency = pd.Series(str(quote_currency or "GBP"), index=work.index)
+    quote_currency = quote_currency.fillna("GBP").astype(str).str.upper()
+    eur_per_gbp = pd.to_numeric(work.get("eur_per_gbp", 1.0), errors="coerce")
+    if not isinstance(eur_per_gbp, pd.Series):
+        eur_per_gbp = pd.Series(float(eur_per_gbp or 1.0), index=work.index)
+    eur_per_gbp = eur_per_gbp.fillna(1.0).where(lambda values: values.gt(0), 1.0)
+    work["quoted_value_in_quote_currency"] = (
         work["selling_price_per_1000"] * work["order_quantity"] / 1_000
         + work["additional_charge_amount"].where(~foc, 0)
+    )
+    work["quoted_value"] = work["quoted_value_in_quote_currency"].where(
+        quote_currency.ne("EUR"),
+        work["quoted_value_in_quote_currency"] / eur_per_gbp,
     )
     traffic = work["traffic_light_status"].fillna("").astype(str).str.lower()
     override = work["traffic_override_approved"].fillna(False).astype(bool)

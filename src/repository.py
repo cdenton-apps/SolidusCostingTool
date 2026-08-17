@@ -75,7 +75,9 @@ SPECIFICATION_COLUMNS = [
     "estimated_delivery_count",
     "pallet_holding_charge_per_pallet_per_week",
     "delivery_postcode",
+    "delivered_to",
     "delivery_method",
+    "incoterm",
     "transport_service",
     "transport_vendor_preference",
     "transport_vendor",
@@ -88,6 +90,8 @@ SPECIFICATION_COLUMNS = [
     "comex_strategic_customer",
     "comex_over_credit_limit",
     "comex_poor_payment_history",
+    "quote_currency",
+    "eur_per_gbp",
 ]
 
 COST_INPUT_COLUMNS = [

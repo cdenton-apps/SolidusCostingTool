@@ -34,6 +34,9 @@ def test_quote_and_sage_exports() -> None:
         "transport_service": "Economy",
         "transport_booking": "AM/PM",
         "delivery_postcode": "BD20 0AA",
+        "delivered_to": "Hilton Meats",
+        "incoterm": "DAP",
+        "quote_currency": "GBP",
         "product_group": "Finished goods",
         "manufacturing_site": 101,
         "net_mass_kg": 0.6,
@@ -66,7 +69,7 @@ def test_quote_and_sage_exports() -> None:
     assert "0.1234567" not in quote_text
     assert "Quotation date" in quote_text
     assert "11/08/2026" in quote_text
-    assert "10/09/2026" in quote_text
+    assert "11/11/2026" in quote_text
     assert "PRIVATE AND CONFIDENTIAL" in quote_text
     assert "Engine Shed Lane" in quote_text
     assert "NOTES" in quote_text
@@ -74,6 +77,14 @@ def test_quote_and_sage_exports() -> None:
     assert "4-15614/" not in quote_text
     assert "4-15614" in quote_text
     assert "attached Solidus General Terms and Conditions" in quote_text
+    assert "Delivered to Hilton Meats" in normalised_quote_text
+    assert "GBP / DAP" in normalised_quote_text
+    assert "exclusive of VAT and based on DAP Incoterms" in normalised_quote_text
+    assert "thirty (30) days after the invoice date" in normalised_quote_text
+    assert "Lead time will be confirmed upon acceptance" in normalised_quote_text
+    assert "prevail in the event of any conflict" in normalised_quote_text
+    assert "valid until 11/11/2026" in normalised_quote_text
+    assert "Delivery dates will be confirmed upon receipt and acceptance" in normalised_quote_text
     assert (
         "THIS QUOTATION IS GENERATED FROM THE COSTING TOOL AND REMAINS SUBJECT TO FINAL COMMERCIAL APPROVAL."
         in normalised_quote_text
@@ -82,7 +93,7 @@ def test_quote_and_sage_exports() -> None:
         "THIS QUOTATION IS GENERATED"
     )
     assert "General Terms and Condition of Sale" in terms_text
-    assert "acceptance of quotation Q-TEST" in normalised_quote_text
+    assert "Acceptance: quotation Q-TEST" in normalised_quote_text
     assert "Sales Representative" in quote_text
     assert "Customer" in quote_text
     assert "Sales Director or delegated individual" in quote_text
@@ -159,3 +170,36 @@ def test_one_off_costs_show_foc_separately_from_unit_prices() -> None:
     assert len(pages) == 4
     assert "PRICE Per 1,000 £100.00 Per item £0.10000 ONE-OFF COSTS" in text
     assert "Forme / Stereo FOC" in text
+
+
+def test_euro_quote_uses_euro_values_and_currency_terms() -> None:
+    pdf = quote_pdf(
+        {
+            "quote_reference": "1001-1",
+            "created_at_utc": "2026-08-14T09:30:00+00:00",
+            "customer_name": "European Customer",
+            "delivered_to": "European Customer, Rotterdam",
+            "item_code": "BOX-EUR",
+            "description": "Euro quotation test item",
+            "order_quantity": 1_000,
+            "order_pallets": 1,
+            "fulfilment_type": "MTO",
+            "quote_currency": "EUR",
+            "eur_per_gbp": 1.17,
+            "incoterm": "DAP",
+            "selling_price_per_1000": 1_170,
+            "selling_price_per_item": 1.17,
+            "additional_charge_description": "Die forme",
+            "additional_charge_amount": 292.50,
+        }
+    )
+    text = " ".join(
+        " ".join(page.extract_text().split())
+        for page in PdfReader(BytesIO(pdf)).pages[:-3]
+    )
+
+    assert "€1,170.00" in text
+    assert "€1.17000" in text
+    assert "Die forme €292.50" in text
+    assert "EUR / DAP" in text
+    assert "prices are in EUR, exclusive of VAT" in text
