@@ -47,7 +47,8 @@ def test_quote_and_sage_exports() -> None:
         "pallet_quantity": 1000,
         "board_width_mm": 620,
         "board_length_mm": 850,
-        "board_code": "4-15614/",
+        "board_code": "BRD001/101/NPL/1250G/WT/BT/",
+        "material": "BOM-defined materials",
         "number_of_colours": 901,
         "fsc": "FSC Mix",
         "notes": "Customer artwork approval is required before manufacture.",
@@ -74,8 +75,11 @@ def test_quote_and_sage_exports() -> None:
     assert "Engine Shed Lane" in quote_text
     assert "NOTES" in quote_text
     assert "Customer artwork approval is required" in quote_text
-    assert "4-15614/" not in quote_text
-    assert "4-15614" in quote_text
+    assert "BRD001/101/NPL/1250G/WT/BT/" not in quote_text
+    assert "BRD001/101/NPL/1250G/WT/BT" in quote_text
+    assert "WT/BT / 1,250 GSM" in normalised_quote_text
+    assert "BOM-defined materials" not in quote_text
+    assert "Product group" not in quote_text
     assert "attached Solidus General Terms and Conditions" in quote_text
     assert "Delivered to Hilton Meats" in normalised_quote_text
     assert "Currency / delivery basis GBP / DAP" in normalised_quote_text
