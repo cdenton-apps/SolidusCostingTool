@@ -117,6 +117,17 @@ def _unit_money(value: Any, currency: Any = "GBP") -> str:
         return "—"
 
 
+def _board_material(board_code: Any, fallback: Any = "") -> str:
+    """Return the material suffix that follows the GSM part of a board code."""
+    parts = [part.strip() for part in str(board_code or "").strip("/").split("/")]
+    for index, part in enumerate(parts):
+        if re.fullmatch(r"\d+(?:\.\d+)?G(?:SM)?", part, flags=re.IGNORECASE):
+            material_parts = [value for value in parts[index + 1 :] if value]
+            if material_parts:
+                return "/".join(material_parts)
+    return str(fallback or "").strip()
+
+
 def _append_terms(quotation: bytes) -> bytes:
     if not TERMS_PATH.exists():
         return quotation
@@ -331,6 +342,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     def details_table(rows: list[tuple[str, Any]]) -> Table:
         data: list[list[Any]] = []
         spans: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
+        full_width_value_rows: list[int] = []
         pending: tuple[str, Any] | None = None
         full_width_labels = {"Description", "Planned call-off"}
         for label, value in rows:
@@ -349,7 +361,9 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                 data.append(
                     [paragraph(label, "CellLabel"), paragraph(value), "", ""]
                 )
-                spans.append(("SPAN", (1, len(data) - 1), (3, len(data) - 1)))
+                row_index = len(data) - 1
+                spans.append(("SPAN", (1, row_index), (3, row_index)))
+                full_width_value_rows.append(row_index)
             elif pending is None:
                 pending = (label, value)
             else:
@@ -373,6 +387,10 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             style=[
                 ("BACKGROUND", (0, 0), (0, -1), PALE),
                 ("BACKGROUND", (2, 0), (2, -1), PALE),
+                *[
+                    ("BACKGROUND", (1, row), (3, row), colors.white)
+                    for row in full_width_value_rows
+                ],
                 ("GRID", (0, 0), (-1, -1), 0.3, GREY),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 7),
@@ -491,7 +509,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         if all(value > 0 for value in board_dimensions)
         else "Not specified"
     )
-    material = str(record.get("material", "") or "").strip()
+    material = _board_material(record.get("board_code"), record.get("material"))
     gsm = _number(record.get("board_gsm"))
     material_grade = " / ".join(
         value for value in [material, f"{gsm:,.0f} GSM" if gsm > 0 else ""] if value
@@ -509,8 +527,9 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ("Print colours", _print_colours(record.get("number_of_colours"))),
         ("FSC", record.get("fsc")),
         ("Net mass / item", net_mass_display),
-        ("Product group", record.get("product_group")),
     ]
+    if len(technical_items) % 2:
+        technical_items.append(("", ""))
     technical_rows: list[list[Paragraph]] = []
     for index in range(0, len(technical_items), 2):
         left_label, left_value = technical_items[index]
@@ -519,8 +538,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             [
                 paragraph(left_label, "CellLabel"),
                 paragraph(left_value),
-                paragraph(right_label, "CellLabel"),
-                paragraph(right_value),
+                paragraph(right_label, "CellLabel") if right_label else "",
+                paragraph(right_value) if right_label else "",
             ]
         )
     technical_table = Table(
@@ -553,7 +572,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     additional_foc = bool(record.get("additional_charge_foc", False))
     price_card = Table(
         price_rows,
-        colWidths=[45 * mm, 42 * mm],
+        colWidths=[46 * mm, 44 * mm],
+        rowHeights=[6 * mm, 6.5 * mm, 6.5 * mm],
         style=[
             ("SPAN", (0, 0), (1, 0)),
             ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
@@ -580,7 +600,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                     ),
                 ],
             ],
-            colWidths=[45 * mm, 42 * mm],
+            colWidths=[46 * mm, 44 * mm],
+            rowHeights=[6 * mm, 6.5 * mm],
             style=[
                 ("SPAN", (0, 0), (1, 0)),
                 ("BACKGROUND", (0, 0), (-1, 0), PALE),
@@ -609,10 +630,11 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             [paragraph("Booking", "CellLabel"), paragraph(booking)],
             [paragraph("Profile", "CellLabel"), paragraph(delivery_profile)],
         ],
-        colWidths=[34 * mm, 53 * mm],
+        colWidths=[35 * mm, 55 * mm],
+        rowHeights=[6 * mm, 6.5 * mm, 6.5 * mm, 6.5 * mm, 6.5 * mm],
         style=[
             ("SPAN", (0, 0), (1, 0)),
-            ("BACKGROUND", (0, 0), (-1, 0), PALE),
+            ("BACKGROUND", (0, 0), (-1, 0), YELLOW),
             ("GRID", (0, 0), (-1, -1), 0.3, GREY),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
@@ -667,6 +689,21 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ],
     )
 
+    left_price_cards: list[list[Any]] = [[price_card]]
+    if one_off_card is not None:
+        left_price_cards.extend([[Spacer(1, 2 * mm)], [one_off_card]])
+    price_stack = Table(
+        left_price_cards,
+        colWidths=[90 * mm],
+        style=[
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ],
+    )
+
     story = [header, Spacer(1, 1 * mm), section("Quote details"), details_table(order_rows)]
     story.extend(
         [
@@ -675,15 +712,15 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             technical_table,
             Spacer(1, 1 * mm),
             Table(
-                [[
-                    [price_card, Spacer(1, 2 * mm), one_off_card]
-                    if one_off_card is not None
-                    else price_card,
-                    "",
-                    delivery_card,
-                ]],
-                colWidths=[87 * mm, 6 * mm, 87 * mm],
-                style=[("VALIGN", (0, 0), (-1, -1), "TOP")],
+                [[price_stack, delivery_card]],
+                colWidths=[90 * mm, 90 * mm],
+                style=[
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ],
             ),
         ]
     )
