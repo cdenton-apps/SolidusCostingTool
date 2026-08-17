@@ -380,7 +380,7 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
                 valid = bool(entry) and _verify_configured_password(password, entry)
             if valid and matched_key:
                 user = _authenticated_user(str(matched_key), entry)
-                st.session_state.authenticated_user = {
+                authenticated_user = {
                     "username": user.username,
                     "email": user.email,
                     "name": user.name,
@@ -393,6 +393,10 @@ def require_user(repository: Any | None = None) -> AuthenticatedUser:
                     "database_backed": database_users,
                     "last_auth_check_monotonic": time.monotonic(),
                 }
+                # Never allow a quotation left in this browser by a previous
+                # login to cross into the newly authenticated account.
+                st.session_state.clear()
+                st.session_state.authenticated_user = authenticated_user
                 st.rerun()
             if locked:
                 st.error(
@@ -426,13 +430,13 @@ def sign_out_button(repository: Any | None = None) -> None:
     if mode == "oidc" and st.button("Sign out", width="stretch"):
         if repository is not None:
             repository.end_session(st.session_state.get("app_session_id", ""))
+        st.session_state.clear()
         st.logout()
     if mode == "password" and st.button("Sign out", width="stretch"):
         if repository is not None:
             repository.end_session(st.session_state.get("app_session_id", ""))
-        st.session_state.pop("authenticated_user", None)
-        st.session_state.pop("app_session_id", None)
-        st.session_state.pop("app_signed_in_at", None)
-        st.session_state.pop("app_last_activity_at", None)
-        st.session_state.pop("app_active_seconds", None)
+        # A browser can be used by more than one salesperson in turn. Clear the
+        # whole Streamlit session so the next account cannot inherit an
+        # unfinished quotation, customer details or widget values.
+        st.session_state.clear()
         st.rerun()

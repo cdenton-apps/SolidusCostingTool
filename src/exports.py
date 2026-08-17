@@ -389,6 +389,12 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     if quote_currency not in {"GBP", "EUR"}:
         quote_currency = "GBP"
     incoterm = str(record.get("incoterm", "DAP") or "DAP").upper()
+    collected = (
+        str(record.get("delivery_method", "Haulier") or "Haulier")
+        == "Customer collection"
+        or incoterm == "EXW"
+    )
+    delivery_basis = "Collected" if collected else "DAP"
     delivered_to = str(
         record.get("delivered_to") or record.get("customer_name") or ""
     ).strip()
@@ -404,13 +410,17 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ("Fulfilment", fulfilment_label),
         ("Order / agreement quantity", f"{_number(record.get('order_quantity')):,.0f} units"),
         ("Equivalent pallets", f"{_number(record.get('order_pallets')):,.0f}"),
-        ("Currency / Incoterm", f"{quote_currency} / {incoterm}"),
+        ("Currency / delivery basis", f"{quote_currency} / {delivery_basis}"),
     ]
     quotation_date = _uk_datetime(record.get("created_at_utc"))
     valid_until = _uk_date_after_months(record.get("created_at_utc"), 3)
     commercial_terms: list[str] = [
         "This quotation supplements the attached Solidus General Terms and Conditions of Sale and Delivery, which form part of this quotation and prevail in the event of any conflict.",
-        f"Unless otherwise agreed in writing, prices are in {quote_currency}, exclusive of VAT and based on {incoterm} Incoterms.",
+        (
+            f"Unless otherwise agreed in writing, prices are in {quote_currency}, exclusive of VAT and are based on customer collection; delivery is not included."
+            if collected
+            else f"Unless otherwise agreed in writing, prices are in {quote_currency}, exclusive of VAT and based on DAP Incoterms."
+        ),
         "All payments must be made within thirty (30) days after the invoice date, unless another payment term has been agreed in writing by Solidus in an order confirmation, sales agreement or service level agreement.",
         "Lead time will be confirmed upon acceptance of a valid purchase order and remains subject to change.",
         (

@@ -109,15 +109,14 @@ The commercial check uses the following rules:
 - **Red:** below £600 spread per machine hour or below 25% spread.
 
 A red costing is blocked. If an administrator is already signed in, they can
-enter a reason and approve it directly. If an ordinary user is signed in, an
-administrator can enter their own username and password on the red warning,
-along with the reason, without signing the user out. The password is checked
-against Streamlit Secrets and is never saved in costing history. The saved
-revision records the original red result, reason, approver and approval time.
+enter a reason and approve it directly. An ordinary user sends the exact red
+costing to the Neon approval queue. An administrator can approve or decline it
+from **Admin tools** in their own account, and the user can then refresh the
+status without sharing a browser or password. The saved revision records the
+original red result, reason, approver and approval time.
 Changing the price or spread cancels the approval and requires another review.
 The high-volume bands use the same recorded admin route when a red result needs
-to proceed; no extra discount is applied. Neon now provides the shared database,
-so a multi-user approval queue can be added as a later workflow change.
+to proceed; no extra discount is applied.
 
 ## Run it locally
 
@@ -353,10 +352,12 @@ is kept in the commercial terms. For MTC, any holding rate entered is shown as
 final contract.
 
 GBP remains the normal quotation currency. EUR can be selected at the pricing
-stage with an explicit EUR-per-GBP conversion rate. Material, transport and the
-spread-per-hour gate remain based on GBP costs; only the customer quotation
-values are converted. The quotation also records the delivery destination and
-Incoterm. Its commercial terms state that prices exclude VAT, payment is due
+stage. The app retrieves the latest available ECB GBP-to-EUR reference rate
+through Frankfurter and caches it for one hour; users do not type the rate.
+Material, transport and the spread-per-hour gate remain based on GBP costs;
+only the customer quotation values are converted. Delivery is DAP by default.
+Tick **Collected** when the customer will collect and delivery should be
+excluded. The commercial terms state that prices exclude VAT, payment is due
 within 30 days unless agreed otherwise, lead time is confirmed when a valid
 purchase order is accepted, and the quotation remains valid for three months.
 

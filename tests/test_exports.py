@@ -78,7 +78,7 @@ def test_quote_and_sage_exports() -> None:
     assert "4-15614" in quote_text
     assert "attached Solidus General Terms and Conditions" in quote_text
     assert "Delivered to Hilton Meats" in normalised_quote_text
-    assert "GBP / DAP" in normalised_quote_text
+    assert "Currency / delivery basis GBP / DAP" in normalised_quote_text
     assert "exclusive of VAT and based on DAP Incoterms" in normalised_quote_text
     assert "thirty (30) days after the invoice date" in normalised_quote_text
     assert "Lead time will be confirmed upon acceptance" in normalised_quote_text
@@ -201,5 +201,33 @@ def test_euro_quote_uses_euro_values_and_currency_terms() -> None:
     assert "€1,170.00" in text
     assert "€1.17000" in text
     assert "Die forme €292.50" in text
-    assert "EUR / DAP" in text
+    assert "Currency / delivery basis EUR / DAP" in text
     assert "prices are in EUR, exclusive of VAT" in text
+
+
+def test_collected_quote_excludes_delivery_wording() -> None:
+    pdf = quote_pdf(
+        {
+            "quote_reference": "1002-1",
+            "created_at_utc": "2026-08-17T09:30:00+00:00",
+            "customer_name": "Collection Customer",
+            "item_code": "BOX-COLLECT",
+            "description": "Collected quotation test item",
+            "order_quantity": 1_000,
+            "order_pallets": 1,
+            "fulfilment_type": "MTO",
+            "quote_currency": "GBP",
+            "delivery_method": "Customer collection",
+            "incoterm": "EXW",
+            "selling_price_per_1000": 500,
+            "selling_price_per_item": 0.5,
+        }
+    )
+    text = " ".join(
+        " ".join(page.extract_text().split())
+        for page in PdfReader(BytesIO(pdf)).pages[:-3]
+    )
+
+    assert "Currency / delivery basis GBP / Collected" in text
+    assert "based on customer collection; delivery is not included" in text
+    assert "based on EXW Incoterms" not in text

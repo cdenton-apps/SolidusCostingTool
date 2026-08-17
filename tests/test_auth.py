@@ -287,8 +287,10 @@ def test_password_login_rejects_wrong_password_and_accepts_valid_user() -> None:
     _widget(app.button, "Admin tools").click().run()
     assert "Admin tools" in [item.value for item in app.header]
 
+    app.session_state["draft"] = {"customer_name": "Must not cross accounts"}
     _widget(app.button, "Sign out").click().run()
     assert "authenticated_user" not in app.session_state
+    assert "draft" not in app.session_state
     assert _widget(app.text_input, "Username")
 
 
