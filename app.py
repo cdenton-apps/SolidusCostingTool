@@ -50,6 +50,7 @@ from src.repository import (
     CsvRepository,
     RepositoryBusyError,
     SPECIFICATION_COLUMNS,
+    board_fit_units,
     data_directory,
 )
 from src.signatures import (
@@ -431,6 +432,11 @@ def default_draft() -> dict[str, Any]:
         "other_components_cost_per_1000": 0.0,
         "component_template_item_code": "",
         "units_out": 1.0,
+        "new_board_required": 0,
+        "new_board_item_code": "",
+        "new_board_material_spec": "",
+        "new_board_price_per_tonne": 0.0,
+        "print_operations_included": 0,
         "material_cost_source": "",
         "machine_hours_per_1000": 0.0,
         "machine_time_source": "No BOM machine-time profile",
@@ -617,7 +623,14 @@ def reset_downstream() -> None:
     st.session_state.pop("customer_item_customer_code", None)
     st.session_state.pop("customer_item_print_number", None)
     for key in list(st.session_state):
-        if key.startswith("spec_board_") or key in {"spec_fsc", "board_lookup_notice"}:
+        if key.startswith("spec_board_") or key in {
+            "spec_fsc",
+            "spec_new_board",
+            "spec_new_board_item_code",
+            "spec_new_board_material_spec",
+            "board_lookup_notice",
+            "board_fit_suggestion",
+        }:
             st.session_state.pop(key, None)
 
 
@@ -803,6 +816,9 @@ def start_from_selected_product(
         draft["spread_percent"] = selected["spread_percent"]
     draft["source_item_code"] = selected.get("item_code", "")
     draft["based_on_existing_new_product"] = as_new_product
+    if as_new_product:
+        draft["bom_available"] = 0
+        draft["component_template_item_code"] = selected.get("item_code", "")
     st.session_state.draft = clean_record(draft)
     reset_downstream()
     navigate_to(1)
@@ -1239,6 +1255,60 @@ def fill_board_details(repository: CsvRepository) -> None:
     )
 
 
+def use_existing_board_suggestion(board: dict[str, Any]) -> None:
+    """Apply a fit-checked board without losing the rest of the draft."""
+
+    st.session_state.spec_new_board = False
+    st.session_state.spec_board_code = str(
+        board.get("resolved_article_no", "") or ""
+    ).rstrip("/")
+    st.session_state.spec_board_gsm = float(board.get("effective_gsm", 0) or 0)
+    st.session_state.spec_board_width = float(
+        board.get("effective_width_mm", 0) or 0
+    )
+    st.session_state.spec_board_length = float(
+        board.get("effective_length_mm", 0) or 0
+    )
+    st.session_state.spec_fsc = str(board.get("fsc", "") or "")
+    st.session_state.draft.update(
+        {
+            "board_item_code": str(board.get("board_item_code", "") or ""),
+            "board_code": st.session_state.spec_board_code,
+            "board_gsm": st.session_state.spec_board_gsm,
+            "board_width_mm": st.session_state.spec_board_width,
+            "board_length_mm": st.session_state.spec_board_length,
+            "fsc": st.session_state.spec_fsc,
+            "new_board_required": 0,
+            "new_board_item_code": "",
+            "new_board_material_spec": "",
+            "new_board_price_per_tonne": 0.0,
+        }
+    )
+
+
+def prepare_new_board_entry() -> None:
+    """Clear an unsuitable board and open a clean new-board entry."""
+
+    st.session_state.spec_new_board = True
+    st.session_state.spec_board_code = ""
+    st.session_state.spec_board_width = 0.0
+    st.session_state.spec_board_length = 0.0
+    st.session_state.spec_new_board_item_code = ""
+    st.session_state.spec_new_board_material_spec = ""
+    st.session_state.draft.update(
+        {
+            "board_item_code": "",
+            "board_code": "",
+            "board_width_mm": 0.0,
+            "board_length_mm": 0.0,
+            "new_board_required": 1,
+            "new_board_item_code": "",
+            "new_board_material_spec": "",
+            "new_board_price_per_tonne": 0.0,
+        }
+    )
+
+
 def render_specification(
     repository: CsvRepository,
     simple_mode: bool = False,
@@ -1254,9 +1324,22 @@ def render_specification(
         "spec_board_width": draft_number("board_width_mm"),
         "spec_board_length": draft_number("board_length_mm"),
         "spec_fsc": str(draft.get("fsc", "")),
+        "spec_new_board": draft_flag("new_board_required"),
+        "spec_new_board_item_code": str(draft.get("new_board_item_code", "")),
+        "spec_new_board_material_spec": str(
+            draft.get("new_board_material_spec", "")
+        ),
     }
     for key, value in board_widget_defaults.items():
         st.session_state.setdefault(key, value)
+    new_board_required = bool(st.session_state.get("spec_new_board", False))
+    new_board_item_code = str(
+        st.session_state.get("spec_new_board_item_code", "") or ""
+    )
+    new_board_material_spec = str(
+        st.session_state.get("spec_new_board_material_spec", "") or ""
+    )
+    board_fit_count = 0
     if existing_item:
         st.markdown(
             '<div class="status-card"><strong>'
@@ -1412,10 +1495,13 @@ def render_specification(
 
         col1, col2 = st.columns(2)
         board_code = col1.text_input(
-            "Board code", key="spec_board_code", disabled=simple_mode
+            "Board code",
+            key="spec_board_code",
+            disabled=simple_mode,
+            help="Mill or article code. A trailing slash is not needed.",
         )
         fsc = col2.text_input("FSC", key="spec_fsc", disabled=simple_mode)
-        if not existing_item:
+        if not existing_item and not new_board_required:
             st.button(
                 "Fill board details from code",
                 on_click=fill_board_details,
@@ -1424,6 +1510,109 @@ def render_specification(
             notice = st.session_state.get("board_lookup_notice")
             if notice:
                 getattr(st, notice[0])(notice[1])
+
+        if not existing_item:
+            st.markdown("#### Board fit")
+            board_fit_count = board_fit_units(
+                length_mm,
+                width_mm,
+                board_length_mm,
+                board_width_mm,
+            )
+            if length_mm > 0 and width_mm > 0 and board_fit_count:
+                fit_word = "two units" if board_fit_count == 2 else "one unit"
+                st.success(
+                    f"{fit_word.capitalize()} fit on the current board sheet with "
+                    "a 10 mm edge and separation margin. Length and width are "
+                    "checked both ways round."
+                )
+            elif length_mm > 0 and width_mm > 0 and not new_board_required:
+                suitable = repository.fitting_boards(
+                    finished_length_mm=length_mm,
+                    finished_width_mm=width_mm,
+                    board_gsm=board_gsm,
+                    manufacturing_site=str(draft.get("manufacturing_site", "")),
+                )
+                if not suitable.empty:
+                    st.warning(
+                        "The current board does not fit this size with the 10 mm "
+                        "margin. Choose a suitable stock board below or enter a new one."
+                    )
+                    candidate_labels: dict[int, str] = {}
+                    for candidate_index, candidate in suitable.iterrows():
+                        price_value = pd.to_numeric(
+                            candidate.get("price_per_tonne", 0), errors="coerce"
+                        )
+                        price = (
+                            float(price_value) if pd.notna(price_value) else 0.0
+                        )
+                        price_text = (
+                            f"£{price:,.2f}/tonne"
+                            if price > 0
+                            else "price required"
+                        )
+                        candidate_labels[candidate_index] = (
+                            f"{int(candidate['fit_units'])}-up · "
+                            f"{candidate['board_item_code']} · "
+                            f"{float(candidate['effective_width_mm']):,.0f} × "
+                            f"{float(candidate['effective_length_mm']):,.0f} mm · "
+                            f"{price_text}"
+                        )
+                    candidate_index = st.selectbox(
+                        "Suitable existing boards",
+                        options=list(candidate_labels),
+                        format_func=candidate_labels.get,
+                    )
+                    candidate = clean_record(suitable.loc[candidate_index].to_dict())
+                    fit_columns = st.columns(2)
+                    fit_columns[0].button(
+                        "Use this board",
+                        on_click=use_existing_board_suggestion,
+                        args=(candidate,),
+                        width="stretch",
+                    )
+                    fit_columns[1].button(
+                        "Enter a new board instead",
+                        on_click=prepare_new_board_entry,
+                        width="stretch",
+                    )
+                else:
+                    st.error(
+                        "No existing board of the required GSM fits this size with "
+                        "the 10 mm margin. Enter a new board."
+                    )
+                    st.button(
+                        "Enter a new board",
+                        on_click=prepare_new_board_entry,
+                    )
+
+            new_board_required = bool(st.session_state.get("spec_new_board", False))
+            if new_board_required:
+                st.info(
+                    "This board is not in the current stock list. Enter its Sage "
+                    "stock code and material specification; its price is entered "
+                    "on the next page."
+                )
+                new_code_col, material_col = st.columns(2)
+                new_board_item_code = new_code_col.text_input(
+                    "New board Sage item code *",
+                    key="spec_new_board_item_code",
+                    placeholder="For example BRD001/101/NPL/1000G/WW",
+                )
+                new_board_material_spec = material_col.text_input(
+                    "Board material specification *",
+                    key="spec_new_board_material_spec",
+                    placeholder="For example WT/BT",
+                )
+                st.caption(
+                    "Use the plain-board stock code here. Printed routing is only "
+                    "included when a print colour code is entered."
+                )
+                if board_fit_count == 0 and board_width_mm > 0 and board_length_mm > 0:
+                    st.error(
+                        "The new board dimensions still do not fit one finished unit "
+                        "with the 10 mm margin."
+                    )
 
     st.markdown("#### Required order details")
     customer_col, postcode_col = st.columns([1.4, 1.0])
@@ -1594,6 +1783,35 @@ def render_specification(
             item_code = customer_specific_item_code(
                 item_code, customer_code, print_number
             )
+        if not existing_item:
+            board_fit_count = board_fit_units(
+                length_mm,
+                width_mm,
+                board_length_mm,
+                board_width_mm,
+            )
+            if board_fit_count == 0:
+                st.error(
+                    "Enter board dimensions that fit at least one finished unit "
+                    "with the 10 mm margin."
+                )
+                return
+            if new_board_required and not new_board_item_code.strip():
+                st.error("Enter the new board's Sage item code.")
+                return
+            if new_board_required and not new_board_material_spec.strip():
+                st.error("Enter the new board's material specification, for example WT/BT.")
+                return
+        resolved_board_item_code = str(draft.get("board_item_code", "") or "")
+        if not existing_item and not new_board_required and board_code.strip():
+            resolved_board = repository.find_board_by_code(
+                board_code,
+                manufacturing_site=str(draft.get("manufacturing_site", "")),
+            )
+            if resolved_board is not None:
+                resolved_board_item_code = str(
+                    resolved_board.get("board_item_code", "") or ""
+                )
         updated = {
             **draft,
             "customer_name": customer_name.strip(),
@@ -1613,6 +1831,25 @@ def render_specification(
             "number_of_colours": number_of_colours,
             "board_code": board_code.strip(),
             "fsc": fsc.strip(),
+            "board_item_code": (
+                new_board_item_code.strip().upper()
+                if new_board_required
+                else resolved_board_item_code
+            ),
+            "units_out": float(board_fit_count or draft_number("units_out", 1)),
+            "new_board_required": int(new_board_required),
+            "new_board_item_code": (
+                new_board_item_code.strip().upper() if new_board_required else ""
+            ),
+            "new_board_material_spec": (
+                new_board_material_spec.strip().upper() if new_board_required else ""
+            ),
+            "new_board_price_per_tonne": (
+                draft_number("new_board_price_per_tonne")
+                if new_board_required
+                else 0.0
+            ),
+            "print_operations_included": int(int(number_of_colours) > 0),
             "fulfilment_type": fulfilment_type,
             "quantity_input_mode": quantity_input_mode,
             "order_pallets": int(order_pallets),
@@ -1671,56 +1908,163 @@ def render_costs(
         st.info(
             "Choose the board and, if needed, a comparable BOM for the other components."
         )
-        board_catalog = repository.load_priced_board_catalog().copy()
-        required_gsm = draft_number("board_gsm")
-        if required_gsm > 0:
-            matching_gsm = board_catalog[
-                pd.to_numeric(board_catalog["effective_gsm"], errors="coerce").eq(
-                    required_gsm
+        new_board_required = draft_flag("new_board_required")
+        manual_board: dict[str, Any] | None = None
+        selected_board_code = ""
+        board_price_override = 0.0
+        board_catalog = repository.load_board_catalog().copy()
+
+        if new_board_required:
+            selected_board_code = str(draft.get("new_board_item_code", "") or "")
+            board_price_override = st.number_input(
+                "New board price (£ per tonne) *",
+                min_value=0.0,
+                value=max(0.0, draft_number("new_board_price_per_tonne")),
+                step=1.0,
+                help="Enter the current plain-board price. This is stored with the costing, not added to the master price list.",
+            )
+            material_spec = str(draft.get("new_board_material_spec", "") or "")
+            manual_board = {
+                "board_width_mm": draft_number("board_width_mm"),
+                "board_length_mm": draft_number("board_length_mm"),
+                "board_gsm": draft_number("board_gsm"),
+                "board_code": str(draft.get("board_code", "") or ""),
+                "material_spec": material_spec,
+                "board_item_name": (
+                    f"BOARD{draft_number('board_width_mm'):,.0f}X"
+                    f"{draft_number('board_length_mm'):,.0f}/"
+                    f"{draft_number('board_gsm'):,.0f}GSM/{material_spec}"
+                ).replace(",", ""),
+            }
+            selected_board = pd.Series(
+                {
+                    "board_item_code": selected_board_code,
+                    "effective_gsm": draft_number("board_gsm"),
+                    "effective_width_mm": draft_number("board_width_mm"),
+                    "effective_length_mm": draft_number("board_length_mm"),
+                    "resolved_article_no": str(draft.get("board_code", "") or ""),
+                    "price_per_tonne": board_price_override,
+                }
+            )
+            show_detail_cards(
+                [
+                    ("New board", selected_board_code or "Code required"),
+                    (
+                        "Sheet",
+                        f"{draft_number('board_width_mm'):,.0f} × "
+                        f"{draft_number('board_length_mm'):,.0f} mm",
+                    ),
+                    ("GSM", f"{draft_number('board_gsm'):,.0f}"),
+                    ("Material", material_spec or "Required"),
+                ]
+            )
+        else:
+            required_gsm = draft_number("board_gsm")
+            if required_gsm > 0:
+                matching_gsm = board_catalog[
+                    pd.to_numeric(
+                        board_catalog["effective_gsm"], errors="coerce"
+                    ).eq(required_gsm)
+                ]
+                if not matching_gsm.empty:
+                    board_catalog = matching_gsm
+            site = str(draft.get("manufacturing_site", "")).split(".")[0]
+            if site:
+                matching_site = board_catalog[
+                    board_catalog["board_item_code"].astype(str).str.contains(
+                        f"/{site}/", regex=False
+                    )
+                ]
+                if not matching_site.empty:
+                    board_catalog = matching_site
+            board_catalog = board_catalog.sort_values(
+                ["effective_gsm", "board_item_code"]
+            ).drop_duplicates("board_item_code")
+            board_labels = {}
+            for _, row in board_catalog.iterrows():
+                price_value = pd.to_numeric(
+                    row.get("price_per_tonne", 0), errors="coerce"
                 )
-            ]
-            if not matching_gsm.empty:
-                board_catalog = matching_gsm
-        site = str(draft.get("manufacturing_site", "")).split(".")[0]
-        if site:
-            matching_site = board_catalog[
-                board_catalog["board_item_code"].astype(str).str.contains(
-                    f"/{site}/", regex=False
-                )
-            ]
-            if not matching_site.empty:
-                board_catalog = matching_site
-        board_catalog = board_catalog.sort_values(
-            ["effective_gsm", "board_item_code"]
-        ).drop_duplicates("board_item_code")
-        board_labels = {
-            str(row["board_item_code"]): (
-                f"{row['board_item_code']} — {row.get('board_item_name', '')}"
-                + (
-                    f" — {float(row['price_per_tonne']):,.0f} £/tonne"
-                    if is_admin
+                price = float(price_value) if pd.notna(price_value) else 0.0
+                price_text = (
+                    f" — £{price:,.0f}/tonne"
+                    if is_admin and price > 0
+                    else " — price required"
+                    if price <= 0
                     else ""
                 )
+                board_labels[str(row["board_item_code"])] = (
+                    f"{row['board_item_code']} — {row.get('board_item_name', '')}"
+                    f"{price_text}"
+                )
+            board_options = ["", *board_labels]
+            current_board = str(draft.get("board_item_code", ""))
+            selected_board_code = st.selectbox(
+                "Board item *",
+                board_options,
+                index=board_options.index(current_board)
+                if current_board in board_options
+                else 0,
+                format_func=lambda value: board_labels.get(
+                    value, "Choose a board item"
+                ),
             )
-            for _, row in board_catalog.iterrows()
-        }
-        board_options = ["", *board_labels]
-        current_board = str(draft.get("board_item_code", ""))
-        selected_board_code = st.selectbox(
-            "Board item *",
-            board_options,
-            index=board_options.index(current_board)
-            if current_board in board_options
-            else 0,
-            format_func=lambda value: board_labels.get(value, "Choose a board item"),
+            if selected_board_code:
+                selected_board = board_catalog[
+                    board_catalog["board_item_code"]
+                    .astype(str)
+                    .eq(selected_board_code)
+                ].iloc[0]
+                board_price_value = pd.to_numeric(
+                    selected_board.get("price_per_tonne", 0), errors="coerce"
+                )
+                board_price = (
+                    float(board_price_value) if pd.notna(board_price_value) else 0.0
+                )
+                if board_price <= 0:
+                    board_price_override = st.number_input(
+                        "Board price (£ per tonne) *",
+                        min_value=0.0,
+                        value=max(
+                            0.0,
+                            draft_number("new_board_price_per_tonne"),
+                        ),
+                        step=1.0,
+                        help="This stock board has dimensions but no current price. Enter its plain-board price to continue.",
+                    )
+
+        maximum_fit = board_fit_units(
+            draft_number("length_mm"),
+            draft_number("width_mm"),
+            float(selected_board.get("effective_length_mm", 0) or 0)
+            if selected_board is not None
+            else draft_number("board_length_mm"),
+            float(selected_board.get("effective_width_mm", 0) or 0)
+            if selected_board is not None
+            else draft_number("board_width_mm"),
         )
-        units_out = st.number_input(
-            "Finished units out per board sheet *",
-            min_value=0.01,
-            value=max(0.01, draft_number("units_out", 1)),
-            step=1.0,
-            help="For example, enter 2 when one board sheet makes two finished items.",
-        )
+        if maximum_fit:
+            fit_options = list(range(1, maximum_fit + 1))
+            preferred_fit = min(
+                maximum_fit,
+                max(1, int(draft_number("units_out", maximum_fit))),
+            )
+            units_out = float(
+                st.selectbox(
+                    "Finished units out per board sheet *",
+                    fit_options,
+                    index=fit_options.index(preferred_fit),
+                    help="The available values have been checked against the board dimensions with a 10 mm margin.",
+                )
+            )
+        else:
+            units_out = st.number_input(
+                "Finished units out per board sheet *",
+                min_value=0.01,
+                value=max(0.01, draft_number("units_out", 1)),
+                step=1.0,
+                help="Return to the product details and enter a board that fits the finished size.",
+            )
 
         templates = repository.load_current_items()
         templates = templates[
@@ -1750,14 +2094,17 @@ def render_costs(
         )
         if selected_board_code and selected_template:
             template_code = "" if selected_template == "__NONE__" else selected_template
-            material_result = repository.new_item_material_breakdown(
-                selected_board_code,
-                units_out=units_out,
-                component_template_item_code=template_code,
-            )
-            selected_board = board_catalog[
-                board_catalog["board_item_code"].astype(str).eq(selected_board_code)
-            ].iloc[0]
+            try:
+                material_result = repository.new_item_material_breakdown(
+                    selected_board_code,
+                    units_out=units_out,
+                    component_template_item_code=template_code,
+                    board_price_per_tonne=board_price_override or None,
+                    manual_board=manual_board,
+                    number_of_colours=int(draft_number("number_of_colours")),
+                )
+            except ValueError as exc:
+                st.warning(str(exc))
 
     if not simple_mode:
         st.markdown("#### Material setup")
@@ -1765,6 +2112,18 @@ def render_costs(
     if material_result is not None:
         material_summary = material_result["summary"]
         material_lines = material_result["lines"]
+        if not float(draft.get("bom_available", 0) or 0):
+            if int(draft_number("number_of_colours")) > 0:
+                st.caption(
+                    "The plain board is used for material cost. The comparable "
+                    "BOM's printed-board route and print machine time are included "
+                    "because a print colour code has been entered."
+                )
+            else:
+                st.caption(
+                    "The plain board is used for material cost. Printed-board and "
+                    "print operations are left out because no print colour code was entered."
+                )
         if is_admin:
             show_detail_cards(
                 [
@@ -3064,6 +3423,7 @@ def render_save(
         )
         st.info(
             "The Sage download uses the standard 72-column stock import layout. "
+            "A new plain board is included as a second row when one was entered. "
             "Check the account and product fields before importing."
         )
         next_column += 1
