@@ -518,7 +518,11 @@ def format_machine_duration(hours: Any, *, include_seconds: bool = False) -> str
     return " ".join(parts)
 
 
-def show_detail_cards(items: list[tuple[str, Any]]) -> None:
+def show_detail_cards(
+    items: list[tuple[str, Any]],
+    *,
+    container: Any = None,
+) -> None:
     """Show product facts without Streamlit metric's one-line truncation."""
     cards = "".join(
         '<div class="detail-card">'
@@ -527,7 +531,10 @@ def show_detail_cards(items: list[tuple[str, Any]]) -> None:
         "</div>"
         for label, value in items
     )
-    st.markdown(f'<div class="detail-grid">{cards}</div>', unsafe_allow_html=True)
+    target = container or st
+    target.markdown(
+        f'<div class="detail-grid">{cards}</div>', unsafe_allow_html=True
+    )
 
 
 def with_operational_spread(pricing: dict[str, float]) -> dict[str, float]:
@@ -612,6 +619,26 @@ def reset_downstream() -> None:
     for key in list(st.session_state):
         if key.startswith("spec_board_") or key in {"spec_fsc", "board_lookup_notice"}:
             st.session_state.pop(key, None)
+
+
+def clear_costing_workflow() -> None:
+    """Clear one browser's costing without signing the user out.
+
+    A deliberate allow-list protects authentication, navigation and activity
+    tracking. Everything else on the costing page is discarded so Streamlit
+    widget values cannot leak into the next quotation.
+    """
+    protected_keys = {
+        "authenticated_user",
+        "login_notice",
+        "main_navigation",
+    }
+    for key in list(st.session_state):
+        if key in protected_keys or key.startswith("app_"):
+            continue
+        st.session_state.pop(key, None)
+    st.session_state.step = 0
+    st.session_state.workflow_notice = "The previous costing has been cleared."
 
 
 def navigate_to(step: int) -> None:
@@ -816,9 +843,12 @@ def render_select(
         catalog = catalog.sort_values("item_code").reset_index(drop=True)
         with st.expander("Help me find a product (beta)"):
             st.caption(
-                "Enter the specification you need. This searches usable products "
-                "with costing BOMs and puts the closest sizes first. Check the "
-                "differences before choosing one."
+                "Use any details you know. Blank fields are ignored. This searches "
+                "usable products with costing BOMs and puts the closest matches first."
+            )
+            st.caption(
+                "Length and width are interchangeable, so enter them in whichever "
+                "order is most natural for the product."
             )
             with st.form("product_finder_beta"):
                 finder_type, finder_coating = st.columns(2)
@@ -868,56 +898,67 @@ def render_select(
                 matches = pd.DataFrame(match_records)
 
                 def signed_difference(value: Any) -> str:
-                    number = float(value or 0)
+                    number = pd.to_numeric(value, errors="coerce")
+                    if pd.isna(number):
+                        return "—"
                     return f"{number:+,.0f}"
 
-                display_matches = pd.DataFrame(
-                    {
-                        "Item": matches["item_code"],
-                        "Description": matches["description"],
-                        "Type": matches["suggested_form"],
-                        "Coating": matches["suggested_coating"],
-                        "Size": matches.apply(
-                            lambda row: (
-                                f"{float(row['length_mm']):,.0f} × "
-                                f"{float(row['width_mm']):,.0f} × "
-                                f"{float(row['height_mm']):,.0f} mm"
-                            ),
-                            axis=1,
-                        ),
-                        "GSM": matches["board_gsm"],
-                        "Difference": matches.apply(
-                            lambda row: (
-                                f"L {signed_difference(row['difference_length_mm'])} · "
-                                f"W {signed_difference(row['difference_width_mm'])} · "
-                                f"H {signed_difference(row['difference_height_mm'])} mm · "
-                                f"GSM {signed_difference(row['difference_board_gsm'])}"
-                            ),
-                            axis=1,
-                        ),
-                    }
-                )
-                st.dataframe(
-                    display_matches,
-                    hide_index=True,
-                    width="stretch",
-                    column_config={
-                        "Description": st.column_config.TextColumn(width="large"),
-                        "GSM": st.column_config.NumberColumn(format="%.0f"),
-                    },
-                )
-                suggestion_labels = {
-                    str(row["item_code"]): (
-                        f"{row['item_code']} — {str(row.get('description', ''))[:90]}"
+                def measurement(value: Any) -> str:
+                    number = pd.to_numeric(value, errors="coerce")
+                    return "—" if pd.isna(number) else f"{number:,.0f}"
+                has_measurement = any(
+                    value > 0
+                    for value in (
+                        requested_length,
+                        requested_width,
+                        requested_height,
+                        requested_gsm,
                     )
-                    for _, row in matches.iterrows()
-                }
-                suggested_code = st.selectbox(
-                    "Choose from these matches",
-                    list(suggestion_labels),
-                    format_func=suggestion_labels.get,
                 )
-                if st.button("Use this product", width="stretch"):
+
+                def quality(distance: Any) -> str:
+                    if not has_measurement:
+                        return "🔵 Filter match"
+                    number = float(distance or 0)
+                    if number <= 0.05:
+                        return "🟢 Very close"
+                    if number <= 0.15:
+                        return "🟡 Close"
+                    return "🟠 Wider difference"
+
+                suggestion_labels = {}
+                for _, row in matches.iterrows():
+                    code = str(row["item_code"])
+                    size = (
+                        f"{measurement(row['length_mm'])} × "
+                        f"{measurement(row['width_mm'])} × "
+                        f"{measurement(row['height_mm'])} mm"
+                    )
+                    differences = (
+                        f"sides {signed_difference(row['difference_length_mm'])} / "
+                        f"{signed_difference(row['difference_width_mm'])}, "
+                        f"height {signed_difference(row['difference_height_mm'])} mm, "
+                        f"GSM {signed_difference(row['difference_board_gsm'])}"
+                    )
+                    suggestion_labels[code] = (
+                        f"{quality(row['match_distance'])} · {code} — "
+                        f"{str(row.get('description', ''))[:75]} · {size} · "
+                        f"{measurement(row['board_gsm'])} GSM · difference: {differences}"
+                    )
+                suggestion_codes = {
+                    label: code for code, label in suggestion_labels.items()
+                }
+                selected_label = st.radio(
+                    "Select a matching product",
+                    list(suggestion_codes),
+                    index=None,
+                )
+                suggested_code = suggestion_codes.get(selected_label)
+                if st.button(
+                    "Use selected product",
+                    width="stretch",
+                    disabled=suggested_code is None,
+                ):
                     selected_rows = catalog.index[
                         catalog["item_code"].astype(str).eq(suggested_code)
                     ].tolist()
@@ -926,8 +967,7 @@ def render_select(
                         st.rerun()
             elif find_matches:
                 st.warning(
-                    "No usable products match those type and coating choices. "
-                    "Try a wider selection."
+                    "No usable products match those details. Try fewer filters."
                 )
         labels = {
             index: (
@@ -2121,7 +2161,7 @@ def render_pricing(
     st.subheader("Set spread or selling price")
     st.session_state.setdefault("additional_charge_description", "Forme / Stereo")
     st.session_state.setdefault("additional_charge_amount", 0.0)
-    st.session_state.setdefault("additional_charge_foc", False)
+    st.session_state.setdefault("additional_charge_foc", True)
     breakdown = st.session_state.breakdown
     if is_admin:
         show_cost_breakdown(breakdown)
@@ -2437,7 +2477,7 @@ def current_record() -> dict[str, Any]:
             "additional_charge_amount", 0.0
         ),
         "additional_charge_foc": st.session_state.get(
-            "additional_charge_foc", False
+            "additional_charge_foc", True
         ),
     }
     if record["additional_charge_foc"]:
@@ -3079,7 +3119,7 @@ def load_saved_costing(record: dict[str, Any]) -> None:
         record.get("additional_charge_amount", 0) or 0
     )
     st.session_state.additional_charge_foc = bool(
-        record.get("additional_charge_foc", False)
+        record.get("additional_charge_foc", True)
     )
     st.session_state.workflow_notice = (
         f"Loaded {record.get('costing_id', 'saved costing')} revision "
@@ -4178,26 +4218,30 @@ def render_multi_item_quote(
         st.session_state.step = 0
         st.rerun()
 
-    st.markdown("#### Customer and delivery")
-    customer_col, postcode_col = st.columns([1.4, 1.0])
-    customer_name = customer_col.text_input("Customer *", key="multi_customer_name")
-    delivery_postcode = postcode_col.text_input(
+    details_tab, delivery_tab, pricing_tab, save_tab = st.tabs(
+        ["Quote details", "Delivery", "Price & approval", "Save & send"],
+        key="multi_quote_tabs",
+    )
+
+    details_tab.markdown("#### Customer")
+    customer_name = details_tab.text_input("Customer *", key="multi_customer_name")
+    delivery_tab.markdown("#### Delivery")
+    delivery_postcode = delivery_tab.text_input(
         "Delivery postcode *", key="multi_delivery_postcode"
     )
-    fulfilment_col, delivery_mode_col = st.columns(2)
-    fulfilment_type = fulfilment_col.radio(
+    fulfilment_type = details_tab.radio(
         "Fulfilment type",
         ["MTO", "MTC"],
         horizontal=True,
         key="multi_fulfilment_type",
     )
-    delivery_mode = delivery_mode_col.radio(
+    delivery_mode = delivery_tab.radio(
         "Items will be",
         MULTI_DELIVERY_MODES,
         horizontal=True,
         key="multi_delivery_mode",
     )
-    st.caption(
+    delivery_tab.caption(
         "Delivered together combines all item pallets before splitting the movement "
         "into trailers of up to 26 pallets. Delivered separately prices every item "
         "as its own movement."
@@ -4207,7 +4251,7 @@ def render_multi_item_quote(
     pallets_per_delivery = 0
     holding_charge = 0.0
     if fulfilment_type == "MTC":
-        term_col, calloff_col, holding_col = st.columns(3)
+        term_col, calloff_col, holding_col = delivery_tab.columns(3)
         agreement_term_months = int(
             term_col.number_input(
                 "Agreement term (months)",
@@ -4236,7 +4280,7 @@ def render_multi_item_quote(
             )
         )
 
-    collected = st.checkbox(
+    collected = delivery_tab.checkbox(
         "Collected",
         key="multi_collected",
         help="Tick when the customer will collect. Otherwise the quotation is DAP.",
@@ -4245,7 +4289,7 @@ def render_multi_item_quote(
     transport_booking = "AM/PM"
     vendor_preference = "Cheapest available"
     if not collected:
-        transport_columns = st.columns(3 if is_admin else 2)
+        transport_columns = delivery_tab.columns(3 if is_admin else 2)
         transport_service = transport_columns[0].selectbox(
             "Service", ["Economy", "Next Day"], index=1, key="multi_service"
         )
@@ -4259,7 +4303,7 @@ def render_multi_item_quote(
                 key="multi_vendor_preference",
             )
 
-    with st.expander("Customer considerations"):
+    with details_tab.expander("Customer considerations"):
         factor_columns = st.columns(4)
         factor_columns[0].checkbox(
             "Consistent Payer", key="multi_comex_consistent_payer"
@@ -4274,7 +4318,7 @@ def render_multi_item_quote(
             "Poor Payment History", key="multi_comex_poor_payment_history"
         )
 
-    currency_col, rate_col = st.columns(2)
+    currency_col, rate_col = details_tab.columns(2)
     quote_currency = currency_col.selectbox(
         "Quotation currency", ["GBP", "EUR"], key="multi_quote_currency"
     )
@@ -4292,30 +4336,56 @@ def render_multi_item_quote(
     else:
         rate_col.caption("Prices will be shown in GBP.")
 
-    st.markdown("#### Items")
+    details_tab.markdown("#### Items")
     line_inputs: list[dict[str, Any]] = []
     for index, product in enumerate(products):
         st.session_state.setdefault(
             f"multi_description_{index}", str(product.get("description", ""))
         )
-        st.session_state.setdefault(f"multi_quantity_{index}", 0.0)
+        st.session_state.setdefault(f"multi_quantity_mode_{index}", "Units")
+        st.session_state.setdefault(f"multi_quantity_units_{index}", 0.0)
+        st.session_state.setdefault(f"multi_quantity_pallets_{index}", 0)
         st.session_state.setdefault(f"multi_annual_{index}", 0.0)
-        with st.container(border=True):
+        with details_tab.container(border=True):
             st.markdown(f"**{product.get('item_code', '')}**")
             description = st.text_input(
                 "Description",
                 key=f"multi_description_{index}",
                 label_visibility="collapsed",
             )
-            quantity_col, annual_col, pallet_col = st.columns(3)
-            quantity = float(
-                quantity_col.number_input(
-                    "Order quantity (units)",
-                    min_value=0.0,
-                    step=1_000.0,
-                    key=f"multi_quantity_{index}",
-                )
+            mode_col, quantity_col = st.columns(2)
+            quantity_mode = mode_col.selectbox(
+                "Enter order quantity as",
+                ["Units", "Pallets"],
+                key=f"multi_quantity_mode_{index}",
             )
+            per_pallet = float(product.get("pallet_quantity", 0) or 0)
+            if quantity_mode == "Pallets":
+                entered_pallets = int(
+                    quantity_col.number_input(
+                        "Order quantity (pallets)",
+                        min_value=0,
+                        step=1,
+                        key=f"multi_quantity_pallets_{index}",
+                    )
+                )
+                pallets = entered_pallets
+                quantity = entered_pallets * per_pallet if per_pallet > 0 else 0.0
+            else:
+                quantity = float(
+                    quantity_col.number_input(
+                        "Order quantity (units)",
+                        min_value=0.0,
+                        step=1_000.0,
+                        key=f"multi_quantity_units_{index}",
+                    )
+                )
+                pallets = (
+                    math.ceil(quantity / per_pallet)
+                    if quantity > 0 and per_pallet > 0
+                    else 0
+                )
+            annual_col, pallet_col, units_col = st.columns(3)
             annual = float(
                 annual_col.number_input(
                     "Annual volume (units)",
@@ -4324,12 +4394,12 @@ def render_multi_item_quote(
                     key=f"multi_annual_{index}",
                 )
             )
-            per_pallet = float(product.get("pallet_quantity", 0) or 0)
-            pallets = math.ceil(quantity / per_pallet) if quantity > 0 and per_pallet > 0 else 0
             pallet_col.metric("Equivalent pallets", f"{pallets:,}")
+            units_col.metric("Units per pallet", f"{per_pallet:,.0f}")
             line_inputs.append(
                 {
                     "description": description,
+                    "quantity_input_mode": quantity_mode,
                     "order_quantity": quantity,
                     "annual_volume_units": annual,
                     "pallet_count": pallets,
@@ -4372,7 +4442,7 @@ def render_multi_item_quote(
         st.session_state.pop("multi_last_saved", None)
         st.session_state.pop("multi_saved_fingerprint", None)
 
-    calculate_multi = st.button(
+    calculate_multi = pricing_tab.button(
         "Calculate item pricing",
         type="primary",
         width="stretch",
@@ -4393,7 +4463,7 @@ def render_multi_item_quote(
                 errors.append(f"Check the pallet quantity for {product.get('item_code', '')}.")
         if errors:
             for error in errors:
-                st.error(error)
+                pricing_tab.error(error)
         else:
             try:
                 transport = (
@@ -4496,31 +4566,37 @@ def render_multi_item_quote(
                 }
                 st.session_state.multi_item_input_basis = multi_input_basis
             except (TransportLookupError, ValueError) as exc:
-                st.error(str(exc))
+                pricing_tab.error(str(exc))
             else:
                 st.rerun()
 
     breakdowns = list(st.session_state.get("multi_item_breakdowns", []) or [])
     line_values = list(st.session_state.get("multi_item_line_values", []) or [])
     if len(breakdowns) != len(products) or len(line_values) != len(products):
+        pricing_tab.info(
+            "Complete the Quote details and Delivery tabs, then calculate the item pricing."
+        )
+        save_tab.info("Calculate the item pricing before saving the quotation.")
         return
 
     transport = dict(st.session_state.get("multi_item_transport", {}) or {})
-    st.info(
+    pricing_tab.info(
         f"Transport: {transport.get('delivery_count', 0):,} delivery event(s), "
         f"{transport.get('load_count', 0):,} trailer load(s), "
         f"£{float(transport.get('total_cost', 0) or 0):,.2f} total."
     )
     if is_admin and transport.get("vendors"):
-        st.caption("Internal haulier selection: " + ", ".join(transport["vendors"]))
+        pricing_tab.caption(
+            "Internal haulier selection: " + ", ".join(transport["vendors"])
+        )
 
     symbol = currency_symbol(quote_currency)
     line_records: list[dict[str, Any]] = []
     statuses: list[str] = []
-    st.markdown("#### Price and traffic light by item")
+    pricing_tab.markdown("#### Price and traffic light by item")
     for index, (values, breakdown) in enumerate(zip(line_values, breakdowns)):
         base = float(st.session_state.multi_item_price_bases[index])
-        with st.container(border=True):
+        with pricing_tab.container(border=True):
             st.markdown(f"**{values.get('item_code', '')}** — {values.get('description', '')}")
             spread_col, price_col = st.columns(2)
             spread_col.number_input(
@@ -4562,14 +4638,17 @@ def render_multi_item_quote(
                     ("Spread", f"{pricing['spread_percent']:.2f}%"),
                     ("Spread / machine hour", f"£{operational['spread_per_machine_hour']:,.2f}"),
                     ("Traffic light", traffic["status"].upper()),
-                ]
+                ],
+                container=pricing_tab,
             )
             if traffic["status"] == "red":
-                st.error("RED — Sales Director or delegated individual signature is required.")
+                pricing_tab.error(
+                    "RED — Sales Director or delegated individual signature is required."
+                )
             elif traffic["status"] == "amber":
-                st.warning("AMBER — review this item before continuing.")
+                pricing_tab.warning("AMBER — review this item before continuing.")
             else:
-                st.success("GREEN — this item meets both commercial targets.")
+                pricing_tab.success("GREEN — this item meets both commercial targets.")
             line_records.append(
                 {
                     **values,
@@ -4586,39 +4665,42 @@ def render_multi_item_quote(
 
     overall_status = _overall_traffic_status(statuses)
     if overall_status == "red":
-        st.error(
+        pricing_tab.error(
             "Overall route: RED. The salesperson's saved signature will be shown; "
             "the Sales Director or delegated individual will sign first because at "
             "least one item is red."
         )
     elif overall_status == "amber":
-        st.warning(
+        pricing_tab.warning(
             "Overall route: AMBER. After the warning is acknowledged, the "
             "salesperson's saved signature will be applied and only the Customer "
             "will be asked to sign."
         )
     else:
-        st.success(
+        pricing_tab.success(
             "Overall route: GREEN. The salesperson's saved signature will be applied "
             "and only the Customer will be asked to sign."
         )
 
     amber_acknowledged = True
     if overall_status == "amber":
-        amber_acknowledged = st.checkbox(
+        amber_acknowledged = pricing_tab.checkbox(
             "I have reviewed the amber item(s).",
             key="multi_amber_acknowledged",
         )
 
-    st.markdown("#### Save and send")
-    contact_col, email_col = st.columns(2)
+    save_tab.markdown("#### Save and send")
+    contact_col, email_col = save_tab.columns(2)
     customer_contact = contact_col.text_input(
         "Customer contact", key="multi_customer_contact"
     )
     customer_email = email_col.text_input("Customer email", key="multi_customer_email")
-    customer_role = st.text_input("Customer role", key="multi_customer_role")
-    notes = st.text_area("Quote notes", key="multi_quote_notes", height=90)
-    charge_columns = st.columns([2, 1, 1])
+    customer_role = save_tab.text_input("Customer role", key="multi_customer_role")
+    notes = save_tab.text_area("Quote notes", key="multi_quote_notes", height=90)
+    st.session_state.setdefault("multi_charge_description", "Forme / Stereo")
+    st.session_state.setdefault("multi_charge_amount", 0.0)
+    st.session_state.setdefault("multi_charge_foc", True)
+    charge_columns = save_tab.columns([2, 1, 1])
     charge_description = charge_columns[0].text_input(
         "One-off charge description", key="multi_charge_description"
     )
@@ -4628,6 +4710,7 @@ def render_multi_item_quote(
             min_value=0.0,
             step=25.0,
             key="multi_charge_amount",
+            disabled=bool(st.session_state.multi_charge_foc),
         )
     )
     charge_foc = charge_columns[2].checkbox("FOC", key="multi_charge_foc")
@@ -4648,7 +4731,8 @@ def render_multi_item_quote(
             ("Total pallets", sum(int(line["pallet_count"]) for line in line_records)),
             ("Quote value", f"{symbol}{quoted_value:,.2f}"),
             ("Annual revenue", f"{symbol}{annual_revenue:,.2f}"),
-        ]
+        ],
+        container=save_tab,
     )
 
     common = dict(st.session_state.get("multi_item_common", {}) or {})
@@ -4692,7 +4776,7 @@ def render_multi_item_quote(
         "quote_revision": st.session_state.get("quote_revision", ""),
     }
 
-    save_multi = st.button(
+    save_multi = save_tab.button(
         "Save multi-item quotation",
         type="primary",
         width="stretch",
@@ -4714,14 +4798,16 @@ def render_multi_item_quote(
                 user_name=user_name,
             )
         except RepositoryBusyError as exc:
-            st.error(str(exc))
+            save_tab.error(str(exc))
         else:
             st.session_state.multi_last_saved = saved
             st.session_state.quote_reference = saved.get("quote_reference", "")
             st.session_state.quote_number = saved.get("quote_number", "")
             st.session_state.quote_revision = saved.get("quote_revision", "")
             st.session_state.multi_saved_fingerprint = saved_revision_fingerprint(saved)
-            st.success(f"Saved multi-item quotation {saved['quote_reference']}.")
+            save_tab.success(
+                f"Saved multi-item quotation {saved['quote_reference']}."
+            )
             st.rerun()
 
     saved = st.session_state.get("multi_last_saved")
@@ -4730,26 +4816,27 @@ def render_multi_item_quote(
         not saved
         or st.session_state.get("multi_saved_fingerprint") != current_fingerprint
     ):
-        st.warning(
+        save_tab.warning(
             "Save this exact revision before downloading or sending it. "
             "If any item, quantity or price changes, save again."
         )
         return
-    st.markdown("#### Downloads")
-    st.download_button(
+    save_tab.markdown("#### Downloads")
+    save_tab.download_button(
         "Customer quote PDF",
         data=quote_pdf(with_sales_rep_signature(repository, saved)),
         file_name=f"{saved.get('quote_reference') or 'multi-item-quote'}.pdf",
         mime="application/pdf",
         width="stretch",
     )
-    render_esign_test(
-        repository,
-        saved,
-        user_username=user_username,
-        user_email=user_email,
-        user_name=user_name,
-    )
+    with save_tab:
+        render_esign_test(
+            repository,
+            saved,
+            user_username=user_username,
+            user_email=user_email,
+            user_name=user_name,
+        )
 
 
 def render_workflow(
@@ -4776,6 +4863,26 @@ def render_workflow(
     workflow_notice = st.session_state.pop("workflow_notice", None)
     if workflow_notice:
         st.success(workflow_notice)
+    costing_in_progress = bool(
+        st.session_state.get("draft")
+        or st.session_state.get("multi_item_mode")
+        or int(st.session_state.get("step", 0) or 0) > 0
+    )
+    if costing_in_progress:
+        _, restart = st.columns([5, 1])
+        with restart.popover("Start again", use_container_width=True):
+            st.caption(
+                "This clears the current item, customer, quantities and prices. "
+                "Saved quotations stay in My costings."
+            )
+            if st.button(
+                "Clear current costing",
+                type="primary",
+                width="stretch",
+                key="clear_current_costing",
+            ):
+                clear_costing_workflow()
+                st.rerun()
     if st.session_state.get("multi_item_mode"):
         render_multi_item_quote(
             repository,
