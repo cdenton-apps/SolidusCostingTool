@@ -307,7 +307,11 @@ def test_standard_user_sees_existing_products_only() -> None:
     app.run()
 
     assert _widget(app.selectbox, "Search existing products")
-    assert all(item.label != "Costing route" for item in app.radio)
+    costing_route = _widget(app.radio, "Costing route")
+    assert list(costing_route.options) == [
+        "Existing product",
+        "Multiple existing products",
+    ]
     assert _widget(app.button, "Costing workflow")
     assert all(item.label != "Team history" for item in app.button)
     assert all(item.label != "Create new product" for item in app.button)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import logging
 import math
@@ -197,6 +198,12 @@ HISTORY_COLUMNS = [
     "esign_approved_by_name",
     "esign_approved_by_email",
     "esign_approved_at_utc",
+    "esign_internal_signer_role",
+    "is_multi_item_quote",
+    "quote_items",
+    "multi_delivery_mode",
+    "quoted_value",
+    "annual_revenue",
     *SPECIFICATION_COLUMNS,
     *COST_INPUT_COLUMNS,
     *CALCULATION_COLUMNS,
@@ -1358,10 +1365,10 @@ class CsvRepository:
             "pallet_holding_charge_per_pallet_per_week": 0.0,
             "delivery_postcode": "",
             "delivery_method": "Haulier",
-            "transport_service": "Economy",
+            "transport_service": "Next Day",
             "transport_vendor_preference": "Cheapest available",
             "transport_vendor": "",
-            "transport_booking": "Standard",
+            "transport_booking": "AM/PM",
             "transport_rate_zone": "",
             "transport_manual_override": 0,
             "machine_hours_per_1000": 0.0,
@@ -1388,6 +1395,20 @@ class CsvRepository:
         if not self.history_path.exists() or self.history_path.stat().st_size == 0:
             return pd.DataFrame(columns=HISTORY_COLUMNS)
         history = pd.read_csv(self.history_path)
+        if "quote_items" in history:
+            def parse_quote_items(value: Any) -> list[dict[str, Any]]:
+                if isinstance(value, list):
+                    return value
+                text = str(value or "").strip()
+                if not text or text.lower() == "nan":
+                    return []
+                try:
+                    parsed = ast.literal_eval(text)
+                except (SyntaxError, ValueError):
+                    return []
+                return parsed if isinstance(parsed, list) else []
+
+            history["quote_items"] = history["quote_items"].map(parse_quote_items)
         for column in HISTORY_COLUMNS:
             if column not in history:
                 history[column] = None
@@ -1990,6 +2011,7 @@ class CsvRepository:
             "esign_is_declined", "esign_signers", "esign_test_mode",
             "esign_approved_by_username", "esign_approved_by_name",
             "esign_approved_by_email", "esign_approved_at_utc",
+            "esign_internal_signer_role",
         }
         update = {
             key: self._json_ready(value)

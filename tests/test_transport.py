@@ -53,6 +53,43 @@ def test_multiple_loads_and_booking_surcharge(rate_table: HaulierRateTable) -> N
     assert mcdowells.total_cost == pytest.approx(234)
 
 
+@pytest.mark.parametrize(
+    ("pallets", "expected_loads", "expected_full_loads", "remainder"),
+    [
+        (26, 1, 1, 0),
+        (27, 2, 1, 1),
+        (52, 2, 2, 0),
+        (53, 3, 2, 1),
+    ],
+)
+def test_full_loads_are_split_at_26_pallets(
+    rate_table: HaulierRateTable,
+    pallets: int,
+    expected_loads: int,
+    expected_full_loads: int,
+    remainder: int,
+) -> None:
+    quotes = rate_table.quote_options(
+        postcode="BD20 0AA",
+        pallet_count=pallets,
+        service="Next Day",
+        booking="AM/PM",
+    )
+    joda = next(quote for quote in quotes if quote.vendor == "Joda")
+
+    assert joda.load_count == expected_loads
+    assert joda.booking_surcharge == pytest.approx(7 * expected_loads)
+    joda_rates = rate_table.rates.loc[
+        (rate_table.rates["zone"] == "BD")
+        & (rate_table.rates["service"] == "Next Day")
+        & (rate_table.rates["vendor"] == "Joda")
+    ].iloc[0]
+    expected_base = float(joda_rates["pallet_26"]) * expected_full_loads
+    if remainder:
+        expected_base += float(joda_rates[f"pallet_{remainder}"])
+    assert joda.base_cost == pytest.approx(expected_base)
+
+
 def test_mtc_calloffs_cost_more_than_one_combined_delivery(
     rate_table: HaulierRateTable,
 ) -> None:

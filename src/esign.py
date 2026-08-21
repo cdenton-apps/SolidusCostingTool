@@ -69,7 +69,9 @@ class DropboxSignClient:
         if not pdf.startswith(b"%PDF"):
             raise ESignError("The quotation PDF could not be prepared.")
         if director.email.casefold() == customer.email.casefold():
-            raise ESignError("Use different email addresses for the Director and Customer test signers.")
+            raise ESignError(
+                "Use different email addresses for the Solidus and Customer signers."
+            )
         data = {
             "title": title[:255],
             "subject": subject[:255],

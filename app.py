@@ -17,7 +17,6 @@ import pandas as pd
 import streamlit as st
 
 from src.auth import (
-    authenticate_admin,
     configured_users_for_import,
     make_password_hash,
     require_user,
@@ -39,6 +38,12 @@ from src.calculations import (
 )
 from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
 from src.esign import DropboxSignClient, ESignError, Signer
+from src.multi_item import MULTI_DELIVERY_MODES, price_multi_item_transport
+from src.product_matcher import (
+    COATING_OPTIONS,
+    PRODUCT_FORMS,
+    rank_product_matches,
+)
 from src.repository import (
     CALCULATION_COLUMNS,
     COST_INPUT_COLUMNS,
@@ -428,10 +433,10 @@ def default_draft() -> dict[str, Any]:
         "delivered_to": "",
         "delivery_method": "Haulier",
         "incoterm": "DAP",
-        "transport_service": "Economy",
+        "transport_service": "Next Day",
         "transport_vendor_preference": "Cheapest available",
         "transport_vendor": "",
-        "transport_booking": "Standard",
+        "transport_booking": "AM/PM",
         "transport_rate_zone": "",
         "transport_manual_override": 0,
         "transport_total": 0.0,
@@ -627,7 +632,7 @@ def can_access(step: int) -> bool:
         return False
     status = pricing.get("traffic_light_status")
     if status == "red":
-        return bool(pricing.get("traffic_override_approved"))
+        return True
     if status == "amber":
         return bool(pricing.get("traffic_amber_acknowledged"))
     return True
@@ -751,6 +756,10 @@ def start_from_selected_product(
     *,
     as_new_product: bool,
 ) -> None:
+    st.session_state.pop("multi_item_mode", None)
+    st.session_state.pop("multi_item_products", None)
+    st.session_state.pop("multi_item_breakdowns", None)
+    st.session_state.pop("multi_item_pricing", None)
     draft = default_draft()
     draft.update(
         {key: selected.get(key, draft.get(key)) for key in SPECIFICATION_COLUMNS}
@@ -782,13 +791,10 @@ def render_select(
     )
     st.caption("Search by product code or description.")
 
-    mode = "Existing product"
+    routes = ["Existing product", "Multiple existing products"]
     if can_create_new:
-        mode = st.radio(
-            "Costing route",
-            ["Existing product", "New product"],
-            horizontal=True,
-        )
+        routes.append("New product")
+    mode = st.radio("Costing route", routes, horizontal=True)
 
     if mode == "Existing product":
         catalog = cached_product_catalog(
@@ -803,6 +809,121 @@ def render_select(
             st.info(message)
             return
         catalog = catalog.sort_values("item_code").reset_index(drop=True)
+        with st.expander("Help me find a product (beta)"):
+            st.caption(
+                "Enter the specification you need. This searches usable products "
+                "with costing BOMs and puts the closest sizes first. Check the "
+                "differences before choosing one."
+            )
+            with st.form("product_finder_beta"):
+                finder_type, finder_coating = st.columns(2)
+                requested_form = finder_type.selectbox(
+                    "Product type", PRODUCT_FORMS
+                )
+                requested_coating = finder_coating.selectbox(
+                    "Coating", COATING_OPTIONS
+                )
+                finder_length, finder_width, finder_height, finder_gsm = st.columns(4)
+                requested_length = finder_length.number_input(
+                    "Length (mm)", min_value=0.0, step=1.0
+                )
+                requested_width = finder_width.number_input(
+                    "Width (mm)", min_value=0.0, step=1.0
+                )
+                requested_height = finder_height.number_input(
+                    "Height (mm)", min_value=0.0, step=1.0
+                )
+                requested_gsm = finder_gsm.number_input(
+                    "GSM", min_value=0.0, step=50.0
+                )
+                find_matches = st.form_submit_button(
+                    "Find closest matches", type="primary"
+                )
+            if find_matches:
+                try:
+                    matches = rank_product_matches(
+                        catalog,
+                        requested_form=requested_form,
+                        requested_coating=requested_coating,
+                        length_mm=requested_length,
+                        width_mm=requested_width,
+                        height_mm=requested_height,
+                        gsm=requested_gsm,
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
+                    st.session_state.pop("product_match_results", None)
+                else:
+                    st.session_state.product_match_results = matches.to_dict(
+                        orient="records"
+                    )
+
+            match_records = st.session_state.get("product_match_results", [])
+            if match_records:
+                matches = pd.DataFrame(match_records)
+
+                def signed_difference(value: Any) -> str:
+                    number = float(value or 0)
+                    return f"{number:+,.0f}"
+
+                display_matches = pd.DataFrame(
+                    {
+                        "Item": matches["item_code"],
+                        "Description": matches["description"],
+                        "Type": matches["suggested_form"],
+                        "Coating": matches["suggested_coating"],
+                        "Size": matches.apply(
+                            lambda row: (
+                                f"{float(row['length_mm']):,.0f} × "
+                                f"{float(row['width_mm']):,.0f} × "
+                                f"{float(row['height_mm']):,.0f} mm"
+                            ),
+                            axis=1,
+                        ),
+                        "GSM": matches["board_gsm"],
+                        "Difference": matches.apply(
+                            lambda row: (
+                                f"L {signed_difference(row['difference_length_mm'])} · "
+                                f"W {signed_difference(row['difference_width_mm'])} · "
+                                f"H {signed_difference(row['difference_height_mm'])} mm · "
+                                f"GSM {signed_difference(row['difference_board_gsm'])}"
+                            ),
+                            axis=1,
+                        ),
+                    }
+                )
+                st.dataframe(
+                    display_matches,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "Description": st.column_config.TextColumn(width="large"),
+                        "GSM": st.column_config.NumberColumn(format="%.0f"),
+                    },
+                )
+                suggestion_labels = {
+                    str(row["item_code"]): (
+                        f"{row['item_code']} — {str(row.get('description', ''))[:90]}"
+                    )
+                    for _, row in matches.iterrows()
+                }
+                suggested_code = st.selectbox(
+                    "Choose from these matches",
+                    list(suggestion_labels),
+                    format_func=suggestion_labels.get,
+                )
+                if st.button("Use this product", width="stretch"):
+                    selected_rows = catalog.index[
+                        catalog["item_code"].astype(str).eq(suggested_code)
+                    ].tolist()
+                    if selected_rows:
+                        st.session_state.existing_product_index = selected_rows[0]
+                        st.rerun()
+            elif find_matches:
+                st.warning(
+                    "No usable products match those type and coating choices. "
+                    "Try a wider selection."
+                )
         labels = {
             index: (
                 f"{row['item_code']} — "
@@ -816,6 +937,7 @@ def render_select(
             format_func=labels.get,
             index=None,
             placeholder="Search by item code or description",
+            key="existing_product_index",
         )
         if selected_index is None:
             st.info("Search for the item you need above.")
@@ -915,6 +1037,82 @@ def render_select(
             disabled=not has_material_cost,
         ):
             start_from_selected_product(selected, as_new_product=False)
+    elif mode == "Multiple existing products":
+        catalog = cached_product_catalog(
+            repository, repository.reference_data_version()
+        )
+        if catalog.empty:
+            st.info("There are no usable products in the stock list yet.")
+            return
+        catalog = catalog.sort_values("item_code").reset_index(drop=True)
+        labels = {
+            str(row["item_code"]): (
+                f"{row['item_code']} — {str(row.get('description', ''))[:100]}"
+            )
+            for _, row in catalog.iterrows()
+        }
+        selected_codes = st.multiselect(
+            "Add products to this quotation",
+            options=list(labels),
+            format_func=labels.get,
+            placeholder="Search by item code or description",
+        )
+        st.caption(
+            "Each item will have its own quantity, annual volume, selling price "
+            "and traffic light. New products must still be costed one at a time."
+        )
+        if selected_codes:
+            selected_preview = catalog.loc[
+                catalog["item_code"].astype(str).isin(selected_codes),
+                [
+                    "item_code",
+                    "description",
+                    "length_mm",
+                    "width_mm",
+                    "height_mm",
+                    "board_gsm",
+                    "pallet_quantity",
+                ],
+            ].copy()
+            st.dataframe(
+                selected_preview,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "item_code": st.column_config.TextColumn("Item"),
+                    "description": st.column_config.TextColumn(
+                        "Description", width="large"
+                    ),
+                    "length_mm": st.column_config.NumberColumn("Length", format="%.0f"),
+                    "width_mm": st.column_config.NumberColumn("Width", format="%.0f"),
+                    "height_mm": st.column_config.NumberColumn("Height", format="%.0f"),
+                    "board_gsm": st.column_config.NumberColumn("GSM", format="%.0f"),
+                    "pallet_quantity": st.column_config.NumberColumn(
+                        "Per pallet", format="%.0f"
+                    ),
+                },
+            )
+        if st.button(
+            "Start multi-item quotation",
+            type="primary",
+            width="stretch",
+            disabled=len(selected_codes) < 2,
+        ):
+            products = [
+                clean_record(
+                    catalog.loc[
+                        catalog["item_code"].astype(str).eq(code)
+                    ].iloc[0].to_dict()
+                )
+                for code in selected_codes
+            ]
+            st.session_state.multi_item_mode = True
+            st.session_state.multi_item_products = products
+            st.session_state.multi_item_breakdowns = []
+            st.session_state.multi_item_pricing = []
+            st.session_state.step = 1
+            reset_downstream()
+            st.rerun()
     else:
         starting_point = st.radio(
             "How do you want to start?",
@@ -1617,8 +1815,8 @@ def render_costs(
         else "Delivery basis: DAP."
     )
 
-    service = str(draft.get("transport_service", "Economy"))
-    booking = str(draft.get("transport_booking", "Standard"))
+    service = str(draft.get("transport_service", "Next Day"))
+    booking = str(draft.get("transport_booking", "AM/PM"))
     vendor_preference = str(
         draft.get("transport_vendor_preference", "Cheapest available")
     )
@@ -2176,44 +2374,11 @@ def render_pricing(
             )
         else:
             st.error(
-                f"RED — this costing cannot continue without admin approval. "
-                f"{traffic['reason'].capitalize()}."
+                f"RED — Sales Director or delegated individual approval is required. "
+                f"{traffic['reason'].capitalize()}. The Director will sign first in "
+                "Dropbox Sign before the Customer."
             )
 
-        remote_approval: dict[str, Any] | None = None
-        if traffic["status"] == "red" and not is_admin and repository.uses_database:
-            try:
-                remote_approval = repository.latest_commercial_approval(
-                    user_username, basis
-                )
-            except RuntimeError as exc:
-                st.warning(str(exc))
-            if remote_approval and remote_approval.get("status") == "approved":
-                pricing.update(
-                    {
-                        "traffic_override_approved": True,
-                        "traffic_override_reason": (
-                            remote_approval.get("decision_reason")
-                            or remote_approval.get("request_reason")
-                            or "Approved remotely"
-                        ),
-                        "traffic_override_by_username": remote_approval.get(
-                            "decided_by_username", ""
-                        ),
-                        "traffic_override_by_name": remote_approval.get(
-                            "decided_by_name", ""
-                        ),
-                        "traffic_override_by_email": remote_approval.get(
-                            "decided_by_email", ""
-                        ),
-                        "traffic_override_at_utc": str(
-                            remote_approval.get("decided_at_utc", "")
-                        ),
-                        "traffic_override_basis": basis,
-                    }
-                )
-                st.session_state.pricing = pricing
-        override_approved = bool(pricing.get("traffic_override_approved"))
         amber_acknowledged = bool(pricing.get("traffic_amber_acknowledged"))
         if traffic["status"] == "amber":
             if amber_acknowledged:
@@ -2233,139 +2398,13 @@ def render_pricing(
                 st.session_state.pricing = pricing
                 st.rerun()
 
-        if traffic["status"] == "red" and is_admin:
-            if override_approved:
-                st.success(
-                    f"Override approved by {pricing.get('traffic_override_by_name', user_name)}. "
-                    f"Reason: {pricing.get('traffic_override_reason', '')}"
-                )
-            else:
-                override_reason = st.text_area(
-                    "Reason for admin override *",
-                    key="traffic_override_reason_input",
-                    height=90,
-                )
-                if st.button(
-                    "Approve red costing",
-                    disabled=not override_reason.strip(),
-                ):
-                    pricing.update(
-                        {
-                            "traffic_override_approved": True,
-                            "traffic_override_reason": override_reason.strip(),
-                            "traffic_override_by_username": user_username,
-                            "traffic_override_by_name": user_name,
-                            "traffic_override_by_email": user_email,
-                            "traffic_override_at_utc": _utc_now().isoformat(),
-                            "traffic_override_basis": basis,
-                        }
-                    )
-                    st.session_state.pricing = pricing
-                    st.rerun()
-        elif traffic["status"] == "red" and repository.uses_database:
-            if override_approved:
-                st.success(
-                    f"Override approved by {pricing.get('traffic_override_by_name', '')}. "
-                    f"Reason: {pricing.get('traffic_override_reason', '')}"
-                )
-            else:
-                if remote_approval and remote_approval.get("status") == "pending":
-                    st.warning(
-                        "Approval requested. An administrator can decide this from "
-                        "their own Admin tools page."
-                    )
-                    if st.button("Check approval status"):
-                        st.rerun()
-                else:
-                    if remote_approval and remote_approval.get("status") == "rejected":
-                        st.error(
-                            "The previous request was declined. "
-                            f"{remote_approval.get('decision_reason', '')}"
-                        )
-                    with st.form("remote_red_approval_request", clear_on_submit=True):
-                        request_reason = st.text_area(
-                            "Reason for approval request *", height=90
-                        )
-                        submitted = st.form_submit_button(
-                            "Send to admin for approval", type="primary"
-                        )
-                    if submitted:
-                        if not request_reason.strip():
-                            st.error("Enter a reason for the request.")
-                        else:
-                            try:
-                                repository.submit_commercial_approval_request(
-                                    approval_basis=basis,
-                                    requester_username=user_username,
-                                    requester_name=user_name,
-                                    requester_email=user_email,
-                                    item_code=str(
-                                        st.session_state.draft.get("item_code", "")
-                                    ),
-                                    customer_name=str(
-                                        st.session_state.draft.get("customer_name", "")
-                                    ),
-                                    request_reason=request_reason.strip(),
-                                    snapshot={
-                                        "order_quantity": draft_number("order_quantity"),
-                                        "spread_percent": pricing.get("spread_percent", 0),
-                                        "selling_price_per_1000": pricing.get(
-                                            "selling_price_per_1000", 0
-                                        ),
-                                        "quote_currency": st.session_state.draft.get(
-                                            "quote_currency", "GBP"
-                                        ),
-                                        "spread_per_machine_hour": pricing.get(
-                                            "spread_per_machine_hour", 0
-                                        ),
-                                        "traffic_reason": traffic.get("reason", ""),
-                                    },
-                                )
-                            except RuntimeError as exc:
-                                st.error(str(exc))
-                            else:
-                                st.success("Approval request sent.")
-                                st.rerun()
-        elif traffic["status"] == "red":
-            st.write(
-                "Remote approval requires Neon. For this local session, an "
-                "administrator can approve below."
-            )
-            with st.form("red_admin_approval", clear_on_submit=True):
-                admin_username = st.text_input("Admin username")
-                admin_password = st.text_input("Admin password", type="password")
-                override_reason = st.text_area("Reason for admin override *", height=90)
-                submitted = st.form_submit_button("Approve red costing")
-            if submitted:
-                approving_admin = authenticate_admin(
-                    admin_username, admin_password, repository
-                )
-                if not override_reason.strip():
-                    st.error("Enter a reason for the override.")
-                elif approving_admin is None:
-                    st.error("The administrator username or password was not recognised.")
-                else:
-                    pricing.update(
-                        {
-                            "traffic_override_approved": True,
-                            "traffic_override_reason": override_reason.strip(),
-                            "traffic_override_by_username": approving_admin.username,
-                            "traffic_override_by_name": approving_admin.name,
-                            "traffic_override_by_email": approving_admin.email,
-                            "traffic_override_at_utc": _utc_now().isoformat(),
-                            "traffic_override_basis": basis,
-                        }
-                    )
-                    st.session_state.pricing = pricing
-                    st.rerun()
-
         can_continue = (
             traffic["status"] == "green"
             or (traffic["status"] == "amber" and amber_acknowledged)
-            or (traffic["status"] == "red" and override_approved)
+            or traffic["status"] == "red"
         )
         if st.button(
-            "Continue to save and print",
+            "Continue to save and send",
             type="primary",
             disabled=not can_continue,
         ):
@@ -2423,6 +2462,11 @@ SAVED_REVISION_FIELDS = [
     "additional_charge_description",
     "additional_charge_amount",
     "additional_charge_foc",
+    "is_multi_item_quote",
+    "quote_items",
+    "multi_delivery_mode",
+    "quoted_value",
+    "annual_revenue",
 ]
 
 
@@ -2453,6 +2497,12 @@ def render_esign_test(
     customer_email = str(saved.get("customer_email", "") or "").strip()
     director_name = str(saved.get("director_name", "") or "").strip()
     director_email = str(saved.get("director_email", "") or "").strip()
+    is_red = str(saved.get("traffic_light_status", "") or "").lower() == "red"
+    internal_name = director_name if is_red else user_name
+    internal_email = director_email if is_red else user_email
+    internal_label = (
+        "Sales Director or delegated individual" if is_red else "Sales Representative"
+    )
     request_id = str(saved.get("esign_request_id", "") or "").strip()
     status = str(saved.get("esign_status", "") or "").strip()
 
@@ -2502,21 +2552,22 @@ def render_esign_test(
         problems.append("customer contact role")
     if not valid_email(customer_email):
         problems.append("customer email")
-    if not director_name:
-        problems.append("Solidus signatory name")
-    if not valid_email(director_email):
-        problems.append("Solidus signatory email")
-    if customer_email.casefold() == director_email.casefold() and customer_email:
+    if not internal_name:
+        problems.append(f"{internal_label} name")
+    if not valid_email(internal_email):
+        problems.append(f"{internal_label} email")
+    if customer_email.casefold() == internal_email.casefold() and customer_email:
         problems.append("different Solidus signatory and Customer email addresses")
     if problems:
         st.warning("Save this revision with " + ", ".join(problems) + " before sending it.")
         return
 
     st.caption(
-        f"A completed copy will be emailed to you at {user_email}."
+        f"{internal_label} {internal_name} ({internal_email}) will sign first. "
+        f"The Customer will sign second, and a completed copy will be emailed to {user_email}."
     )
     approved = st.checkbox(
-        "I approve this exact saved test quotation and want the Director and Customer emails sent."
+        "I want this exact saved test quotation sent for the required internal and Customer signatures."
     )
     if st.button(
         "Approve and send test quotation",
@@ -2532,6 +2583,9 @@ def render_esign_test(
             "esign_approved_by_name": user_name,
             "esign_approved_by_email": user_email,
             "esign_approved_at_utc": approved_at,
+            "esign_internal_signer_role": (
+                "sales_director" if is_red else "sales_representative"
+            ),
         }
         try:
             approved_record = repository.update_costing_esign(
@@ -2547,9 +2601,9 @@ def render_esign_test(
                 subject=f"Test signature request: Solidus quotation {saved.get('quote_reference') or ''}",
                 message=(
                     "This is a non-binding test of the Solidus quotation signing process. "
-                    "The Solidus signatory is asked to sign first, followed by the Customer."
+                    f"The {internal_label} is asked to sign first, followed by the Customer."
                 ),
-                director=Signer(director_name, director_email, 0),
+                director=Signer(internal_name, internal_email, 0),
                 customer=Signer(customer_name, customer_email, 1),
                 cc_email=user_email,
                 costing_id=str(saved.get("costing_id", "")),
@@ -2572,7 +2626,7 @@ def render_esign_test(
             )
         else:
             st.session_state.last_saved = updated
-            st.success("Test request sent. The Solidus signatory should receive the first email.")
+            st.success(f"Test request sent. The {internal_label} should receive the first email.")
             st.rerun()
 
 
@@ -2581,7 +2635,9 @@ def saved_revision_fingerprint(record: dict[str, Any]) -> str:
     normalised: dict[str, Any] = {}
     for field in SAVED_REVISION_FIELDS:
         value = record.get(field, "")
-        if pd.isna(value):
+        if not pd.api.types.is_scalar(value):
+            value = CsvRepository._json_ready(value)
+        elif pd.isna(value):
             value = ""
         elif hasattr(value, "item"):
             value = value.item()
@@ -2618,6 +2674,11 @@ def render_save(
         esign_settings.get("director_email", "") or ""
     ).strip()
     st.session_state.setdefault("quote_notes", "")
+    red_route = (
+        str((st.session_state.get("pricing") or {}).get("traffic_light_status", ""))
+        .lower()
+        == "red"
+    )
 
     form_context = (
         st.form("external_quote_save", border=False)
@@ -2636,18 +2697,24 @@ def render_save(
         if str(esign_settings.get("api_key", "") or "").strip():
             st.caption("Test e-sign recipients")
             st.text_input("Customer email", key="customer_email")
-            if st.session_state.director_name and valid_email(
-                st.session_state.director_email
-            ):
-                st.caption(
-                    "Sales Director or delegated individual: "
-                    f"{st.session_state.director_name} "
-                    f"({st.session_state.director_email}) will also be asked to sign."
-                )
+            if red_route:
+                if st.session_state.director_name and valid_email(
+                    st.session_state.director_email
+                ):
+                    st.caption(
+                        "RED route: Sales Director or delegated individual "
+                        f"{st.session_state.director_name} "
+                        f"({st.session_state.director_email}) will sign first."
+                    )
+                else:
+                    st.warning(
+                        "An administrator must set the Solidus signatory name and email "
+                        "in Streamlit Secrets before a RED quotation can be sent."
+                    )
             else:
-                st.warning(
-                    "An administrator must set the Solidus signatory name and email "
-                    "in Streamlit Secrets before e-signing can be used."
+                st.caption(
+                    f"{str((st.session_state.get('pricing') or {}).get('traffic_light_status', '')).upper()} "
+                    f"route: Sales Representative {user_name} ({user_email}) will sign first."
                 )
         quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
 
@@ -2661,6 +2728,16 @@ def render_save(
                 "Sell / 1,000",
                 f"{currency_symbol(record.get('quote_currency'))}"
                 f"{record['selling_price_per_1000']:,.2f}",
+            ),
+            (
+                "Quote value",
+                f"{currency_symbol(record.get('quote_currency'))}"
+                f"{(float(record.get('selling_price_per_item', 0) or 0) * float(record.get('order_quantity', 0) or 0) + (0 if record.get('additional_charge_foc') else float(record.get('additional_charge_amount', 0) or 0))):,.2f}",
+            ),
+            (
+                "Annual revenue",
+                f"{currency_symbol(record.get('quote_currency'))}"
+                f"{(float(record.get('selling_price_per_item', 0) or 0) * float(record.get('annual_volume_units', 0) or 0)):,.2f}",
             ),
         ]
         if is_admin:
@@ -3363,8 +3440,6 @@ def render_admin_tools(
         "Manage user accounts, access and earlier costing-history data."
     )
     if repository.uses_database:
-        render_remote_approval_queue(repository, user)
-        st.divider()
         render_user_management(repository, user.username)
         with st.expander("Import earlier CSV costing history"):
             st.caption(
@@ -3662,7 +3737,9 @@ def render_admin_dashboard(
 
     for column in [
         "order_quantity",
+        "annual_volume_units",
         "selling_price_per_1000",
+        "selling_price_per_item",
         "spread_percent",
         "spread_per_machine_hour",
         "additional_charge_amount",
@@ -3680,16 +3757,38 @@ def render_admin_dashboard(
     if not isinstance(eur_per_gbp, pd.Series):
         eur_per_gbp = pd.Series(float(eur_per_gbp or 1.0), index=work.index)
     eur_per_gbp = eur_per_gbp.fillna(1.0).where(lambda values: values.gt(0), 1.0)
-    work["quoted_value_in_quote_currency"] = (
+    calculated_quoted_value = (
         work["selling_price_per_1000"] * work["order_quantity"] / 1_000
         + work["additional_charge_amount"].where(~foc, 0)
+    )
+    stored_quoted_value = pd.to_numeric(
+        work.get("quoted_value"), errors="coerce"
+    )
+    if not isinstance(stored_quoted_value, pd.Series):
+        stored_quoted_value = pd.Series(float("nan"), index=work.index)
+    work["quoted_value_in_quote_currency"] = stored_quoted_value.where(
+        stored_quoted_value.gt(0), calculated_quoted_value
     )
     work["quoted_value"] = work["quoted_value_in_quote_currency"].where(
         quote_currency.ne("EUR"),
         work["quoted_value_in_quote_currency"] / eur_per_gbp,
     )
+    calculated_annual_revenue = (
+        work["selling_price_per_item"] * work["annual_volume_units"]
+    )
+    stored_annual_revenue = pd.to_numeric(
+        work.get("annual_revenue"), errors="coerce"
+    )
+    if not isinstance(stored_annual_revenue, pd.Series):
+        stored_annual_revenue = pd.Series(float("nan"), index=work.index)
+    work["annual_revenue_in_quote_currency"] = stored_annual_revenue.where(
+        stored_annual_revenue.gt(0), calculated_annual_revenue
+    )
+    work["annual_revenue"] = work["annual_revenue_in_quote_currency"].where(
+        quote_currency.ne("EUR"),
+        work["annual_revenue_in_quote_currency"] / eur_per_gbp,
+    )
     traffic = work["traffic_light_status"].fillna("").astype(str).str.lower()
-    override = work["traffic_override_approved"].fillna(False).astype(bool)
     complete = work["esign_is_complete"].fillna(False).astype(bool)
     esign_request_id = work["esign_request_id"].fillna("").astype(str).str.strip()
     esign_status = work["esign_status"].fillna("").astype(str).str.strip()
@@ -3698,19 +3797,21 @@ def render_admin_dashboard(
     signed_value = float(work.loc[complete, "quoted_value"].sum())
     quote_conversion = signed_count / len(work) * 100 if len(work) else 0.0
     total_quoted_value = float(work["quoted_value"].sum())
+    total_annual_revenue = float(work["annual_revenue"].sum())
     value_conversion = (
         signed_value / total_quoted_value * 100 if total_quoted_value > 0 else 0.0
     )
 
-    metrics = st.columns(5)
+    metrics = st.columns(6)
     metrics[0].metric("Quotations", f"{len(work):,}")
     metrics[1].metric("Quoted value", f"£{total_quoted_value:,.0f}")
-    metrics[2].metric("Average spread", f"{work['spread_percent'].mean():,.1f}%")
-    metrics[3].metric(
+    metrics[2].metric("Annual revenue", f"£{total_annual_revenue:,.0f}")
+    metrics[3].metric("Average spread", f"{work['spread_percent'].mean():,.1f}%")
+    metrics[4].metric(
         "Average spread / hour",
         f"£{work['spread_per_machine_hour'].mean():,.0f}",
     )
-    metrics[4].metric("E-sign requests", f"{int(esign_requested.sum()):,}")
+    metrics[5].metric("E-sign requests", f"{int(esign_requested.sum()):,}")
 
     st.subheader("Conversion")
     conversion_columns = st.columns(4)
@@ -3719,11 +3820,10 @@ def render_admin_dashboard(
     conversion_columns[2].metric("Quote conversion", f"{quote_conversion:,.1f}%")
     conversion_columns[3].metric("Value conversion", f"{value_conversion:,.1f}%")
 
-    status_columns = st.columns(4)
+    status_columns = st.columns(3)
     status_columns[0].metric("Green", int(traffic.eq("green").sum()))
     status_columns[1].metric("Amber", int(traffic.eq("amber").sum()))
     status_columns[2].metric("Red", int(traffic.eq("red").sum()))
-    status_columns[3].metric("Admin overrides", int(override.sum()))
 
     left, right = st.columns(2)
     by_user = (
@@ -3731,6 +3831,7 @@ def render_admin_dashboard(
         .agg(
             quotations=("quotation_key", "count"),
             quoted_value=("quoted_value", "sum"),
+            annual_revenue=("annual_revenue", "sum"),
             average_spread=("spread_percent", "mean"),
             average_spread_per_hour=("spread_per_machine_hour", "mean"),
         )
@@ -3825,6 +3926,630 @@ def render_required_password_change(
     st.stop()
 
 
+def sync_multi_price_from_spread(index: int) -> None:
+    bases = st.session_state.get("multi_item_price_bases", [])
+    if index >= len(bases):
+        return
+    spread = float(st.session_state.get(f"multi_spread_{index}", 30.0) or 0)
+    try:
+        pricing = price_from_spread_percent(float(bases[index]), spread)
+    except ValueError:
+        return
+    st.session_state[f"multi_price_{index}"] = pricing["selling_price_per_1000"]
+
+
+def sync_multi_spread_from_price(index: int) -> None:
+    bases = st.session_state.get("multi_item_price_bases", [])
+    if index >= len(bases):
+        return
+    price = float(st.session_state.get(f"multi_price_{index}", 0.0) or 0)
+    try:
+        pricing = spread_percent_from_price(float(bases[index]), price)
+    except ValueError:
+        return
+    st.session_state[f"multi_spread_{index}"] = pricing["spread_percent"]
+
+
+def _overall_traffic_status(statuses: list[str]) -> str:
+    normalised = [str(status).lower() for status in statuses]
+    if "red" in normalised:
+        return "red"
+    if "amber" in normalised:
+        return "amber"
+    return "green"
+
+
+def render_multi_item_quote(
+    repository: CsvRepository,
+    rate_table: HaulierRateTable,
+    user_username: str,
+    user_email: str,
+    user_name: str,
+    is_admin: bool,
+) -> None:
+    products = list(st.session_state.get("multi_item_products", []) or [])
+    if len(products) < 2:
+        st.session_state.pop("multi_item_mode", None)
+        st.session_state.step = 0
+        st.warning("Choose at least two existing products for a multi-item quotation.")
+        st.rerun()
+
+    heading, back = st.columns([4, 1])
+    heading.subheader("Multi-item quotation")
+    heading.caption(
+        "Enter the shared customer and delivery details, then price each item."
+    )
+    if back.button("Change products", width="stretch"):
+        for key in list(st.session_state):
+            if key.startswith("multi_"):
+                st.session_state.pop(key, None)
+        st.session_state.pop("multi_item_mode", None)
+        st.session_state.pop("multi_item_products", None)
+        st.session_state.step = 0
+        st.rerun()
+
+    st.markdown("#### Customer and delivery")
+    customer_col, postcode_col = st.columns([1.4, 1.0])
+    customer_name = customer_col.text_input("Customer *", key="multi_customer_name")
+    delivery_postcode = postcode_col.text_input(
+        "Delivery postcode *", key="multi_delivery_postcode"
+    )
+    fulfilment_col, delivery_mode_col = st.columns(2)
+    fulfilment_type = fulfilment_col.radio(
+        "Fulfilment type",
+        ["MTO", "MTC"],
+        horizontal=True,
+        key="multi_fulfilment_type",
+    )
+    delivery_mode = delivery_mode_col.radio(
+        "Items will be",
+        MULTI_DELIVERY_MODES,
+        horizontal=True,
+        key="multi_delivery_mode",
+    )
+    st.caption(
+        "Delivered together combines all item pallets before splitting the movement "
+        "into trailers of up to 26 pallets. Delivered separately prices every item "
+        "as its own movement."
+    )
+
+    agreement_term_months = 0
+    pallets_per_delivery = 0
+    holding_charge = 0.0
+    if fulfilment_type == "MTC":
+        term_col, calloff_col, holding_col = st.columns(3)
+        agreement_term_months = int(
+            term_col.number_input(
+                "Agreement term (months)",
+                min_value=1,
+                value=12,
+                step=1,
+                key="multi_agreement_term_months",
+            )
+        )
+        pallets_per_delivery = int(
+            calloff_col.number_input(
+                "Minimum pallets per delivery",
+                min_value=1,
+                value=1,
+                step=1,
+                key="multi_pallets_per_delivery",
+            )
+        )
+        holding_charge = float(
+            holding_col.number_input(
+                "Storage per pallet per week (£)",
+                min_value=MIN_PALLET_HOLDING_CHARGE,
+                value=MIN_PALLET_HOLDING_CHARGE,
+                step=0.25,
+                key="multi_holding_charge",
+            )
+        )
+
+    collected = st.checkbox(
+        "Collected",
+        key="multi_collected",
+        help="Tick when the customer will collect. Otherwise the quotation is DAP.",
+    )
+    transport_service = "Next Day"
+    transport_booking = "AM/PM"
+    vendor_preference = "Cheapest available"
+    if not collected:
+        transport_columns = st.columns(3 if is_admin else 2)
+        transport_service = transport_columns[0].selectbox(
+            "Service", ["Economy", "Next Day"], index=1, key="multi_service"
+        )
+        transport_booking = transport_columns[1].selectbox(
+            "Booking", ["Standard", "AM/PM", "Timed"], index=1, key="multi_booking"
+        )
+        if is_admin:
+            vendor_preference = transport_columns[2].selectbox(
+                "Haulier",
+                ["Cheapest available", "Joda", "McDowells"],
+                key="multi_vendor_preference",
+            )
+
+    with st.expander("Customer considerations"):
+        factor_columns = st.columns(4)
+        factor_columns[0].checkbox(
+            "Consistent Payer", key="multi_comex_consistent_payer"
+        )
+        factor_columns[1].checkbox(
+            "Strategic Customer", key="multi_comex_strategic_customer"
+        )
+        factor_columns[2].checkbox(
+            "Over Credit Limit", key="multi_comex_over_credit_limit"
+        )
+        factor_columns[3].checkbox(
+            "Poor Payment History", key="multi_comex_poor_payment_history"
+        )
+
+    currency_col, rate_col = st.columns(2)
+    quote_currency = currency_col.selectbox(
+        "Quotation currency", ["GBP", "EUR"], key="multi_quote_currency"
+    )
+    eur_per_gbp = 1.0
+    eur_rate_date = ""
+    eur_rate_source = ""
+    if quote_currency == "EUR":
+        try:
+            eur_per_gbp, eur_rate_date = live_eur_per_gbp()
+        except RuntimeError as exc:
+            rate_col.error(str(exc))
+        else:
+            eur_rate_source = "ECB via Frankfurter"
+            rate_col.metric("Live rate · EUR per GBP", f"{eur_per_gbp:.4f}")
+    else:
+        rate_col.caption("Prices will be shown in GBP.")
+
+    st.markdown("#### Items")
+    line_inputs: list[dict[str, Any]] = []
+    for index, product in enumerate(products):
+        st.session_state.setdefault(
+            f"multi_description_{index}", str(product.get("description", ""))
+        )
+        st.session_state.setdefault(f"multi_quantity_{index}", 0.0)
+        st.session_state.setdefault(f"multi_annual_{index}", 0.0)
+        with st.container(border=True):
+            st.markdown(f"**{product.get('item_code', '')}**")
+            description = st.text_input(
+                "Description",
+                key=f"multi_description_{index}",
+                label_visibility="collapsed",
+            )
+            quantity_col, annual_col, pallet_col = st.columns(3)
+            quantity = float(
+                quantity_col.number_input(
+                    "Order quantity (units)",
+                    min_value=0.0,
+                    step=1_000.0,
+                    key=f"multi_quantity_{index}",
+                )
+            )
+            annual = float(
+                annual_col.number_input(
+                    "Annual volume (units)",
+                    min_value=0.0,
+                    step=1_000.0,
+                    key=f"multi_annual_{index}",
+                )
+            )
+            per_pallet = float(product.get("pallet_quantity", 0) or 0)
+            pallets = math.ceil(quantity / per_pallet) if quantity > 0 and per_pallet > 0 else 0
+            pallet_col.metric("Equivalent pallets", f"{pallets:,}")
+            line_inputs.append(
+                {
+                    "description": description,
+                    "order_quantity": quantity,
+                    "annual_volume_units": annual,
+                    "pallet_count": pallets,
+                }
+            )
+
+    multi_input_basis = hashlib.sha256(
+        json.dumps(
+            {
+                "customer_name": customer_name.strip(),
+                "delivery_postcode": delivery_postcode.strip().upper(),
+                "fulfilment_type": fulfilment_type,
+                "delivery_mode": delivery_mode,
+                "agreement_term_months": agreement_term_months,
+                "pallets_per_delivery": pallets_per_delivery,
+                "holding_charge": holding_charge,
+                "collected": collected,
+                "transport_service": transport_service,
+                "transport_booking": transport_booking,
+                "vendor_preference": vendor_preference,
+                "quote_currency": quote_currency,
+                "eur_per_gbp": eur_per_gbp,
+                "customer_factors": {
+                    key: bool(st.session_state.get(f"multi_{key}"))
+                    for key in COMEX_FACTORS
+                },
+                "lines": line_inputs,
+            },
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        st.session_state.get("multi_item_input_basis")
+        and st.session_state.get("multi_item_input_basis") != multi_input_basis
+    ):
+        st.session_state.multi_item_breakdowns = []
+        st.session_state.multi_item_line_values = []
+        st.session_state.multi_item_price_bases = []
+        st.session_state.pop("multi_last_saved", None)
+        st.session_state.pop("multi_saved_fingerprint", None)
+
+    calculate_multi = st.button(
+        "Calculate item pricing",
+        type="primary",
+        width="stretch",
+        disabled=(quote_currency == "EUR" and eur_rate_source == ""),
+    )
+    if calculate_multi:
+        errors: list[str] = []
+        if not customer_name.strip():
+            errors.append("Enter the customer name.")
+        if not collected and not delivery_postcode.strip():
+            errors.append("Enter the delivery postcode.")
+        for product, line in zip(products, line_inputs):
+            if line["order_quantity"] <= 0:
+                errors.append(f"Enter an order quantity for {product.get('item_code', '')}.")
+            if line["annual_volume_units"] <= 0:
+                errors.append(f"Enter an annual volume for {product.get('item_code', '')}.")
+            if line["pallet_count"] <= 0:
+                errors.append(f"Check the pallet quantity for {product.get('item_code', '')}.")
+        if errors:
+            for error in errors:
+                st.error(error)
+        else:
+            try:
+                transport = (
+                    {
+                        "total_cost": 0.0,
+                        "line_costs": [0.0] * len(products),
+                        "load_count": 0,
+                        "delivery_count": 0,
+                        "vendors": [],
+                        "rate_zone": "",
+                    }
+                    if collected
+                    else price_multi_item_transport(
+                        rate_table,
+                        pallet_counts=[line["pallet_count"] for line in line_inputs],
+                        delivery_mode=delivery_mode,
+                        postcode=delivery_postcode,
+                        service=transport_service,
+                        booking=transport_booking,
+                        fulfilment_type=fulfilment_type,
+                        pallets_per_delivery=pallets_per_delivery,
+                        vendor_preference=vendor_preference,
+                    )
+                )
+                breakdowns: list[dict[str, Any]] = []
+                line_values: list[dict[str, Any]] = []
+                for index, (product, line, transport_cost) in enumerate(
+                    zip(products, line_inputs, transport["line_costs"])
+                ):
+                    values = {
+                        **product,
+                        **line,
+                        "customer_name": customer_name.strip(),
+                        "description": line["description"].strip(),
+                        "delivery_postcode": delivery_postcode.strip().upper(),
+                        "delivery_method": (
+                            "Customer collection" if collected else "Haulier"
+                        ),
+                        "incoterm": "EXW" if collected else "DAP",
+                        "transport_total": transport_cost,
+                        "transport_service": transport_service,
+                        "transport_booking": transport_booking,
+                        "fulfilment_type": fulfilment_type,
+                        "agreement_term_months": agreement_term_months,
+                        "delivery_pallets_per_calloff": pallets_per_delivery,
+                        "pallet_holding_charge_per_pallet_per_week": holding_charge,
+                        "quote_currency": quote_currency,
+                        "eur_per_gbp": eur_per_gbp,
+                        "eur_rate_date": eur_rate_date,
+                        "eur_rate_source": eur_rate_source,
+                        "comex_consistent_payer": bool(
+                            st.session_state.get("multi_comex_consistent_payer")
+                        ),
+                        "comex_strategic_customer": bool(
+                            st.session_state.get("multi_comex_strategic_customer")
+                        ),
+                        "comex_over_credit_limit": bool(
+                            st.session_state.get("multi_comex_over_credit_limit")
+                        ),
+                        "comex_poor_payment_history": bool(
+                            st.session_state.get("multi_comex_poor_payment_history")
+                        ),
+                    }
+                    breakdown = calculate_cost(values)
+                    breakdowns.append(breakdown)
+                    line_values.append(values)
+                    spread = float(st.session_state.get(f"multi_spread_{index}", 30.0) or 30.0)
+                    st.session_state[f"multi_spread_{index}"] = spread
+                    st.session_state[f"multi_price_{index}"] = price_from_spread_percent(
+                        breakdown["pricing_base_per_1000"] * eur_per_gbp,
+                        spread,
+                    )["selling_price_per_1000"]
+                st.session_state.multi_item_transport = transport
+                st.session_state.multi_item_line_values = line_values
+                st.session_state.multi_item_breakdowns = breakdowns
+                st.session_state.multi_item_price_bases = [
+                    breakdown["pricing_base_per_1000"] * eur_per_gbp
+                    for breakdown in breakdowns
+                ]
+                st.session_state.multi_item_common = {
+                    "customer_name": customer_name.strip(),
+                    "delivery_postcode": delivery_postcode.strip().upper(),
+                    "fulfilment_type": fulfilment_type,
+                    "agreement_term_months": agreement_term_months,
+                    "delivery_pallets_per_calloff": pallets_per_delivery,
+                    "pallet_holding_charge_per_pallet_per_week": holding_charge,
+                    "delivery_method": "Customer collection" if collected else "Haulier",
+                    "incoterm": "EXW" if collected else "DAP",
+                    "transport_service": transport_service,
+                    "transport_booking": transport_booking,
+                    "transport_vendor": ", ".join(sorted(set(transport["vendors"]))),
+                    "transport_rate_zone": transport["rate_zone"],
+                    "transport_total": transport["total_cost"],
+                    "estimated_delivery_count": transport["delivery_count"],
+                    "multi_delivery_mode": delivery_mode,
+                    "quote_currency": quote_currency,
+                    "eur_per_gbp": eur_per_gbp,
+                    "eur_rate_date": eur_rate_date,
+                    "eur_rate_source": eur_rate_source,
+                }
+                st.session_state.multi_item_input_basis = multi_input_basis
+            except (TransportLookupError, ValueError) as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+
+    breakdowns = list(st.session_state.get("multi_item_breakdowns", []) or [])
+    line_values = list(st.session_state.get("multi_item_line_values", []) or [])
+    if len(breakdowns) != len(products) or len(line_values) != len(products):
+        return
+
+    transport = dict(st.session_state.get("multi_item_transport", {}) or {})
+    st.info(
+        f"Transport: {transport.get('delivery_count', 0):,} delivery event(s), "
+        f"{transport.get('load_count', 0):,} trailer load(s), "
+        f"£{float(transport.get('total_cost', 0) or 0):,.2f} total."
+    )
+    if is_admin and transport.get("vendors"):
+        st.caption("Internal haulier selection: " + ", ".join(transport["vendors"]))
+
+    symbol = currency_symbol(quote_currency)
+    line_records: list[dict[str, Any]] = []
+    statuses: list[str] = []
+    st.markdown("#### Price and traffic light by item")
+    for index, (values, breakdown) in enumerate(zip(line_values, breakdowns)):
+        base = float(st.session_state.multi_item_price_bases[index])
+        with st.container(border=True):
+            st.markdown(f"**{values.get('item_code', '')}** — {values.get('description', '')}")
+            spread_col, price_col = st.columns(2)
+            spread_col.number_input(
+                "Spread (%)",
+                min_value=-100_000.0,
+                max_value=99.99,
+                step=0.5,
+                key=f"multi_spread_{index}",
+                on_change=sync_multi_price_from_spread,
+                args=(index,),
+            )
+            price_col.number_input(
+                f"Selling price per 1,000 ({symbol})",
+                min_value=0.01,
+                step=1.0,
+                key=f"multi_price_{index}",
+                on_change=sync_multi_spread_from_price,
+                args=(index,),
+            )
+            pricing = spread_percent_from_price(
+                base, float(st.session_state[f"multi_price_{index}"])
+            )
+            material_pricing = price_from_spread_percent(
+                float(breakdown.get("material_base_per_1000", 0) or 0),
+                pricing["spread_percent"],
+            )
+            operational = operational_spread_metrics(
+                material_pricing["spread_value_per_1000"],
+                float(values["order_quantity"]),
+                float(breakdown.get("machine_hours_per_1000", 0) or 0),
+            )
+            traffic = traffic_light_result(
+                operational["spread_per_machine_hour"], pricing["spread_percent"]
+            )
+            statuses.append(traffic["status"])
+            show_detail_cards(
+                [
+                    ("Selling price / item", f"{symbol}{pricing['selling_price_per_item']:.5f}"),
+                    ("Spread", f"{pricing['spread_percent']:.2f}%"),
+                    ("Spread / machine hour", f"£{operational['spread_per_machine_hour']:,.2f}"),
+                    ("Traffic light", traffic["status"].upper()),
+                ]
+            )
+            if traffic["status"] == "red":
+                st.error("RED — Sales Director or delegated individual signature is required.")
+            elif traffic["status"] == "amber":
+                st.warning("AMBER — review this item before continuing.")
+            else:
+                st.success("GREEN — this item meets both commercial targets.")
+            line_records.append(
+                {
+                    **values,
+                    **breakdown,
+                    **pricing,
+                    **operational,
+                    "material_spread_value_per_1000": material_pricing[
+                        "spread_value_per_1000"
+                    ],
+                    "traffic_light_status": traffic["status"],
+                    "traffic_light_reason": traffic["reason"],
+                }
+            )
+
+    overall_status = _overall_traffic_status(statuses)
+    if overall_status == "red":
+        st.error(
+            "Overall route: RED. The Sales Director or delegated individual will "
+            "sign first because at least one item is red."
+        )
+    elif overall_status == "amber":
+        st.warning(
+            "Overall route: AMBER. The Sales Representative will sign first after "
+            "the warning is acknowledged."
+        )
+    else:
+        st.success("Overall route: GREEN. The Sales Representative will sign first.")
+
+    amber_acknowledged = True
+    if overall_status == "amber":
+        amber_acknowledged = st.checkbox(
+            "I have reviewed the amber item(s).",
+            key="multi_amber_acknowledged",
+        )
+
+    st.markdown("#### Save and send")
+    contact_col, email_col = st.columns(2)
+    customer_contact = contact_col.text_input(
+        "Customer contact", key="multi_customer_contact"
+    )
+    customer_email = email_col.text_input("Customer email", key="multi_customer_email")
+    customer_role = st.text_input("Customer role", key="multi_customer_role")
+    notes = st.text_area("Quote notes", key="multi_quote_notes", height=90)
+    charge_columns = st.columns([2, 1, 1])
+    charge_description = charge_columns[0].text_input(
+        "One-off charge description", key="multi_charge_description"
+    )
+    charge_amount = float(
+        charge_columns[1].number_input(
+            f"One-off charge ({symbol})",
+            min_value=0.0,
+            step=25.0,
+            key="multi_charge_amount",
+        )
+    )
+    charge_foc = charge_columns[2].checkbox("FOC", key="multi_charge_foc")
+    if charge_foc:
+        charge_amount = 0.0
+
+    quoted_value = sum(
+        float(line["selling_price_per_item"]) * float(line["order_quantity"])
+        for line in line_records
+    ) + charge_amount
+    annual_revenue = sum(
+        float(line["selling_price_per_item"]) * float(line["annual_volume_units"])
+        for line in line_records
+    )
+    show_detail_cards(
+        [
+            ("Items", len(line_records)),
+            ("Total pallets", sum(int(line["pallet_count"]) for line in line_records)),
+            ("Quote value", f"{symbol}{quoted_value:,.2f}"),
+            ("Annual revenue", f"{symbol}{annual_revenue:,.2f}"),
+        ]
+    )
+
+    common = dict(st.session_state.get("multi_item_common", {}) or {})
+    first = line_records[0]
+    current_multi_record = {
+        **first,
+        **common,
+        "item_code": "MULTI-ITEM",
+        "source_item_code": "",
+        "description": f"Multi-item quotation ({len(line_records)} items)",
+        "is_multi_item_quote": True,
+        "quote_items": line_records,
+        "catalogue_product": False,
+        "order_quantity": sum(float(line["order_quantity"]) for line in line_records),
+        "annual_volume_units": sum(
+            float(line["annual_volume_units"]) for line in line_records
+        ),
+        "pallet_count": sum(float(line["pallet_count"]) for line in line_records),
+        "order_pallets": sum(float(line["pallet_count"]) for line in line_records),
+        "traffic_light_status": overall_status,
+        "traffic_light_reason": (
+            "At least one item is red"
+            if overall_status == "red"
+            else "At least one item is amber"
+            if overall_status == "amber"
+            else "Every item is green"
+        ),
+        "quoted_value": quoted_value,
+        "annual_revenue": annual_revenue,
+        "customer_contact": customer_contact.strip(),
+        "customer_email": customer_email.strip(),
+        "customer_role": customer_role.strip(),
+        "director_name": str(configured_esign().get("director_name", "") or "").strip(),
+        "director_email": str(configured_esign().get("director_email", "") or "").strip(),
+        "notes": notes,
+        "additional_charge_description": charge_description,
+        "additional_charge_amount": charge_amount,
+        "additional_charge_foc": charge_foc,
+        "quote_reference": st.session_state.get("quote_reference", ""),
+        "quote_number": st.session_state.get("quote_number", ""),
+        "quote_revision": st.session_state.get("quote_revision", ""),
+    }
+
+    save_multi = st.button(
+        "Save multi-item quotation",
+        type="primary",
+        width="stretch",
+        disabled=not amber_acknowledged,
+    )
+    if save_multi:
+        try:
+            saved = repository.save_costing(
+                current_multi_record,
+                user_username=user_username,
+                user_email=user_email,
+                user_name=user_name,
+            )
+        except RepositoryBusyError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state.multi_last_saved = saved
+            st.session_state.quote_reference = saved.get("quote_reference", "")
+            st.session_state.quote_number = saved.get("quote_number", "")
+            st.session_state.quote_revision = saved.get("quote_revision", "")
+            st.session_state.multi_saved_fingerprint = saved_revision_fingerprint(saved)
+            st.success(f"Saved multi-item quotation {saved['quote_reference']}.")
+            st.rerun()
+
+    saved = st.session_state.get("multi_last_saved")
+    current_fingerprint = saved_revision_fingerprint(current_multi_record)
+    if (
+        not saved
+        or st.session_state.get("multi_saved_fingerprint") != current_fingerprint
+    ):
+        st.warning(
+            "Save this exact revision before downloading or sending it. "
+            "If any item, quantity or price changes, save again."
+        )
+        return
+    st.markdown("#### Downloads")
+    st.download_button(
+        "Customer quote PDF",
+        data=quote_pdf(saved),
+        file_name=f"{saved.get('quote_reference') or 'multi-item-quote'}.pdf",
+        mime="application/pdf",
+        width="stretch",
+    )
+    render_esign_test(
+        repository,
+        saved,
+        user_username=user_username,
+        user_email=user_email,
+        user_name=user_name,
+    )
+
+
 def render_workflow(
     repository: CsvRepository,
     rate_table: HaulierRateTable,
@@ -3849,6 +4574,16 @@ def render_workflow(
     workflow_notice = st.session_state.pop("workflow_notice", None)
     if workflow_notice:
         st.success(workflow_notice)
+    if st.session_state.get("multi_item_mode"):
+        render_multi_item_quote(
+            repository,
+            rate_table,
+            user_username,
+            user_email,
+            user_name,
+            is_admin,
+        )
+        return
     stage_navigation(simple_mode)
     if st.session_state.step == 0:
         render_select(repository, can_create_new, is_admin)
