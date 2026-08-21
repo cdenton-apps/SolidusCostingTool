@@ -55,6 +55,7 @@ def test_quote_and_sage_exports() -> None:
         "additional_charge_description": "Forme / stereo",
         "additional_charge_amount": 250,
         "additional_charge_foc": False,
+        "traffic_light_status": "red",
     }
 
     pdf = quote_pdf(record)
@@ -98,9 +99,11 @@ def test_quote_and_sage_exports() -> None:
     )
     assert "General Terms and Condition of Sale" in terms_text
     assert "Acceptance: quotation Q-TEST" in normalised_quote_text
-    assert "Sales Representative" in quote_text
+    assert "Sales Representative" not in quote_text
     assert "Customer" in quote_text
     assert "Sales Director or delegated individual" in quote_text
+    assert "Joda" not in quote_text
+    assert "delivery allowance is based on the Economy service" in normalised_quote_text
     assert "Role: Procurement Director" in quote_text
     assert "CMYK" in quote_text
     assert "ONE-OFF COSTS" in quote_text
@@ -235,3 +238,106 @@ def test_collected_quote_excludes_delivery_wording() -> None:
     assert "Currency / delivery basis GBP / Collected" in text
     assert "based on customer collection; delivery is not included" in text
     assert "based on EXW Incoterms" not in text
+
+
+def test_multi_item_quote_lists_line_prices_and_uses_red_signature_route() -> None:
+    shared = {
+        "created_at_utc": "2026-08-21T10:00:00+00:00",
+        "customer_name": "Multi Customer",
+        "fulfilment_type": "MTO",
+        "quote_currency": "GBP",
+        "delivery_method": "Haulier",
+        "delivery_postcode": "BD20 0AA",
+        "transport_service": "Next Day",
+    }
+    record = {
+        **shared,
+        "quote_reference": "1010-1",
+        "item_code": "MULTI-ITEM",
+        "description": "Multi-item quotation (2 items)",
+        "is_multi_item_quote": True,
+        "multi_delivery_mode": "Delivered together",
+        "traffic_light_status": "red",
+        "quoted_value": 2_750,
+        "customer_role": "Buyer",
+        "transport_vendor": "Internal Haulier Name",
+        "quote_items": [
+            {
+                **shared,
+                "item_code": "LID-001",
+                "description": "Printed lid",
+                "order_quantity": 2_000,
+                "pallet_count": 2,
+                "pallet_quantity": 1_000,
+                "selling_price_per_1000": 750,
+                "selling_price_per_item": 0.75,
+                "length_mm": 590,
+                "width_mm": 390,
+                "height_mm": 150,
+                "board_gsm": 1_000,
+                "board_code": "BRD/1000G/WT/BT/",
+                "number_of_colours": 901,
+            },
+            {
+                **shared,
+                "item_code": "BASE-001",
+                "description": "Poly coated base",
+                "order_quantity": 2_500,
+                "pallet_count": 3,
+                "pallet_quantity": 1_000,
+                "selling_price_per_1000": 500,
+                "selling_price_per_item": 0.5,
+                "length_mm": 585,
+                "width_mm": 385,
+                "height_mm": 150,
+                "board_gsm": 950,
+                "board_code": "BRD/950G/WPE/",
+                "number_of_colours": 0,
+            },
+        ],
+    }
+
+    pages = PdfReader(BytesIO(quote_pdf(record))).pages
+    quote_text = " ".join(
+        " ".join((page.extract_text() or "").split()) for page in pages[:-3]
+    )
+
+    assert len(pages) == 5
+    assert "LID-001 Printed lid 2,000 2 £750.00 £0.75000" in quote_text
+    assert "BASE-001 Poly coated base 2,500 3 £500.00 £0.50000" in quote_text
+    assert "Quoted order value £2,750.00" in quote_text
+    assert "Delivered together" in quote_text
+    assert "Sales Director or delegated individual" in quote_text
+    assert "Internal Haulier Name" not in quote_text
+    assert "ITEM TECHNICAL SPECIFICATIONS" in quote_text
+    assert "WT/BT / 1,000 GSM" in quote_text
+
+
+def test_multi_item_green_esign_uses_sales_representative_first() -> None:
+    line = {
+        "item_code": "ITEM-1",
+        "description": "Item one",
+        "order_quantity": 1_000,
+        "pallet_count": 1,
+        "pallet_quantity": 1_000,
+        "selling_price_per_1000": 500,
+        "selling_price_per_item": 0.5,
+    }
+    record = {
+        "quote_reference": "1011-1",
+        "customer_name": "Customer",
+        "customer_role": "Buyer",
+        "fulfilment_type": "MTO",
+        "traffic_light_status": "green",
+        "quote_items": [line, {**line, "item_code": "ITEM-2"}],
+    }
+
+    text = " ".join(
+        " ".join((page.extract_text() or "").split())
+        for page in PdfReader(BytesIO(quote_pdf(record, esign_tags=True))).pages[:-3]
+    )
+
+    assert "Sales Representative" in text
+    assert "Sales Director or delegated individual" not in text
+    assert "[sig|req|signer1]" in text
+    assert "[sig|req|signer2]" in text

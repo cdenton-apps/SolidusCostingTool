@@ -28,6 +28,9 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.radio, "Costing route").set_value("New product").run()
     _widget(app.button, "Create new product").click().run()
 
+    assert app.session_state["draft"]["transport_service"] == "Next Day"
+    assert app.session_state["draft"]["transport_booking"] == "AM/PM"
+
     _widget(app.text_input, "Customer *").set_value("App Test Customer")
     _widget(app.text_input, "Item code *").set_value("APP-TEST-001")
     _widget(app.text_input, "Description *").set_value("Application test item")
@@ -67,6 +70,58 @@ def test_new_item_reaches_pricing_stage() -> None:
     assert "Set spread or selling price" in [item.value for item in app.subheader]
     assert _widget(app.number_input, "Spread (%)")
     assert _widget(app.number_input, "Selling price per 1,000 (£)")
+
+
+def test_product_finder_beta_selects_a_usable_catalogue_product() -> None:
+    app = _demo_app().run()
+    _widget(app.selectbox, "Product type").set_value("Lid")
+    _widget(app.selectbox, "Coating").set_value("Poly coated")
+    _widget(app.number_input, "Length (mm)").set_value(590)
+    _widget(app.number_input, "Width (mm)").set_value(390)
+    _widget(app.number_input, "Height (mm)").set_value(150)
+    _widget(app.number_input, "GSM").set_value(1000)
+    _widget(app.button, "Find closest matches").click().run()
+
+    assert not app.exception
+    assert _widget(app.selectbox, "Choose from these matches").value
+    _widget(app.button, "Use this product").click().run()
+
+    assert not app.exception
+    assert _widget(app.selectbox, "Search existing products").value is not None
+    assert _widget(app.button, "Start costing")
+
+
+def test_multi_item_route_calculates_each_selected_product() -> None:
+    app = _demo_app().run()
+    _widget(app.radio, "Costing route").set_value("Multiple existing products").run()
+    selector = _widget(app.multiselect, "Add products to this quotation")
+    selected_codes = [label.split(" — ", 1)[0] for label in selector.options[:2]]
+    selector.set_value(selected_codes).run()
+    _widget(app.button, "Start multi-item quotation").click().run()
+
+    _widget(app.text_input, "Customer *").set_value("Multi-item test")
+    _widget(app.text_input, "Delivery postcode *").set_value("BD20 0AA")
+    for widget in [
+        item for item in app.number_input if item.label == "Order quantity (units)"
+    ]:
+        widget.set_value(10_000)
+    for widget in [
+        item for item in app.number_input if item.label == "Annual volume (units)"
+    ]:
+        widget.set_value(50_000)
+    _widget(app.button, "Calculate item pricing").click().run()
+
+    assert not app.exception
+    assert len([item for item in app.number_input if item.label == "Spread (%)"]) == 2
+    assert len(
+        [
+            item
+            for item in app.number_input
+            if item.label == "Selling price per 1,000 (£)"
+        ]
+    ) == 2
+    assert any("trailer load" in message.value for message in app.info)
+    assert _widget(app.button, "Save multi-item quotation")
 
 
 def test_new_item_can_fill_board_details_from_known_code() -> None:
@@ -158,7 +213,7 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
     assert _widget(app.number_input, "Spread (%)").value == pytest.approx(50)
 
 
-def test_red_costing_requires_recorded_admin_override() -> None:
+def test_red_costing_routes_to_director_signature_without_admin_override() -> None:
     app = _demo_app()
     app.session_state["step"] = 3
     app.session_state["draft"] = {
@@ -189,22 +244,19 @@ def test_red_costing_requires_recorded_admin_override() -> None:
     app.run()
 
     assert app.session_state["pricing"]["traffic_light_status"] == "red"
-    assert _widget(app.button, "Continue to save and print").disabled
-    _widget(app.text_area, "Reason for admin override *").set_value(
-        "Approved for this customer agreement"
-    ).run()
-    _widget(app.button, "Approve red costing").click().run()
-
-    assert app.session_state["pricing"]["traffic_override_approved"] is True
-    assert app.session_state["pricing"]["traffic_override_by_username"] == "demo"
-    assert not _widget(app.button, "Continue to save and print").disabled
+    assert not _widget(app.button, "Continue to save and send").disabled
+    assert not any(widget.label == "Approve red costing" for widget in app.button)
+    assert any(
+        "Sales Director or delegated individual approval is required" in item.value
+        for item in app.error
+    )
 
     _widget(app.number_input, "Spread (%)").set_value(31).run()
     assert not app.session_state["pricing"].get("traffic_override_approved", False)
-    assert _widget(app.button, "Continue to save and print").disabled
+    assert not _widget(app.button, "Continue to save and send").disabled
 
 
-def test_red_costing_is_blocked_for_non_admin(
+def test_red_costing_uses_director_route_for_non_admin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for source in PROJECT_DATA.glob("*.csv"):
@@ -258,7 +310,7 @@ def test_red_costing_is_blocked_for_non_admin(
     app.run()
 
     assert app.session_state["pricing"]["traffic_light_status"] == "red"
-    assert _widget(app.button, "Continue to save and print").disabled
+    assert not _widget(app.button, "Continue to save and send").disabled
     rendered_cards = "\n".join(item.value for item in app.markdown)
     assert "Pricing base / 1,000" not in rendered_cards
     assert "Spread value / 1,000" not in rendered_cards
@@ -269,20 +321,9 @@ def test_red_costing_is_blocked_for_non_admin(
         item.label != "How the material adjustment was calculated"
         for item in app.expander
     )
-    assert _widget(app.text_input, "Admin username")
-    assert _widget(app.text_input, "Admin password")
-    assert _widget(app.text_area, "Reason for admin override *")
-
-    _widget(app.text_input, "Admin username").set_value("manager")
-    _widget(app.text_input, "Admin password").set_value("dummy-admin-passphrase")
-    _widget(app.text_area, "Reason for admin override *").set_value(
-        "Commercial exception agreed"
-    )
-    _widget(app.button, "Approve red costing").click().run()
-
-    assert app.session_state["pricing"]["traffic_override_approved"] is True
-    assert app.session_state["pricing"]["traffic_override_by_username"] == "manager"
-    assert not _widget(app.button, "Continue to save and print").disabled
+    assert all(widget.label != "Admin username" for widget in app.text_input)
+    assert all(widget.label != "Admin password" for widget in app.text_input)
+    assert all(widget.label != "Reason for admin override *" for widget in app.text_area)
 
 
 def test_amber_warning_must_be_acknowledged() -> None:
@@ -317,20 +358,20 @@ def test_amber_warning_must_be_acknowledged() -> None:
 
     assert app.session_state["pricing"]["traffic_light_status"] == "amber"
     assert any("AMBER COMMERCIAL WARNING" in item.value for item in app.markdown)
-    assert _widget(app.button, "Continue to save and print").disabled
+    assert _widget(app.button, "Continue to save and send").disabled
     _widget(app.button, "Acknowledge amber warning").click().run()
 
     assert app.session_state["pricing"]["traffic_amber_acknowledged"] is True
     assert app.session_state["pricing"][
         "traffic_amber_acknowledged_by_username"
     ] == "demo"
-    assert not _widget(app.button, "Continue to save and print").disabled
+    assert not _widget(app.button, "Continue to save and send").disabled
 
     _widget(app.number_input, "Spread (%)").set_value(28).run()
     assert not app.session_state["pricing"].get(
         "traffic_amber_acknowledged", False
     )
-    assert _widget(app.button, "Continue to save and print").disabled
+    assert _widget(app.button, "Continue to save and send").disabled
 
 
 def test_exports_require_an_exact_saved_revision(

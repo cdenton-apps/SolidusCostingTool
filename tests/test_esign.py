@@ -65,7 +65,7 @@ def test_send_is_forced_to_test_mode_and_orders_signers(monkeypatch) -> None:
     assert result["esign_request_id"] == "req-test"
 
 
-def test_esign_pdf_contains_director_and_customer_tags() -> None:
+def test_green_esign_pdf_contains_sales_rep_and_customer_tags() -> None:
     pdf = quote_pdf(
         {
             "quote_reference": "Q-TAGS",
@@ -81,6 +81,7 @@ def test_esign_pdf_contains_director_and_customer_tags() -> None:
             "esign_approved_by_name": "Sales Rep",
             "esign_approved_at_utc": "2026-08-11T10:00:00+00:00",
             "created_at_utc": "2026-08-11T09:30:00+00:00",
+            "traffic_light_status": "green",
         },
         esign_tags=True,
     )
@@ -92,7 +93,8 @@ def test_esign_pdf_contains_director_and_customer_tags() -> None:
     assert "[text|req|signer2|Full name]" in text
     assert "[date|req|signer1|Signing date]" in text
     assert "[date|req|signer2|Signing date]" in text
-    assert "Approved in costing tool by" in text
+    assert "Sales Representative" in text
+    assert "Sales Director or delegated individual" not in text
     assert "11/08/2026" in text
     assert "11/08/2026 11:00" not in text
     assert "Quotation date" in text
@@ -100,3 +102,31 @@ def test_esign_pdf_contains_director_and_customer_tags() -> None:
     assert text.count("Date:") >= 2
     assert "Time:" not in text
     assert "SUBJECT TO FINAL COMMERCIAL APPROVAL" not in text
+
+
+def test_red_esign_pdf_contains_director_and_customer_layout() -> None:
+    pdf = quote_pdf(
+        {
+            "quote_reference": "Q-RED",
+            "customer_name": "Customer",
+            "customer_contact": "Buyer",
+            "item_code": "ITEM",
+            "description": "Description",
+            "fulfilment_type": "MTO",
+            "order_quantity": 1000,
+            "order_pallets": 1,
+            "selling_price_per_1000": 100,
+            "selling_price_per_item": 0.1,
+            "traffic_light_status": "red",
+        },
+        esign_tags=True,
+    )
+    text = "\n".join(
+        page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages
+    )
+
+    assert "Sales Director or delegated individual" in text
+    assert "Sales Representative" not in text
+    assert "Customer" in text
+    assert "[sig|req|signer1]" in text
+    assert "[sig|req|signer2]" in text

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +17,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (
     Image,
     KeepTogether,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -208,7 +210,451 @@ def _print_colours(value: Any) -> str:
     return f"{count} colour" if count == 1 else f"{count} colours"
 
 
+def _multi_quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
+    raw_items = record.get("quote_items", [])
+    if isinstance(raw_items, str):
+        try:
+            raw_items = json.loads(raw_items)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_items = []
+    items = [dict(item) for item in raw_items if isinstance(item, dict)]
+    buffer = BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=15 * mm,
+        leftMargin=15 * mm,
+        topMargin=10 * mm,
+        bottomMargin=17 * mm,
+        title=f"Quotation {record.get('quote_reference', '')}",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(
+        ParagraphStyle(
+            name="MultiTitle",
+            parent=styles["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=16,
+            leading=18,
+            alignment=TA_RIGHT,
+            textColor=INK,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="MultiMeta",
+            parent=styles["BodyText"],
+            fontSize=7.5,
+            leading=9.2,
+            alignment=TA_RIGHT,
+            textColor=colors.HexColor("#4A5050"),
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="MultiSection",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            leading=11,
+            textColor=INK,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="MultiCell",
+            parent=styles["BodyText"],
+            fontSize=7.2,
+            leading=8.6,
+            textColor=INK,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="MultiCellBold",
+            parent=styles["MultiCell"],
+            fontName="Helvetica-Bold",
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="MultiTerms",
+            parent=styles["BodyText"],
+            fontSize=6.8,
+            leading=7.8,
+            textColor=colors.HexColor("#303434"),
+            spaceAfter=1.5,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="MultiSignatureHeading",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=10,
+            alignment=TA_CENTER,
+        )
+    )
+
+    def cell(value: Any, *, bold: bool = False) -> Paragraph:
+        return Paragraph(_display(value), styles["MultiCellBold" if bold else "MultiCell"])
+
+    def section(title: str) -> Table:
+        return Table(
+            [[Paragraph(title.upper(), styles["MultiSection"])]],
+            colWidths=[180 * mm],
+            rowHeights=[6 * mm],
+            style=[
+                ("BACKGROUND", (0, 0), (-1, -1), YELLOW),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ],
+        )
+
+    quote_currency = str(record.get("quote_currency", "GBP") or "GBP").upper()
+    fulfilment = str(record.get("fulfilment_type", "MTO") or "MTO").upper()
+    collected = str(record.get("delivery_method", "Haulier")) == "Customer collection"
+    quotation_date = _uk_datetime(record.get("created_at_utc"))
+    valid_until = _uk_date_after_months(record.get("created_at_utc"), 3)
+    logo = (
+        Image(str(BRAND_HEADER_PATH), width=64 * mm, height=20 * mm)
+        if BRAND_HEADER_PATH.exists()
+        else Paragraph("Solidus", styles["MultiTitle"])
+    )
+    header = Table(
+        [[
+            logo,
+            [
+                Paragraph("CUSTOMER QUOTATION", styles["MultiTitle"]),
+                Paragraph(
+                    "<b>PRIVATE AND CONFIDENTIAL</b><br/>"
+                    f"Reference: <b>{_display(record.get('quote_reference'), 'Draft')}</b>"
+                    + (f"<br/>Quotation date: <b>{quotation_date}</b>" if quotation_date else ""),
+                    styles["MultiMeta"],
+                ),
+                Paragraph(
+                    "Solidus Packaging Solutions Limited<br/>"
+                    "Engine Shed Lane, Skipton, North Yorkshire, BD23 1TX<br/>"
+                    "+44 (0)1756 799411"
+                    + (f"<br/>Quotation valid until: <b>{valid_until}</b>" if valid_until else ""),
+                    styles["MultiMeta"],
+                ),
+            ],
+        ]],
+        colWidths=[95 * mm, 85 * mm],
+        style=[
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ],
+    )
+    common_rows = [
+        [cell("Customer", bold=True), cell(record.get("customer_name")), cell("For the attention of", bold=True), cell(record.get("customer_contact"))],
+        [cell("Fulfilment", bold=True), cell("MTC - Make to Contract" if fulfilment == "MTC" else "MTO - Make to Order"), cell("Currency / delivery basis", bold=True), cell(f"{quote_currency} / {'Collected' if collected else 'DAP'}")],
+        [cell("Delivery postcode", bold=True), cell("—" if collected else record.get("delivery_postcode")), cell("Item delivery", bold=True), cell(record.get("multi_delivery_mode", "Delivered together"))],
+    ]
+    if fulfilment == "MTC":
+        common_rows.append(
+            [
+                cell("Agreement term", bold=True),
+                cell(f"{_number(record.get('agreement_term_months'), 12):,.0f} months"),
+                cell("Minimum call-off", bold=True),
+                cell(f"{_number(record.get('delivery_pallets_per_calloff')):,.0f} pallets"),
+            ]
+        )
+    common_table = Table(
+        common_rows,
+        colWidths=[28 * mm, 62 * mm, 33 * mm, 57 * mm],
+        style=[
+            ("BACKGROUND", (0, 0), (0, -1), PALE),
+            ("BACKGROUND", (2, 0), (2, -1), PALE),
+            ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ],
+    )
+
+    item_rows: list[list[Any]] = [[
+        cell("Item", bold=True),
+        cell("Description", bold=True),
+        cell("Quantity", bold=True),
+        cell("Pallets", bold=True),
+        cell("Per 1,000", bold=True),
+        cell("Per item", bold=True),
+    ]]
+    for item in items:
+        item_rows.append(
+            [
+                cell(item.get("item_code")),
+                cell(item.get("description")),
+                cell(f"{_number(item.get('order_quantity')):,.0f}"),
+                cell(f"{_number(item.get('pallet_count')):,.0f}"),
+                cell(_money(item.get("selling_price_per_1000"), quote_currency)),
+                cell(_unit_money(item.get("selling_price_per_item"), quote_currency)),
+            ]
+        )
+    item_table = Table(
+        item_rows,
+        repeatRows=1,
+        colWidths=[36 * mm, 62 * mm, 19 * mm, 13 * mm, 25 * mm, 25 * mm],
+        style=[
+            ("BACKGROUND", (0, 0), (-1, 0), PALE),
+            ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ],
+    )
+    price_rows = [
+        [cell("Quoted order value", bold=True), cell(_money(record.get("quoted_value"), quote_currency), bold=True)],
+    ]
+    if record.get("additional_charge_foc") or _number(record.get("additional_charge_amount")) > 0:
+        charge = "FOC" if record.get("additional_charge_foc") else _money(record.get("additional_charge_amount"), quote_currency)
+        price_rows.append([cell(record.get("additional_charge_description") or "One-off charge", bold=True), cell(charge, bold=True)])
+    price_table = Table(
+        price_rows,
+        colWidths=[130 * mm, 50 * mm],
+        style=[
+            ("BACKGROUND", (0, 0), (0, -1), PALE),
+            ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ],
+    )
+
+    terms = [
+        "This quotation supplements the attached Solidus General Terms and Conditions of Sale and Delivery, which form part of this quotation and prevail in the event of any conflict.",
+        (
+            f"Unless otherwise agreed in writing, prices are in {quote_currency}, exclusive of VAT and are based on customer collection; delivery is not included."
+            if collected
+            else f"Unless otherwise agreed in writing, prices are in {quote_currency}, exclusive of VAT and based on DAP Incoterms."
+        ),
+        "All payments must be made within thirty (30) days after the invoice date, unless another payment term has been agreed in writing by Solidus.",
+        "Lead time will be confirmed upon acceptance of a valid purchase order and remains subject to change.",
+        f"This quotation is valid until {valid_until}. Delivery dates will be confirmed upon receipt and acceptance of a purchase order."
+        if valid_until
+        else "This quotation is valid for three months from the quotation date.",
+    ]
+    if fulfilment == "MTC":
+        months = _number(record.get("agreement_term_months"), 12)
+        holding = max(
+            MIN_PALLET_HOLDING_CHARGE,
+            _number(record.get("pallet_holding_charge_per_pallet_per_week")),
+        )
+        terms.extend(
+            [
+                f"The {months:,.0f}-month MTC term starts on the commencement date confirmed by Solidus in line with current lead times and production planning, not the quotation date. Changes to the call-off profile may change transport pricing.",
+                f"Where stock is held beyond the agreed call-off profile or the Customer breaches the agreement, Solidus reserves the right either to charge £{holding:,.2f} per pallet per week or to despatch and invoice any stock held or produced under the agreement.",
+            ]
+        )
+    else:
+        terms.append(
+            "MTO pricing is based on the delivery arrangement shown above. A changed delivery profile may change transport pricing."
+        )
+    if not collected and str(record.get("transport_service", "") or "").strip():
+        terms.append(
+            f"The delivery allowance is based on the {record.get('transport_service')} service. This will ordinarily be the service used."
+        )
+
+    internal_route = (
+        "sales_director"
+        if str(record.get("traffic_light_status", "")).lower() == "red"
+        else "sales_representative"
+    )
+    internal_heading = (
+        "Sales Director or delegated individual"
+        if internal_route == "sales_director"
+        else "Sales Representative"
+    )
+    internal_role = (
+        "Role: Sales Director or delegated individual"
+        if internal_route == "sales_director"
+        else "Role: Sales Representative"
+    )
+    internal_signature = "Signed: ______________________________"
+    internal_name = "Name: _______________________________"
+    internal_date = "Date (DD/MM/YYYY): ___________________"
+    customer_signature = "Signed: ______________________________"
+    customer_name = "Name: _______________________________"
+    customer_date = "Date (DD/MM/YYYY): ___________________"
+    if esign_tags:
+        internal_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
+        internal_name = 'Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
+        internal_date = 'Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
+        customer_signature = '<font color="#FFFFFF">[sig|req|signer2]</font>'
+        customer_name = 'Name: <font color="#FFFFFF">[text|req|signer2|Full name]</font>'
+        customer_date = 'Date: <font color="#FFFFFF">[date|req|signer2|Signing date]</font>'
+
+    def signature_card(heading: str, signature: str, name: str, role: str, date: str) -> Table:
+        return Table(
+            [
+                [Paragraph(heading, styles["MultiSignatureHeading"])],
+                [Paragraph(signature, styles["MultiCell"])],
+                [Paragraph(name, styles["MultiCell"])],
+                [Paragraph(role, styles["MultiCell"])],
+                [Paragraph(date, styles["MultiCell"])],
+            ],
+            colWidths=[88 * mm],
+            rowHeights=[4 * mm, 8 * mm, 5 * mm, 4.5 * mm, 4.5 * mm] if esign_tags else None,
+            style=[
+                ("BACKGROUND", (0, 0), (0, 0), YELLOW),
+                ("BOX", (0, 0), (-1, -1), 0.45, GREY),
+                ("INNERGRID", (0, 1), (-1, -1), 0.25, GREY),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 1), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
+            ],
+        )
+
+    signature_table = Table(
+        [[
+            signature_card(internal_heading, internal_signature, internal_name, internal_role, internal_date),
+            "",
+            signature_card(
+                "Customer",
+                customer_signature,
+                customer_name,
+                f"Role: {_display(record.get('customer_role'), '_______________________________')}",
+                customer_date,
+            ),
+        ]],
+        colWidths=[88 * mm, 4 * mm, 88 * mm],
+        style=[
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ],
+    )
+
+    notes = str(record.get("notes", "") or "").strip() or "No additional notes."
+    story: list[Any] = [
+        header,
+        Spacer(1, 1 * mm),
+        section("Quote details"),
+        common_table,
+        Spacer(1, 1 * mm),
+        section("Quoted items"),
+        item_table,
+        price_table,
+        Spacer(1, 1 * mm),
+        section("Notes"),
+        Table([[cell(notes)]], colWidths=[180 * mm], style=[("BOX", (0, 0), (-1, -1), 0.3, GREY), ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5)]),
+        Spacer(1, 1 * mm),
+        section("Commercial terms"),
+        *[Paragraph(f"- {html.escape(term)}", styles["MultiTerms"]) for term in terms],
+        Spacer(1, 1 * mm),
+        KeepTogether(
+            [
+                section("Quotation acceptance"),
+                Table(
+                    [[
+                        cell("Quotation", bold=True),
+                        cell(record.get("quote_reference") or "Draft"),
+                        cell("Customer", bold=True),
+                        cell(record.get("customer_name")),
+                        cell("Items", bold=True),
+                        cell(str(len(items))),
+                    ]],
+                    colWidths=[23 * mm, 30 * mm, 23 * mm, 65 * mm, 15 * mm, 24 * mm],
+                    style=[
+                        ("BACKGROUND", (0, 0), (0, 0), PALE),
+                        ("BACKGROUND", (2, 0), (2, 0), PALE),
+                        ("BACKGROUND", (4, 0), (4, 0), PALE),
+                        ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ],
+                ),
+                Paragraph(
+                    f"Acceptance: quotation {_display(record.get('quote_reference'), 'Draft')} and the attached terms and conditions.",
+                    styles["MultiTerms"],
+                ),
+                signature_table,
+            ]
+        ),
+        PageBreak(),
+        section("Item technical specifications"),
+    ]
+    specification_rows: list[list[Any]] = [[
+        cell("Item", bold=True),
+        cell("Finished size", bold=True),
+        cell("Material / GSM", bold=True),
+        cell("Board code", bold=True),
+        cell("Pallet qty", bold=True),
+        cell("Print", bold=True),
+    ]]
+    for item in items:
+        dimensions = [_number(item.get(key)) for key in ("length_mm", "width_mm", "height_mm")]
+        size = (
+            f"{dimensions[0]:,.0f} × {dimensions[1]:,.0f} × {dimensions[2]:,.0f} mm"
+            if all(value > 0 for value in dimensions)
+            else "Not specified"
+        )
+        material = _board_material(item.get("board_code"), item.get("material"))
+        gsm = _number(item.get("board_gsm"))
+        specification_rows.append(
+            [
+                cell(item.get("item_code")),
+                cell(size),
+                cell(" / ".join(value for value in [material, f"{gsm:,.0f} GSM" if gsm else ""] if value)),
+                cell(str(item.get("board_code", "") or "").rstrip("/")),
+                cell(f"{_number(item.get('pallet_quantity')):,.0f}"),
+                cell(_print_colours(item.get("number_of_colours"))),
+            ]
+        )
+    story.append(
+        Table(
+            specification_rows,
+            repeatRows=1,
+            colWidths=[38 * mm, 36 * mm, 32 * mm, 34 * mm, 18 * mm, 22 * mm],
+            style=[
+                ("BACKGROUND", (0, 0), (-1, 0), PALE),
+                ("GRID", (0, 0), (-1, -1), 0.3, GREY),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ],
+        )
+    )
+
+    def footer(canvas, _: Any) -> None:
+        canvas.saveState()
+        canvas.setStrokeColor(GREY)
+        canvas.line(15 * mm, 12 * mm, A4[0] - 15 * mm, 12 * mm)
+        canvas.setFillColor(colors.HexColor("#666C6C"))
+        canvas.setFont("Helvetica", 7)
+        canvas.drawRightString(A4[0] - 15 * mm, 8 * mm, f"Page {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    document.build(story, onFirstPage=footer, onLaterPages=footer)
+    return _append_terms(buffer.getvalue())
+
+
 def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
+    raw_items = record.get("quote_items", [])
+    if isinstance(raw_items, str):
+        try:
+            raw_items = json.loads(raw_items)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_items = []
+    if isinstance(raw_items, list) and len(raw_items) > 1:
+        return _multi_quote_pdf(record, esign_tags=esign_tags)
     buffer = BytesIO()
     document = SimpleDocTemplate(
         buffer,
@@ -484,14 +930,11 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         )
 
     delivery_method = str(record.get("delivery_method", ""))
-    transport_vendor = str(record.get("transport_vendor", "") or "").strip()
     transport_service = str(record.get("transport_service", "") or "").strip()
-    if delivery_method == "Haulier" and transport_vendor not in {"", "Manual override"}:
-        ordinary_service = " ".join(
-            part for part in [transport_vendor, transport_service] if part
-        )
+    if delivery_method == "Haulier" and transport_service:
         commercial_terms.append(
-            f"The delivery allowance is based on {ordinary_service}. This will ordinarily be the service used."
+            f"The delivery allowance is based on the {transport_service} service. "
+            "This will ordinarily be the service used."
         )
 
     dimensions = [_number(record.get(key)) for key in ("length_mm", "width_mm", "height_mm")]
@@ -759,23 +1202,30 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ],
     )
     quote_reference = _display(record.get("quote_reference"), "Draft")
-    rep_approved_by = str(record.get("esign_approved_by_name", "") or "").strip()
-    rep_approved_at = str(record.get("esign_approved_at_utc", "") or "").strip()
-    rep_approved_at_display = _uk_datetime(rep_approved_at)
-    rep_detail = (
-        f"Sales Representative — Approved in costing tool by "
-        f"{html.escape(rep_approved_by)} · {html.escape(rep_approved_at_display)}"
-        if rep_approved_by and rep_approved_at_display
-        else "Sales Representative — Signed: ____________________  "
-        "Name: _____________________  Date (DD/MM/YYYY): __________"
+    internal_route = str(record.get("esign_internal_signer_role", "") or "").strip()
+    if internal_route not in {"sales_representative", "sales_director"}:
+        internal_route = (
+            "sales_director"
+            if str(record.get("traffic_light_status", "") or "").lower() == "red"
+            else "sales_representative"
+        )
+    internal_heading = (
+        "Sales Director or delegated individual"
+        if internal_route == "sales_director"
+        else "Sales Representative"
+    )
+    internal_role_line = (
+        "Role: Sales Director or delegated individual"
+        if internal_route == "sales_director"
+        else "Role: Sales Representative"
     )
     customer_role = str(record.get("customer_role", "") or "").strip()
     customer_signature = "Signed: ______________________________"
     customer_name_line = "Name: _______________________________"
     customer_date = "Date (DD/MM/YYYY): ___________________"
-    director_signature = "Signed: ______________________________"
-    director_name_line = "Name: _______________________________"
-    director_date = "Date (DD/MM/YYYY): ___________________"
+    internal_signature = "Signed: ______________________________"
+    internal_name_line = "Name: _______________________________"
+    internal_date = "Date (DD/MM/YYYY): ___________________"
     if esign_tags:
         customer_signature = '<font color="#FFFFFF">[sig|req|signer2]</font>'
         customer_name_line = (
@@ -784,11 +1234,11 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         customer_date = (
             'Date: <font color="#FFFFFF">[date|req|signer2|Signing date]</font>'
         )
-        director_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
-        director_name_line = (
+        internal_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
+        internal_name_line = (
             'Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
         )
-        director_date = (
+        internal_date = (
             'Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
         )
     if fulfilment_type == "MTC":
@@ -802,7 +1252,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
     else:
         signature_intro = f"Acceptance: quotation {quote_reference} and the attached terms."
     approval_summary = Table(
-        [[Paragraph(f"{html.escape(signature_intro)}<br/>{rep_detail}", styles["Terms"])]],
+        [[Paragraph(html.escape(signature_intro), styles["Terms"])]],
         colWidths=[180 * mm],
         style=[
             ("BACKGROUND", (0, 0), (-1, -1), PALE),
@@ -849,6 +1299,13 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ],
         )
 
+    internal_card = signature_card(
+        internal_heading,
+        internal_signature,
+        internal_name_line,
+        internal_role_line,
+        internal_date,
+    )
     customer_card = signature_card(
         "Customer",
         customer_signature,
@@ -858,15 +1315,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         else "Role: ________________________________",
         customer_date,
     )
-    director_card = signature_card(
-        "Sales Director or delegated individual",
-        director_signature,
-        director_name_line,
-        "Role: Sales Director or delegated individual",
-        director_date,
-    )
     signature_table = Table(
-        [[customer_card, "", director_card]],
+        [[internal_card, "", customer_card]],
         colWidths=[88 * mm, 4 * mm, 88 * mm],
         style=[
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
