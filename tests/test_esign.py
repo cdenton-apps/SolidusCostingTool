@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 
+from PIL import Image, ImageDraw
 from pypdf import PdfReader
 
 from src.esign import DropboxSignClient, Signer
@@ -32,6 +33,15 @@ class _Response:
                 ],
             }
         }
+
+
+def _signature_png() -> bytes:
+    image = Image.new("RGB", (240, 80), "white")
+    draw = ImageDraw.Draw(image)
+    draw.line((20, 55, 80, 20, 135, 55, 215, 25), fill="black", width=4)
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def test_send_is_forced_to_test_mode_and_orders_signers(monkeypatch) -> None:
@@ -65,7 +75,32 @@ def test_send_is_forced_to_test_mode_and_orders_signers(monkeypatch) -> None:
     assert result["esign_request_id"] == "req-test"
 
 
-def test_green_esign_pdf_contains_sales_rep_and_customer_tags() -> None:
+def test_customer_only_request_uses_signer_one_and_ccs_sales_rep(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return _Response()
+
+    monkeypatch.setattr("src.esign.requests.post", fake_post)
+    DropboxSignClient("secret").send_test_request(
+        b"%PDF-test",
+        title="Quote",
+        subject="Please sign",
+        message="Test",
+        customer=Signer("Customer", "customer@example.com", 0),
+        cc_email="sales.rep@example.com",
+        costing_id="C-2",
+        quote_reference="Q-2",
+    )
+
+    assert captured["data"]["signers[1][name]"] == "Customer"
+    assert captured["data"]["signers[1][order]"] == "0"
+    assert "signers[2][name]" not in captured["data"]
+    assert captured["data"]["cc_email_addresses[0]"] == "sales.rep@example.com"
+
+
+def test_green_esign_pdf_contains_saved_rep_signature_and_customer_tags() -> None:
     pdf = quote_pdf(
         {
             "quote_reference": "Q-TAGS",
@@ -82,18 +117,22 @@ def test_green_esign_pdf_contains_sales_rep_and_customer_tags() -> None:
             "esign_approved_at_utc": "2026-08-11T10:00:00+00:00",
             "created_at_utc": "2026-08-11T09:30:00+00:00",
             "traffic_light_status": "green",
+            "sales_rep_signature_name": "Sales Rep",
+            "sales_rep_signature_applied_at_utc": "2026-08-11T10:00:00+00:00",
+            "_sales_rep_signature_png": _signature_png(),
         },
         esign_tags=True,
     )
     text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages)
 
     assert "[sig|req|signer1]" in text
-    assert "[sig|req|signer2]" in text
+    assert "[sig|req|signer2]" not in text
     assert "[text|req|signer1|Full name]" in text
-    assert "[text|req|signer2|Full name]" in text
+    assert "[text|req|signer2|Full name]" not in text
     assert "[date|req|signer1|Signing date]" in text
-    assert "[date|req|signer2|Signing date]" in text
+    assert "[date|req|signer2|Signing date]" not in text
     assert "Sales Representative" in text
+    assert "Name: Sales Rep" in text
     assert "Sales Director or delegated individual" not in text
     assert "11/08/2026" in text
     assert "11/08/2026 11:00" not in text
@@ -118,6 +157,9 @@ def test_red_esign_pdf_contains_director_and_customer_layout() -> None:
             "selling_price_per_1000": 100,
             "selling_price_per_item": 0.1,
             "traffic_light_status": "red",
+            "sales_rep_signature_name": "Sales Rep",
+            "sales_rep_signature_applied_at_utc": "2026-08-11T10:00:00+00:00",
+            "_sales_rep_signature_png": _signature_png(),
         },
         esign_tags=True,
     )
@@ -126,7 +168,57 @@ def test_red_esign_pdf_contains_director_and_customer_layout() -> None:
     )
 
     assert "Sales Director or delegated individual" in text
-    assert "Sales Representative" not in text
+    assert "Sales Representative approval" in text
+    assert "Name: Sales Rep" in text
     assert "Customer" in text
+    assert "[sig|req|signer1]" in text
+    assert "[sig|req|signer2]" in text
+
+
+def test_green_pdf_without_saved_signature_keeps_legacy_two_signer_tags() -> None:
+    pdf = quote_pdf(
+        {
+            "quote_reference": "Q-LEGACY-GREEN",
+            "customer_name": "Customer",
+            "customer_contact": "Buyer",
+            "item_code": "ITEM",
+            "description": "Description",
+            "fulfilment_type": "MTO",
+            "order_quantity": 1000,
+            "order_pallets": 1,
+            "selling_price_per_1000": 100,
+            "selling_price_per_item": 0.1,
+            "traffic_light_status": "green",
+        },
+        esign_tags=True,
+    )
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages)
+
+    assert "Sales Representative" in text
+    assert "[sig|req|signer1]" in text
+    assert "[sig|req|signer2]" in text
+
+
+def test_red_pdf_without_saved_signature_keeps_director_customer_layout() -> None:
+    pdf = quote_pdf(
+        {
+            "quote_reference": "Q-LEGACY-RED",
+            "customer_name": "Customer",
+            "customer_contact": "Buyer",
+            "item_code": "ITEM",
+            "description": "Description",
+            "fulfilment_type": "MTO",
+            "order_quantity": 1000,
+            "order_pallets": 1,
+            "selling_price_per_1000": 100,
+            "selling_price_per_item": 0.1,
+            "traffic_light_status": "red",
+        },
+        esign_tags=True,
+    )
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages)
+
+    assert "Sales Representative" not in text
+    assert "Sales Director or delegated individual" in text
     assert "[sig|req|signer1]" in text
     assert "[sig|req|signer2]" in text

@@ -204,19 +204,28 @@ director_email = "director@example.com"
 
 The Director name and email are controlled centrally through Streamlit Secrets.
 Quotation users can see the configured recipient but cannot change it. Update
-these two settings once whenever the responsible Director changes. A saved
-revision must contain a customer contact, customer email, Director name and
-Director email before it can be sent. The signed-in sales representative
-must explicitly approve the exact saved revision. Their username, name, email
-and approval time are recorded in Neon and printed in the Sales Representative
-sign-off cell.
+these two settings once whenever the responsible Director changes.
 
-The Director receives the first Dropbox Sign email. After they sign, the
-Customer receives the second. The app is hard-coded to send with Dropbox Sign
-`test_mode=1`, so test documents are watermarked and are not legally binding.
-Use **Refresh signing status** to poll Dropbox Sign; once both signers have
-finished, the completed test PDF can be downloaded from the app. A production
-route must be designed and approved separately.
+Each salesperson manages their own signature under **Menu > My signature**.
+The signature is stored against that username in Neon and cannot be selected or
+changed by another user. Saving a quotation records the exact signature version,
+name, date and file digest used for that revision. Replacing or removing a
+signature therefore affects new revisions only; an older quotation continues to
+use the version that was recorded when it was saved.
+
+For a green or amber quotation, the salesperson's saved signature is already on
+the PDF and Dropbox Sign sends the document to the Customer only. For a red
+quotation, the saved salesperson approval is also on the PDF, but the Sales
+Director or delegated individual receives the first Dropbox Sign email and the
+Customer follows after that signature. Only the salesperson who owns the saved
+revision can send it. Their username, name, email and approval time remain in the
+Neon audit record.
+
+The app is hard-coded to send with Dropbox Sign `test_mode=1`, so test documents
+are watermarked and are not legally binding. Use **Refresh signing status** to
+poll Dropbox Sign; once the required signers have finished, the completed test
+PDF can be downloaded from the app. A production route must be designed and
+approved separately.
 
 ## Neon database storage
 
@@ -241,6 +250,11 @@ url = "PASTE_THE_POOLED_NEON_CONNECTION_STRING_HERE"
 The connection string contains the database password. Keep it in Streamlit
 Secrets only; never add it to GitHub. If the `[database]` section is absent, the
 app continues to use local CSV storage so local development still works.
+
+Run the current `sql/neon_schema.sql` as the Neon owner when upgrading an
+existing database. This creates the versioned personal-signature table as well
+as any other missing tables and indexes. The application database role is not
+allowed to create this table itself.
 
 After the user tables have been prepared, an administrator should open **User
 activity** and select **Import missing users from Streamlit Secrets**. Passwords

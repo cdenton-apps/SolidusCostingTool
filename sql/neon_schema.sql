@@ -72,6 +72,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS app_users_email_lower_idx
 CREATE INDEX IF NOT EXISTS app_users_active_role_idx
     ON public.app_users (is_active, role);
 
+CREATE TABLE IF NOT EXISTS public.user_signatures (
+    signature_id text PRIMARY KEY,
+    username text NOT NULL REFERENCES public.app_users(username)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    image_png bytea NOT NULL,
+    image_sha256 text NOT NULL,
+    created_at_utc timestamptz NOT NULL DEFAULT now(),
+    revoked_at_utc timestamptz,
+    created_by text NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS user_signatures_one_active_per_user_idx
+    ON public.user_signatures (lower(username))
+    WHERE revoked_at_utc IS NULL;
+CREATE INDEX IF NOT EXISTS user_signatures_username_created_idx
+    ON public.user_signatures (lower(username), created_at_utc DESC);
+
 CREATE TABLE IF NOT EXISTS public.app_audit_log (
     audit_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     occurred_at_utc timestamptz NOT NULL DEFAULT now(),
@@ -115,3 +132,4 @@ CREATE INDEX IF NOT EXISTS commercial_approval_requester_idx
 
 GRANT SELECT, INSERT, UPDATE ON TABLE public.commercial_approval_requests
     TO costing_app;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.user_signatures TO costing_app;

@@ -194,6 +194,30 @@ def _uk_date_after_months(value: Any, months: int) -> str:
     ).strftime("%d/%m/%Y")
 
 
+def _sales_rep_signature_flowable(
+    record: dict[str, Any],
+    *,
+    max_width: float,
+    max_height: float,
+) -> Image | None:
+    """Build a bounded image only from signature bytes hydrated by the app."""
+    content = record.get("_sales_rep_signature_png")
+    if not isinstance(content, (bytes, bytearray)) or not content:
+        return None
+    try:
+        image = Image(BytesIO(bytes(content)))
+        scale = min(
+            max_width / float(image.imageWidth),
+            max_height / float(image.imageHeight),
+            1.0,
+        )
+        image.drawWidth = float(image.imageWidth) * scale
+        image.drawHeight = float(image.imageHeight) * scale
+        return image
+    except (OSError, TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
 def _print_colours(value: Any) -> str:
     """Translate the internal print code into customer-facing wording."""
     text = str(value or "").strip()
@@ -465,45 +489,66 @@ def _multi_quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> byt
             f"The delivery allowance is based on the {record.get('transport_service')} service. This will ordinarily be the service used."
         )
 
-    internal_route = (
-        "sales_director"
-        if str(record.get("traffic_light_status", "")).lower() == "red"
-        else "sales_representative"
+    is_red = str(record.get("traffic_light_status", "")).lower() == "red"
+    saved_rep_signature = _sales_rep_signature_flowable(
+        record,
+        max_width=52 * mm,
+        max_height=7 * mm,
     )
-    internal_heading = (
-        "Sales Director or delegated individual"
-        if internal_route == "sales_director"
-        else "Sales Representative"
-    )
-    internal_role = (
-        "Role: Sales Director or delegated individual"
-        if internal_route == "sales_director"
-        else "Role: Sales Representative"
-    )
-    internal_signature = "Signed: ______________________________"
-    internal_name = "Name: _______________________________"
-    internal_date = "Date (DD/MM/YYYY): ___________________"
+    has_saved_rep_signature = saved_rep_signature is not None
+    director_signature: Any = "Signed: ______________________________"
+    director_name = "Name: _______________________________"
+    director_date = "Date (DD/MM/YYYY): ___________________"
     customer_signature = "Signed: ______________________________"
     customer_name = "Name: _______________________________"
     customer_date = "Date (DD/MM/YYYY): ___________________"
     if esign_tags:
-        internal_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
-        internal_name = 'Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
-        internal_date = 'Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
-        customer_signature = '<font color="#FFFFFF">[sig|req|signer2]</font>'
-        customer_name = 'Name: <font color="#FFFFFF">[text|req|signer2|Full name]</font>'
-        customer_date = 'Date: <font color="#FFFFFF">[date|req|signer2|Signing date]</font>'
+        customer_index = 2 if is_red or not has_saved_rep_signature else 1
+        customer_signature = f'<font color="#FFFFFF">[sig|req|signer{customer_index}]</font>'
+        customer_name = f'Name: <font color="#FFFFFF">[text|req|signer{customer_index}|Full name]</font>'
+        customer_date = f'Date: <font color="#FFFFFF">[date|req|signer{customer_index}|Signing date]</font>'
+        if is_red:
+            director_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
+            director_name = 'Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
+            director_date = 'Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
 
-    def signature_card(heading: str, signature: str, name: str, role: str, date: str) -> Table:
+    rep_signature: Any = saved_rep_signature or "Signed: ______________________________"
+    if esign_tags and not is_red and not has_saved_rep_signature:
+        rep_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
+    rep_name = _display(
+        record.get("sales_rep_signature_name")
+        or record.get("esign_approved_by_name")
+        or record.get("created_by_name"),
+        "Sales Representative",
+    )
+    rep_date = _uk_datetime(
+        record.get("sales_rep_signature_applied_at_utc")
+        or record.get("esign_approved_at_utc")
+        or record.get("created_at_utc"),
+        default="___________________",
+    )
+
+    def signature_card(
+        heading: str,
+        signature: Any,
+        name: str,
+        role: str,
+        date: str,
+        *,
+        width: float = 88 * mm,
+    ) -> Table:
+        signature_content = (
+            signature if not isinstance(signature, str) else Paragraph(signature, styles["MultiCell"])
+        )
         return Table(
             [
                 [Paragraph(heading, styles["MultiSignatureHeading"])],
-                [Paragraph(signature, styles["MultiCell"])],
+                [signature_content],
                 [Paragraph(name, styles["MultiCell"])],
                 [Paragraph(role, styles["MultiCell"])],
                 [Paragraph(date, styles["MultiCell"])],
             ],
-            colWidths=[88 * mm],
+            colWidths=[width],
             rowHeights=[4 * mm, 8 * mm, 5 * mm, 4.5 * mm, 4.5 * mm] if esign_tags else None,
             style=[
                 ("BACKGROUND", (0, 0), (0, 0), YELLOW),
@@ -517,25 +562,66 @@ def _multi_quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> byt
             ],
         )
 
-    signature_table = Table(
-        [[
-            signature_card(internal_heading, internal_signature, internal_name, internal_role, internal_date),
+    rep_card = signature_card(
+        "Sales Representative approval",
+        rep_signature,
+        f"Name: {rep_name}",
+        "Role: Sales Representative",
+        f"Date: {rep_date}",
+        width=58 * mm if is_red else 88 * mm,
+    )
+    customer_card = signature_card(
+        "Customer",
+        customer_signature,
+        customer_name,
+        f"Role: {_display(record.get('customer_role'), '_______________________________')}",
+        customer_date,
+        width=58 * mm if is_red else 88 * mm,
+    )
+    signature_row = (
+        [
+            rep_card,
             "",
             signature_card(
-                "Customer",
-                customer_signature,
-                customer_name,
-                f"Role: {_display(record.get('customer_role'), '_______________________________')}",
-                customer_date,
+                "Sales Director or delegated individual",
+                director_signature,
+                director_name,
+                "Role: Director / delegate",
+                director_date,
+                width=58 * mm,
             ),
-        ]],
-        colWidths=[88 * mm, 4 * mm, 88 * mm],
+            "",
+            customer_card,
+        ]
+        if is_red and has_saved_rep_signature
+        else [
+            signature_card(
+                "Sales Director or delegated individual",
+                director_signature,
+                director_name,
+                "Role: Director / delegate",
+                director_date,
+            ),
+            "",
+            customer_card,
+        ]
+        if is_red
+        else [rep_card, "", customer_card]
+    )
+    remaining_signature_table = Table(
+        [signature_row],
+        colWidths=(
+            [58 * mm, 3 * mm, 58 * mm, 3 * mm, 58 * mm]
+            if is_red and has_saved_rep_signature
+            else [88 * mm, 4 * mm, 88 * mm]
+        ),
         style=[
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ],
     )
+    signature_flowables = [remaining_signature_table]
 
     notes = str(record.get("notes", "") or "").strip() or "No additional notes."
     story: list[Any] = [
@@ -583,7 +669,7 @@ def _multi_quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> byt
                     f"Acceptance: quotation {_display(record.get('quote_reference'), 'Draft')} and the attached terms and conditions.",
                     styles["MultiTerms"],
                 ),
-                signature_table,
+                *signature_flowables,
             ]
         ),
         PageBreak(),
@@ -1202,45 +1288,52 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         ],
     )
     quote_reference = _display(record.get("quote_reference"), "Draft")
-    internal_route = str(record.get("esign_internal_signer_role", "") or "").strip()
-    if internal_route not in {"sales_representative", "sales_director"}:
-        internal_route = (
-            "sales_director"
-            if str(record.get("traffic_light_status", "") or "").lower() == "red"
-            else "sales_representative"
-        )
-    internal_heading = (
-        "Sales Director or delegated individual"
-        if internal_route == "sales_director"
-        else "Sales Representative"
+    is_red = str(record.get("traffic_light_status", "") or "").lower() == "red"
+    saved_rep_signature = _sales_rep_signature_flowable(
+        record,
+        max_width=52 * mm,
+        max_height=7 * mm,
     )
-    internal_role_line = (
-        "Role: Sales Director or delegated individual"
-        if internal_route == "sales_director"
-        else "Role: Sales Representative"
-    )
+    has_saved_rep_signature = saved_rep_signature is not None
     customer_role = str(record.get("customer_role", "") or "").strip()
     customer_signature = "Signed: ______________________________"
     customer_name_line = "Name: _______________________________"
     customer_date = "Date (DD/MM/YYYY): ___________________"
-    internal_signature = "Signed: ______________________________"
-    internal_name_line = "Name: _______________________________"
-    internal_date = "Date (DD/MM/YYYY): ___________________"
+    director_signature: Any = "Signed: ______________________________"
+    director_name_line = "Name: _______________________________"
+    director_date = "Date (DD/MM/YYYY): ___________________"
     if esign_tags:
-        customer_signature = '<font color="#FFFFFF">[sig|req|signer2]</font>'
+        customer_index = 2 if is_red or not has_saved_rep_signature else 1
+        customer_signature = f'<font color="#FFFFFF">[sig|req|signer{customer_index}]</font>'
         customer_name_line = (
-            'Name: <font color="#FFFFFF">[text|req|signer2|Full name]</font>'
+            f'Name: <font color="#FFFFFF">[text|req|signer{customer_index}|Full name]</font>'
         )
         customer_date = (
-            'Date: <font color="#FFFFFF">[date|req|signer2|Signing date]</font>'
+            f'Date: <font color="#FFFFFF">[date|req|signer{customer_index}|Signing date]</font>'
         )
-        internal_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
-        internal_name_line = (
-            'Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
-        )
-        internal_date = (
-            'Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
-        )
+        if is_red:
+            director_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
+            director_name_line = (
+                'Name: <font color="#FFFFFF">[text|req|signer1|Full name]</font>'
+            )
+            director_date = (
+                'Date: <font color="#FFFFFF">[date|req|signer1|Signing date]</font>'
+            )
+    rep_signature: Any = saved_rep_signature or "Signed: ______________________________"
+    if esign_tags and not is_red and not has_saved_rep_signature:
+        rep_signature = '<font color="#FFFFFF">[sig|req|signer1]</font>'
+    rep_name = _display(
+        record.get("sales_rep_signature_name")
+        or record.get("esign_approved_by_name")
+        or record.get("created_by_name"),
+        "Sales Representative",
+    )
+    rep_date = _uk_datetime(
+        record.get("sales_rep_signature_applied_at_utc")
+        or record.get("esign_approved_at_utc")
+        or record.get("created_at_utc"),
+        default="___________________",
+    )
     if fulfilment_type == "MTC":
         signature_intro = (
             f"Acceptance: quotation {quote_reference}, its MTC term, call-off profile "
@@ -1272,20 +1365,27 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
 
     def signature_card(
         heading: str,
-        signature: str,
+        signature: Any,
         name_line: str,
         role_line: str,
         date_line: str,
+        *,
+        width: float = 88 * mm,
     ) -> Table:
+        signature_content = (
+            signature
+            if not isinstance(signature, str)
+            else Paragraph(signature, styles["SignatureMeta"])
+        )
         return Table(
             [
                 [Paragraph(heading, styles["SignatureLabel"])],
-                [Paragraph(signature, styles["SignatureMeta"])],
+                [signature_content],
                 [Paragraph(name_line, styles["SignatureMeta"])],
                 [Paragraph(role_line, styles["SignatureMeta"])],
                 [Paragraph(date_line, styles["SignatureMeta"])],
             ],
-            colWidths=[88 * mm],
+            colWidths=[width],
             rowHeights=card_row_heights,
             style=[
                 ("BACKGROUND", (0, 0), (0, 0), YELLOW),
@@ -1299,12 +1399,13 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ],
         )
 
-    internal_card = signature_card(
-        internal_heading,
-        internal_signature,
-        internal_name_line,
-        internal_role_line,
-        internal_date,
+    rep_card = signature_card(
+        "Sales Representative approval",
+        rep_signature,
+        f"Name: {rep_name}",
+        "Role: Sales Representative",
+        f"Date: {rep_date}",
+        width=58 * mm if is_red else 88 * mm,
     )
     customer_card = signature_card(
         "Customer",
@@ -1314,10 +1415,45 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
         if customer_role
         else "Role: ________________________________",
         customer_date,
+        width=58 * mm if is_red else 88 * mm,
     )
-    signature_table = Table(
-        [[internal_card, "", customer_card]],
-        colWidths=[88 * mm, 4 * mm, 88 * mm],
+    signature_row = (
+        [
+            rep_card,
+            "",
+            signature_card(
+                "Sales Director or delegated individual",
+                director_signature,
+                director_name_line,
+                "Role: Director / delegate",
+                director_date,
+                width=58 * mm,
+            ),
+            "",
+            customer_card,
+        ]
+        if is_red and has_saved_rep_signature
+        else [
+            signature_card(
+                "Sales Director or delegated individual",
+                director_signature,
+                director_name_line,
+                "Role: Director / delegate",
+                director_date,
+            ),
+            "",
+            customer_card,
+        ]
+        if is_red
+        else [rep_card, "", customer_card]
+    )
+    remaining_signature_table = Table(
+        [signature_row],
+        colWidths=(
+            [58 * mm, 3 * mm, 58 * mm, 3 * mm, 58 * mm]
+            if is_red and has_saved_rep_signature
+            else [88 * mm, 4 * mm, 88 * mm]
+        ),
         style=[
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -1326,6 +1462,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
         ],
     )
+    signature_flowables = [remaining_signature_table]
     story.extend(
         [
             Spacer(1, 2 * mm),
@@ -1349,7 +1486,7 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
                 [
                     approval_summary,
                     Spacer(1, 0.5 * mm),
-                    signature_table,
+                    *signature_flowables,
                 ]
             ),
         ]

@@ -52,6 +52,11 @@ from src.repository import (
     SPECIFICATION_COLUMNS,
     data_directory,
 )
+from src.signatures import (
+    SignatureImageError,
+    normalise_signature_image,
+    signature_sha256,
+)
 from src.transport import HaulierRateTable, TransportLookupError
 
 
@@ -2475,6 +2480,147 @@ def valid_email(value: str) -> bool:
     return "@" in value and "." in value.rsplit("@", 1)[-1]
 
 
+def active_sales_rep_signature_metadata(
+    repository: CsvRepository,
+    *,
+    username: str,
+    name: str,
+) -> dict[str, Any]:
+    """Snapshot the user's current signature version into a saved revision."""
+    signature = repository.get_active_user_signature(username)
+    if not signature:
+        return {}
+    return {
+        "sales_rep_signature_id": signature["signature_id"],
+        "sales_rep_signature_name": str(name or username).strip(),
+        "sales_rep_signature_applied_at_utc": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        ),
+        "sales_rep_signature_sha256": signature["image_sha256"],
+    }
+
+
+def with_sales_rep_signature(
+    repository: CsvRepository,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Hydrate a quotation only with the signature version owned by its creator."""
+    prepared = dict(record)
+    signature_id = str(prepared.get("sales_rep_signature_id", "") or "").strip()
+    owner = str(prepared.get("created_by_username", "") or "").strip()
+    if not signature_id or not owner:
+        return prepared
+    try:
+        signature = repository.get_user_signature_version(
+            signature_id,
+            expected_username=owner,
+        )
+    except RepositoryBusyError:
+        # A quotation must never fall back to another user's current signature.
+        # Leave it unsigned if its exact recorded version cannot be loaded.
+        return prepared
+    if not signature:
+        return prepared
+    content = bytes(signature.get("image_png") or b"")
+    expected_digest = str(prepared.get("sales_rep_signature_sha256", "") or "")
+    if not content or (
+        expected_digest and signature_sha256(content) != expected_digest
+    ):
+        return prepared
+    prepared["_sales_rep_signature_png"] = content
+    return prepared
+
+
+def render_my_signature(repository: CsvRepository, user: Any) -> None:
+    st.header("My signature")
+    st.write(
+        "Save your own signature here and it will be added to quotation revisions "
+        "that you personally save. It cannot be selected or applied by another user."
+    )
+    if not repository.uses_database:
+        st.warning("Neon storage is required for personal signatures.")
+        return
+    try:
+        current = repository.get_active_user_signature(user.username)
+    except RepositoryBusyError as exc:
+        st.error(str(exc))
+        return
+    if current:
+        st.success(
+            "A signature is saved for your account. New quotation revisions will "
+            "record this exact version."
+        )
+        st.image(
+            bytes(current.get("image_png") or b""),
+            caption=f"Signature for {user.name}",
+            width=360,
+        )
+        st.caption(
+            "Saved "
+            + format_uk_datetime(
+                current.get("created_at_utc"), include_time=False, default=""
+            )
+        )
+    else:
+        st.info("No signature is currently saved for your account.")
+
+    uploaded = st.file_uploader(
+        "Upload a signature image",
+        type=["png", "jpg", "jpeg"],
+        help="A clear signature on a plain white background works best.",
+    )
+    processed: bytes | None = None
+    if uploaded is not None:
+        try:
+            processed = normalise_signature_image(uploaded.getvalue())
+        except SignatureImageError as exc:
+            st.error(str(exc))
+        else:
+            st.caption("Preview")
+            st.image(processed, width=360)
+    consent = st.checkbox(
+        "I confirm this is my signature and authorise the costing tool to apply it "
+        "to quotation revisions that I personally save or send."
+    )
+    if st.button(
+        "Save my signature",
+        type="primary",
+        disabled=processed is None or not consent,
+    ):
+        try:
+            repository.save_user_signature(
+                user.username,
+                processed or b"",
+                actor_username=user.username,
+            )
+        except (RepositoryBusyError, ValueError) as exc:
+            st.error(str(exc))
+        else:
+            st.success("Your signature has been saved.")
+            st.rerun()
+
+    if current:
+        st.divider()
+        remove_confirmed = st.checkbox(
+            "I understand that removing this stops it being used on new revisions.",
+            key="remove_signature_confirmed",
+        )
+        if st.button(
+            "Remove my signature",
+            disabled=not remove_confirmed,
+        ):
+            try:
+                repository.remove_user_signature(
+                    user.username,
+                    actor_username=user.username,
+                )
+            except (RepositoryBusyError, ValueError) as exc:
+                st.error(str(exc))
+            else:
+                st.success("Your signature has been removed from future revisions.")
+                st.rerun()
+
+
 def render_esign_test(
     repository: CsvRepository,
     saved: dict[str, Any],
@@ -2487,6 +2633,7 @@ def render_esign_test(
     api_key = str(settings.get("api_key", "") or "").strip()
     if not api_key:
         return
+    saved = with_sales_rep_signature(repository, saved)
     st.markdown("#### Test e-signature")
     st.caption(
         "This route is locked to Dropbox Sign test mode. It sends real test emails, "
@@ -2498,11 +2645,11 @@ def render_esign_test(
     director_name = str(saved.get("director_name", "") or "").strip()
     director_email = str(saved.get("director_email", "") or "").strip()
     is_red = str(saved.get("traffic_light_status", "") or "").lower() == "red"
-    internal_name = director_name if is_red else user_name
-    internal_email = director_email if is_red else user_email
-    internal_label = (
-        "Sales Director or delegated individual" if is_red else "Sales Representative"
-    )
+    has_sales_rep_signature = bool(saved.get("_sales_rep_signature_png"))
+    record_owner = str(saved.get("created_by_username", "") or "").strip()
+    if record_owner and record_owner.casefold() != user_username.casefold():
+        st.warning("Only the salesperson who saved this revision can send it for signature.")
+        return
     request_id = str(saved.get("esign_request_id", "") or "").strip()
     status = str(saved.get("esign_status", "") or "").strip()
 
@@ -2552,22 +2699,40 @@ def render_esign_test(
         problems.append("customer contact role")
     if not valid_email(customer_email):
         problems.append("customer email")
-    if not internal_name:
-        problems.append(f"{internal_label} name")
-    if not valid_email(internal_email):
-        problems.append(f"{internal_label} email")
-    if customer_email.casefold() == internal_email.casefold() and customer_email:
-        problems.append("different Solidus signatory and Customer email addresses")
+    if not has_sales_rep_signature:
+        problems.append(
+            "your saved signature (open My signature, then save a new quotation revision)"
+        )
+    if is_red and not director_name:
+        problems.append("Sales Director or delegated individual name")
+    if is_red and not valid_email(director_email):
+        problems.append("Sales Director or delegated individual email")
+    if customer_email.casefold() == user_email.casefold() and customer_email:
+        problems.append("different Sales Representative and Customer email addresses")
+    if (
+        is_red
+        and customer_email.casefold() == director_email.casefold()
+        and customer_email
+    ):
+        problems.append("different Director and Customer email addresses")
     if problems:
         st.warning("Save this revision with " + ", ".join(problems) + " before sending it.")
         return
 
-    st.caption(
-        f"{internal_label} {internal_name} ({internal_email}) will sign first. "
-        f"The Customer will sign second, and a completed copy will be emailed to {user_email}."
-    )
+    if is_red:
+        st.caption(
+            f"Your saved signature is already on the quotation. {director_name} "
+            f"({director_email}) will sign first, followed by the Customer. A completed "
+            f"copy will be emailed to {user_email}."
+        )
+    else:
+        st.caption(
+            "Your saved signature is already on the quotation, so only the Customer "
+            f"needs to sign. A completed copy will be emailed to {user_email}."
+        )
     approved = st.checkbox(
-        "I want this exact saved test quotation sent for the required internal and Customer signatures."
+        "I approve this exact saved quotation and want it sent for the remaining "
+        "signature(s)."
     )
     if st.button(
         "Approve and send test quotation",
@@ -2584,7 +2749,7 @@ def render_esign_test(
             "esign_approved_by_email": user_email,
             "esign_approved_at_utc": approved_at,
             "esign_internal_signer_role": (
-                "sales_director" if is_red else "sales_representative"
+                "sales_director" if is_red else "sales_representative_presigned"
             ),
         }
         try:
@@ -2595,16 +2760,25 @@ def render_esign_test(
             st.error(str(exc))
             return
         try:
+            approved_record = with_sales_rep_signature(repository, approved_record)
             result = DropboxSignClient(api_key).send_test_request(
                 quote_pdf(approved_record, esign_tags=True),
                 title=f"Solidus quotation {saved.get('quote_reference') or saved.get('costing_id')}",
                 subject=f"Test signature request: Solidus quotation {saved.get('quote_reference') or ''}",
                 message=(
                     "This is a non-binding test of the Solidus quotation signing process. "
-                    f"The {internal_label} is asked to sign first, followed by the Customer."
+                    + (
+                        "The Sales Director or delegated individual is asked to sign first, "
+                        "followed by the Customer."
+                        if is_red
+                        else "The Sales Representative has approved the quotation in the "
+                        "costing tool; the Customer is asked to sign."
+                    )
                 ),
-                director=Signer(internal_name, internal_email, 0),
-                customer=Signer(customer_name, customer_email, 1),
+                director=(
+                    Signer(director_name, director_email, 0) if is_red else None
+                ),
+                customer=Signer(customer_name, customer_email, 1 if is_red else 0),
                 cc_email=user_email,
                 costing_id=str(saved.get("costing_id", "")),
                 quote_reference=str(saved.get("quote_reference", "")),
@@ -2626,7 +2800,14 @@ def render_esign_test(
             )
         else:
             st.session_state.last_saved = updated
-            st.success(f"Test request sent. The {internal_label} should receive the first email.")
+            st.success(
+                "Test request sent. "
+                + (
+                    "The Sales Director or delegated individual should receive the first email."
+                    if is_red
+                    else "The Customer should receive the signing email."
+                )
+            )
             st.rerun()
 
 
@@ -2702,7 +2883,8 @@ def render_save(
                     st.session_state.director_email
                 ):
                     st.caption(
-                        "RED route: Sales Director or delegated individual "
+                        f"RED route: {user_name}'s saved signature will be applied. "
+                        "Sales Director or delegated individual "
                         f"{st.session_state.director_name} "
                         f"({st.session_state.director_email}) will sign first."
                     )
@@ -2714,7 +2896,8 @@ def render_save(
             else:
                 st.caption(
                     f"{str((st.session_state.get('pricing') or {}).get('traffic_light_status', '')).upper()} "
-                    f"route: Sales Representative {user_name} ({user_email}) will sign first."
+                    f"route: {user_name}'s saved signature will be applied and only the "
+                    "Customer will be asked to sign."
                 )
         quote_notes = st.text_area("Quote notes", key="quote_notes", height=100)
 
@@ -2773,6 +2956,13 @@ def render_save(
             )
         )
         try:
+            record.update(
+                active_sales_rep_signature_metadata(
+                    repository,
+                    username=user_username,
+                    name=user_name,
+                )
+            )
             saved = repository.save_costing(
                 record,
                 user_username=user_username,
@@ -2813,7 +3003,7 @@ def render_save(
         )
         return
 
-    export_record = dict(saved)
+    export_record = with_sales_rep_signature(repository, saved)
     download_count = 1 + int(can_create_new) + int(is_admin)
     download_columns = st.columns(download_count)
     download_columns[0].download_button(
@@ -4397,16 +4587,21 @@ def render_multi_item_quote(
     overall_status = _overall_traffic_status(statuses)
     if overall_status == "red":
         st.error(
-            "Overall route: RED. The Sales Director or delegated individual will "
-            "sign first because at least one item is red."
+            "Overall route: RED. The salesperson's saved signature will be shown; "
+            "the Sales Director or delegated individual will sign first because at "
+            "least one item is red."
         )
     elif overall_status == "amber":
         st.warning(
-            "Overall route: AMBER. The Sales Representative will sign first after "
-            "the warning is acknowledged."
+            "Overall route: AMBER. After the warning is acknowledged, the "
+            "salesperson's saved signature will be applied and only the Customer "
+            "will be asked to sign."
         )
     else:
-        st.success("Overall route: GREEN. The Sales Representative will sign first.")
+        st.success(
+            "Overall route: GREEN. The salesperson's saved signature will be applied "
+            "and only the Customer will be asked to sign."
+        )
 
     amber_acknowledged = True
     if overall_status == "amber":
@@ -4505,6 +4700,13 @@ def render_multi_item_quote(
     )
     if save_multi:
         try:
+            current_multi_record.update(
+                active_sales_rep_signature_metadata(
+                    repository,
+                    username=user_username,
+                    name=user_name,
+                )
+            )
             saved = repository.save_costing(
                 current_multi_record,
                 user_username=user_username,
@@ -4536,7 +4738,7 @@ def render_multi_item_quote(
     st.markdown("#### Downloads")
     st.download_button(
         "Customer quote PDF",
-        data=quote_pdf(saved),
+        data=quote_pdf(with_sales_rep_signature(repository, saved)),
         file_name=f"{saved.get('quote_reference') or 'multi-item-quote'}.pdf",
         mime="application/pdf",
         width="stretch",
@@ -4678,7 +4880,7 @@ def main() -> None:
             "Your account can cost existing products only. Select a product to continue."
         )
 
-    navigation = ["Costing workflow", "My costings"]
+    navigation = ["Costing workflow", "My costings", "My signature"]
     if user.can_view_history or user.is_admin:
         navigation.append("Team history")
     if user.is_admin:
@@ -4693,6 +4895,8 @@ def main() -> None:
     try:
         if page == "My costings":
             render_history(repository, user.email, user.is_admin)
+        elif page == "My signature":
+            render_my_signature(repository, user)
         elif page == "Team history":
             render_team_history(repository, user.is_admin)
         elif page == "Admin tools":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import logging
 import math
@@ -184,6 +185,10 @@ HISTORY_COLUMNS = [
     "customer_email",
     "director_name",
     "director_email",
+    "sales_rep_signature_id",
+    "sales_rep_signature_name",
+    "sales_rep_signature_applied_at_utc",
+    "sales_rep_signature_sha256",
     "notes",
     "additional_charge_description",
     "additional_charge_amount",
@@ -541,6 +546,150 @@ class CsvRepository:
         except psycopg.Error as exc:
             raise RepositoryBusyError(
                 "The user list could not be loaded. Please try again."
+            ) from exc
+
+    def get_active_user_signature(self, username: str) -> dict[str, Any] | None:
+        """Return only the active signature owned by the supplied username."""
+        if not self.uses_database or not str(username or "").strip():
+            return None
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT signature_id, username, image_png, image_sha256, "
+                        "created_at_utc FROM public.user_signatures "
+                        "WHERE lower(username) = lower(%s) "
+                        "AND revoked_at_utc IS NULL ORDER BY created_at_utc DESC LIMIT 1",
+                        (str(username).strip(),),
+                    )
+                    row = cursor.fetchone()
+            return dict(row) if row else None
+        except psycopg.errors.UndefinedTable:
+            return None
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "Your saved signature could not be loaded. Please try again."
+            ) from exc
+
+    def get_user_signature_version(
+        self,
+        signature_id: str,
+        *,
+        expected_username: str,
+    ) -> dict[str, Any] | None:
+        """Load one immutable signature version only for its recorded owner."""
+        if (
+            not self.uses_database
+            or not str(signature_id or "").strip()
+            or not str(expected_username or "").strip()
+        ):
+            return None
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT signature_id, username, image_png, image_sha256, "
+                        "created_at_utc FROM public.user_signatures "
+                        "WHERE signature_id = %s AND lower(username) = lower(%s)",
+                        (str(signature_id).strip(), str(expected_username).strip()),
+                    )
+                    row = cursor.fetchone()
+            return dict(row) if row else None
+        except psycopg.errors.UndefinedTable:
+            return None
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "The quotation signature could not be loaded. Please try again."
+            ) from exc
+
+    def save_user_signature(
+        self,
+        username: str,
+        image_png: bytes,
+        *,
+        actor_username: str,
+    ) -> dict[str, Any]:
+        """Replace a user's signature without allowing cross-account writes."""
+        username = str(username or "").strip()
+        actor_username = str(actor_username or "").strip()
+        if username.casefold() != actor_username.casefold():
+            raise ValueError("You can only change the signature on your own account.")
+        content = bytes(image_png or b"")
+        if not content or len(content) > 1_000_000:
+            raise ValueError("The processed signature image is not a safe size.")
+        signature_id = f"SIG-{uuid.uuid4().hex.upper()}"
+        digest = hashlib.sha256(content).hexdigest()
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"user-signature:{username.casefold()}",),
+                    )
+                    cursor.execute(
+                        "UPDATE public.user_signatures SET revoked_at_utc = now() "
+                        "WHERE lower(username) = lower(%s) AND revoked_at_utc IS NULL",
+                        (username,),
+                    )
+                    cursor.execute(
+                        "INSERT INTO public.user_signatures "
+                        "(signature_id, username, image_png, image_sha256, created_by) "
+                        "SELECT %s, username, %s, %s, %s FROM public.app_users "
+                        "WHERE lower(username) = lower(%s) RETURNING signature_id, "
+                        "username, image_png, image_sha256, created_at_utc",
+                        (signature_id, content, digest, actor_username, username),
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        raise ValueError("Your user account could not be found.")
+                    cursor.execute(
+                        "INSERT INTO public.app_audit_log "
+                        "(actor_username, action, target_username, detail) "
+                        "VALUES (%s, 'signature_saved', %s, %s)",
+                        (actor_username, username, Jsonb({"signature_id": signature_id})),
+                    )
+            return dict(row)
+        except psycopg.errors.UndefinedTable as exc:
+            raise RepositoryBusyError(
+                "Signature storage is not ready in Neon. Run the latest schema update first."
+            ) from exc
+        except (psycopg.Error, TypeError) as exc:
+            raise RepositoryBusyError(
+                "Your signature could not be saved. Please try again."
+            ) from exc
+
+    def remove_user_signature(
+        self,
+        username: str,
+        *,
+        actor_username: str,
+    ) -> None:
+        """Revoke the active signature without affecting saved quotation versions."""
+        username = str(username or "").strip()
+        actor_username = str(actor_username or "").strip()
+        if username.casefold() != actor_username.casefold():
+            raise ValueError("You can only remove the signature on your own account.")
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE public.user_signatures SET revoked_at_utc = now() "
+                        "WHERE lower(username) = lower(%s) AND revoked_at_utc IS NULL",
+                        (username,),
+                    )
+                    cursor.execute(
+                        "INSERT INTO public.app_audit_log "
+                        "(actor_username, action, target_username, detail) "
+                        "VALUES (%s, 'signature_removed', %s, '{}'::jsonb)",
+                        (actor_username, username),
+                    )
+        except psycopg.errors.UndefinedTable as exc:
+            raise RepositoryBusyError(
+                "Signature storage is not ready in Neon. Run the latest schema update first."
+            ) from exc
+        except psycopg.Error as exc:
+            raise RepositoryBusyError(
+                "Your signature could not be removed. Please try again."
             ) from exc
 
     def save_app_user(
