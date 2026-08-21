@@ -1582,8 +1582,7 @@ def history_pdf(frame: pd.DataFrame) -> bytes:
 
 
 def sage_stock_import_csv(record: dict[str, Any]) -> bytes:
-    """Create one row in the exact supplied Sage stock export/import layout."""
-    site = str(record.get("manufacturing_site", "") or "").strip()
+    """Create finished-item and, when needed, new plain-board Sage rows."""
     site_accounts = {
         "101": {
             "Asset of stock - account number": "10260361",
@@ -1610,35 +1609,82 @@ def sage_stock_import_csv(record: dict[str, Any]) -> bytes:
             "Revenue - department": "103",
         },
     }
-    row: dict[str, Any] = {column: "" for column in SAGE_STOCK_COLUMNS}
-    row.update({
-        "Stock item code": record.get("item_code", ""),
-        "Stock item name": record.get("item_name") or record.get("description", ""),
-        "Product group": record.get("product_group", ""),
-        "Tax code": 1,
-        "Stock item description": record.get("description", ""),
-        "Manufacturer's name": site,
-        "Net mass": record.get("net_mass_kg", ""),
-        "Stock take days": 0,
-        "Allow Sales order": 1,
-        "Supplier lead time": 0,
-        "Supplier lead time unit": 0,
-        "Supplier minimum quantity": "0.00000",
-        "Supplier usual order quantity": "0.00000",
-        "Accrued receipts - account number": "10020003",
-        "Accrued receipts - department": "101",
-        "Issues - account number": "10260031",
-        "Issues - cost centre": "201",
-        "Issues - department": "101",
-        **site_accounts.get(site, {}),
-    })
-    for index, (name, field, default) in enumerate(SAGE_ANALYSIS_FIELDS, start=1):
-        value = record.get(field)
-        if field == "mrp_type" and not str(value or "").strip():
-            value = record.get("fulfilment_type", default)
-        elif value is None:
-            value = default
-        row[f"AnalysisName\\{index}"] = name
-        row[f"AnalysisValue\\{index}"] = value
-    frame = pd.DataFrame([row], columns=SAGE_STOCK_COLUMNS)
+
+    def sage_row(source: dict[str, Any]) -> dict[str, Any]:
+        site = str(source.get("manufacturing_site", "") or "").strip()
+        row: dict[str, Any] = {column: "" for column in SAGE_STOCK_COLUMNS}
+        row.update(
+            {
+                "Stock item code": source.get("item_code", ""),
+                "Stock item name": source.get("item_name")
+                or source.get("description", ""),
+                "Product group": source.get("product_group", ""),
+                "Tax code": 1,
+                "Stock item description": source.get("description", ""),
+                "Manufacturer's name": site,
+                "Net mass": source.get("net_mass_kg", ""),
+                "Stock take days": 0,
+                "Allow Sales order": source.get("allow_sales_order", 1),
+                "Supplier lead time": 0,
+                "Supplier lead time unit": 0,
+                "Supplier minimum quantity": "0.00000",
+                "Supplier usual order quantity": "0.00000",
+                "Accrued receipts - account number": "10020003",
+                "Accrued receipts - department": "101",
+                "Issues - account number": "10260031",
+                "Issues - cost centre": "201",
+                "Issues - department": "101",
+                **site_accounts.get(site, {}),
+            }
+        )
+        for index, (name, field, default) in enumerate(
+            SAGE_ANALYSIS_FIELDS, start=1
+        ):
+            value = source.get(field)
+            if field == "mrp_type" and not str(value or "").strip():
+                value = source.get("fulfilment_type", default)
+            elif value is None:
+                value = default
+            row[f"AnalysisName\\{index}"] = name
+            row[f"AnalysisValue\\{index}"] = value
+        return row
+
+    rows = [sage_row(record)]
+    new_board_required = str(record.get("new_board_required", "") or "").strip().lower()
+    new_board_code = str(record.get("new_board_item_code", "") or "").strip()
+    if new_board_code and new_board_required in {"1", "1.0", "true", "yes", "on"}:
+        width = float(record.get("board_width_mm", 0) or 0)
+        length = float(record.get("board_length_mm", 0) or 0)
+        gsm = float(record.get("board_gsm", 0) or 0)
+        material_spec = str(
+            record.get("new_board_material_spec", "") or ""
+        ).strip()
+        board_name = (
+            f"BOARD{width:,.0f}X{length:,.0f}/{gsm:,.0f}GSM/{material_spec}"
+        ).replace(",", "").rstrip("/")
+        board_record = {
+            "item_code": new_board_code,
+            "item_name": board_name,
+            "description": board_name,
+            "product_group": "Various Board",
+            "manufacturing_site": record.get("manufacturing_site", ""),
+            "net_mass_kg": width * length * gsm / 1_000_000_000,
+            "allow_sales_order": 0,
+            "mrp_type": "MTO",
+            "length_mm": length,
+            "width_mm": width,
+            "height_mm": 0,
+            "board_gsm": gsm,
+            "board_width_mm": width,
+            "board_length_mm": length,
+            "product_state": "RM Sheets Box",
+            "number_of_colours": 0,
+            "fsc": record.get("fsc", ""),
+            "pallet_quantity": "",
+            "board_code": record.get("board_code", ""),
+            "market_segment": record.get("market_segment", ""),
+        }
+        rows.append(sage_row(board_record))
+
+    frame = pd.DataFrame(rows, columns=SAGE_STOCK_COLUMNS)
     return frame.to_csv(index=False).encode("utf-8-sig")
