@@ -119,6 +119,16 @@ def _unit_money(value: Any, currency: Any = "GBP") -> str:
         return "—"
 
 
+def _one_off_description(value: Any) -> str:
+    """Use the agreed customer-facing wording and capitalisation."""
+    description = str(value or "").strip() or "Forme / Stereo"
+    if re.fullmatch(r"forme\s*/\s*stereo", description, flags=re.IGNORECASE):
+        return "Forme / Stereo"
+    return re.sub(
+        r"\bstereo\b", "Stereo", description, flags=re.IGNORECASE
+    )
+
+
 def _board_material(board_code: Any, fallback: Any = "") -> str:
     """Return the material suffix that follows the GSM part of a board code."""
     parts = [part.strip() for part in str(board_code or "").strip("/").split("/")]
@@ -440,7 +450,7 @@ def _multi_quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> byt
     ]
     if record.get("additional_charge_foc") or _number(record.get("additional_charge_amount")) > 0:
         charge = "FOC" if record.get("additional_charge_foc") else _money(record.get("additional_charge_amount"), quote_currency)
-        price_rows.append([cell(record.get("additional_charge_description") or "One-off charge", bold=True), cell(charge, bold=True)])
+        price_rows.append([cell(_one_off_description(record.get("additional_charge_description")), bold=True), cell(charge, bold=True)])
     price_table = Table(
         price_rows,
         colWidths=[130 * mm, 50 * mm],
@@ -1091,11 +1101,8 @@ def quote_pdf(record: dict[str, Any], *, esign_tags: bool = False) -> bytes:
             [paragraph("Per 1,000", "CellLabel"), paragraph(_money(record.get("selling_price_per_1000"), quote_currency), "CardValue")],
             [paragraph("Per item", "CellLabel"), paragraph(_unit_money(record.get("selling_price_per_item"), quote_currency), "CardValue")],
     ]
-    additional_description = str(
-        record.get("additional_charge_description", "") or ""
-    ).strip()
-    additional_description = re.sub(
-        r"\bstereo\b", "Stereo", additional_description, flags=re.IGNORECASE
+    additional_description = _one_off_description(
+        record.get("additional_charge_description", "")
     )
     additional_amount = _number(record.get("additional_charge_amount"))
     additional_foc = bool(record.get("additional_charge_foc", False))
