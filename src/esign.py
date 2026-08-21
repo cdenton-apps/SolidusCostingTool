@@ -60,15 +60,15 @@ class DropboxSignClient:
         title: str,
         subject: str,
         message: str,
-        director: Signer,
         customer: Signer,
+        director: Signer | None = None,
         cc_email: str = "",
         costing_id: str,
         quote_reference: str,
     ) -> dict[str, Any]:
         if not pdf.startswith(b"%PDF"):
             raise ESignError("The quotation PDF could not be prepared.")
-        if director.email.casefold() == customer.email.casefold():
+        if director and director.email.casefold() == customer.email.casefold():
             raise ESignError(
                 "Use different email addresses for the Solidus and Customer signers."
             )
@@ -84,15 +84,30 @@ class DropboxSignClient:
             "locale": "en-GB",
             "metadata[costing_id]": costing_id,
             "metadata[quote_reference]": quote_reference,
-            "signers[1][name]": director.name,
-            "signers[1][email_address]": director.email,
-            "signers[1][order]": str(director.order),
-            "signers[2][name]": customer.name,
-            "signers[2][email_address]": customer.email,
-            "signers[2][order]": str(customer.order),
         }
+        if director:
+            data.update(
+                {
+                    "signers[1][name]": director.name,
+                    "signers[1][email_address]": director.email,
+                    "signers[1][order]": str(director.order),
+                    "signers[2][name]": customer.name,
+                    "signers[2][email_address]": customer.email,
+                    "signers[2][order]": str(customer.order),
+                }
+            )
+        else:
+            data.update(
+                {
+                    "signers[1][name]": customer.name,
+                    "signers[1][email_address]": customer.email,
+                    "signers[1][order]": str(customer.order),
+                }
+            )
         cc_email = str(cc_email or "").strip()
-        signer_emails = {director.email.casefold(), customer.email.casefold()}
+        signer_emails = {customer.email.casefold()}
+        if director:
+            signer_emails.add(director.email.casefold())
         if cc_email and cc_email.casefold() not in signer_emails:
             data["cc_email_addresses[0]"] = cc_email
         response = requests.post(
