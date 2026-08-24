@@ -27,7 +27,10 @@ from src.calculations import (
     ANNUAL_VOLUME_ADJUSTMENTS,
     COMEX_FACTORS,
     DEFAULT_ANNUAL_VOLUME_BAND,
+    DEFAULT_TOOLING_CHARGE,
+    FOC_TOOLING_AMORTISATION_PER_1000,
     MIN_PALLET_HOLDING_CHARGE,
+    TOOLING_AMORTISATION_PER_1000,
     annual_volume_band_for_units,
     calculate_cost,
     operational_spread_metrics,
@@ -37,7 +40,13 @@ from src.calculations import (
     validate_details,
 )
 from src.exports import history_pdf, quote_pdf, sage_stock_import_csv
-from src.esign import DropboxSignClient, ESignError, Signer
+from src.esign import (
+    DropboxSignClient,
+    ESignError,
+    Signer,
+    append_commercial_signature_page,
+    commercial_approval_recipient,
+)
 from src.multi_item import MULTI_DELIVERY_MODES, price_multi_item_transport
 from src.product_matcher import (
     COATING_OPTIONS,
@@ -450,13 +459,16 @@ def default_draft() -> dict[str, Any]:
         "delivery_method": "Haulier",
         "incoterm": "DAP",
         "transport_service": "Next Day",
-        "transport_vendor_preference": "Cheapest available",
+        "transport_vendor_preference": "Highest available",
         "transport_vendor": "",
         "transport_booking": "AM/PM",
         "transport_rate_zone": "",
         "transport_manual_override": 0,
         "transport_total": 0.0,
         "spread_percent": 30.0,
+        "additional_charge_description": "Forme / Stereo",
+        "additional_charge_amount": DEFAULT_TOOLING_CHARGE,
+        "additional_charge_foc": False,
         "quote_currency": "GBP",
         "eur_per_gbp": 1.0,
         "eur_rate_date": "",
@@ -646,6 +658,11 @@ def reset_downstream() -> None:
     st.session_state.pop("quote_revision", None)
     st.session_state.pop("customer_contact", None)
     st.session_state.pop("customer_role", None)
+    st.session_state.pop("customer_email", None)
+    st.session_state.pop("approval_recipient_name", None)
+    st.session_state.pop("approval_recipient_email", None)
+    st.session_state.pop("approval_recipient_role", None)
+    st.session_state.pop("approval_recipient_is_cover", None)
     st.session_state.pop("additional_charge_description", None)
     st.session_state.pop("additional_charge_amount", None)
     st.session_state.pop("additional_charge_foc", None)
@@ -1865,6 +1882,17 @@ def render_specification(
     quantity_metrics[1].metric("Pallets", f"{int(order_pallets):,}")
     quantity_metrics[2].metric("Units per pallet", f"{safe_pallet_quantity:,}")
 
+    large_order_confirmed = True
+    if int(order_pallets) > 26:
+        st.warning(
+            f"This order is {int(order_pallets):,} pallets. Are you sure? "
+            "Please check that an extra zero has not been entered."
+        )
+        large_order_confirmed = st.checkbox(
+            f"Yes, I confirm the order quantity is {int(order_pallets):,} pallets.",
+            key=f"confirm_large_order_{int(order_pallets)}",
+        )
+
     agreement_term_months = int(draft_number("agreement_term_months", 12))
     pallet_holding_charge = draft_number(
         "pallet_holding_charge_per_pallet_per_week"
@@ -1956,6 +1984,7 @@ def render_specification(
     submitted = st.button(
         "Continue to delivery" if simple_mode else "Save order details",
         type="primary",
+        disabled=not large_order_confirmed,
         width="stretch" if simple_mode else "content",
     )
 
@@ -2424,7 +2453,7 @@ def render_costs(
     service = str(draft.get("transport_service", "Next Day"))
     booking = str(draft.get("transport_booking", "AM/PM"))
     vendor_preference = str(
-        draft.get("transport_vendor_preference", "Cheapest available")
+        draft.get("transport_vendor_preference", "Highest available")
     )
     manual_override = bool(float(draft.get("transport_manual_override", 0) or 0))
     manual_transport_total = draft_number("transport_total")
@@ -2442,9 +2471,14 @@ def render_costs(
             index=["Standard", "AM/PM", "Timed"].index(booking),
         )
         if simple_mode:
-            vendor_preference = "Cheapest available"
+            vendor_preference = "Highest available"
         else:
-            preferences = ["Cheapest available", "Joda", "McDowells"]
+            preferences = [
+                "Highest available",
+                "Cheapest available",
+                "Joda",
+                "McDowells",
+            ]
             vendor_preference = delivery_columns[2].selectbox(
                 "Haulier",
                 preferences,
@@ -2519,8 +2553,14 @@ def render_costs(
                     service=service,
                     booking=booking,
                 )
-                if vendor_preference == "Cheapest available":
-                    selected_quote = quotes[0]
+                if vendor_preference == "Highest available":
+                    selected_quote = max(
+                        quotes, key=lambda quote: float(quote.total_cost)
+                    )
+                elif vendor_preference == "Cheapest available":
+                    selected_quote = min(
+                        quotes, key=lambda quote: float(quote.total_cost)
+                    )
                 else:
                     selected_quote = next(
                         (quote for quote in quotes if quote.vendor == vendor_preference),
@@ -2725,10 +2765,41 @@ def render_pricing(
     simple_mode: bool = False,
 ) -> None:
     st.subheader("Set spread or selling price")
-    st.session_state.setdefault("additional_charge_description", "Forme / Stereo")
-    st.session_state.setdefault("additional_charge_amount", 0.0)
-    st.session_state.setdefault("additional_charge_foc", True)
+    draft = st.session_state.draft
+    st.session_state.setdefault(
+        "additional_charge_description",
+        str(draft.get("additional_charge_description", "Forme / Stereo")),
+    )
+    st.session_state.setdefault(
+        "additional_charge_amount",
+        float(draft.get("additional_charge_amount", DEFAULT_TOOLING_CHARGE) or 0),
+    )
+    st.session_state.setdefault(
+        "additional_charge_foc",
+        bool(draft.get("additional_charge_foc", False)),
+    )
+    draft["additional_charge_description"] = st.session_state.additional_charge_description
+    draft["additional_charge_amount"] = st.session_state.additional_charge_amount
+    draft["additional_charge_foc"] = st.session_state.additional_charge_foc
     breakdown = st.session_state.breakdown
+    expected_tooling_amortisation = (
+        FOC_TOOLING_AMORTISATION_PER_1000
+        if st.session_state.additional_charge_foc
+        else TOOLING_AMORTISATION_PER_1000
+    )
+    current_tooling_amortisation = float(
+        breakdown.get("tooling_amortisation_per_1000", 0) or 0
+    )
+    if current_tooling_amortisation != float(expected_tooling_amortisation):
+        pricing_base = float(breakdown.get("pricing_base_per_1000", 0) or 0)
+        pricing_base += expected_tooling_amortisation - current_tooling_amortisation
+        breakdown = {
+            **breakdown,
+            "tooling_amortisation_per_1000": expected_tooling_amortisation,
+            "pricing_base_per_1000": round(pricing_base, 4),
+            "pricing_base_per_item": round(pricing_base / 1_000, 5),
+        }
+        st.session_state.breakdown = breakdown
     if is_admin:
         show_cost_breakdown(breakdown)
         show_admin_adjustment_detail(breakdown)
@@ -2923,8 +2994,12 @@ def render_pricing(
 
         st.markdown("#### One-off tooling")
         st.caption(
-            "Add a separate forme, Stereo or other one-off charge. This does not "
-            "change the material cost or spread calculation."
+            f"Tooling defaults to {currency_symbol(quote_currency)}"
+            f"{DEFAULT_TOOLING_CHARGE:,.0f} per item. A £"
+            f"{TOOLING_AMORTISATION_PER_1000:,.0f} per 1,000 tooling allowance is "
+            f"included in the pricing base; selecting FOC doubles it to £"
+            f"{FOC_TOOLING_AMORTISATION_PER_1000:,.0f} per 1,000. The separate "
+            "one-off charge is not included in the material-only spread/hour test."
         )
         tooling_left, tooling_middle, tooling_right = st.columns([2, 1, 1])
         tooling_left.text_input(
@@ -2980,7 +3055,8 @@ def render_pricing(
             st.markdown(
                 '<div class="amber-alert"><strong>⚠ AMBER COMMERCIAL WARNING</strong>'
                 "The hourly target is met, but spread is below 30%. Review the "
-                "selling price before continuing.</div>",
+                "selling price before continuing. The configured amber approver "
+                "will sign before the Customer.</div>",
                 unsafe_allow_html=True,
             )
         else:
@@ -3035,15 +3111,27 @@ def current_record() -> dict[str, Any]:
         "customer_email": st.session_state.get("customer_email", ""),
         "director_name": st.session_state.get("director_name", ""),
         "director_email": st.session_state.get("director_email", ""),
+        "approval_recipient_name": st.session_state.get(
+            "approval_recipient_name", ""
+        ),
+        "approval_recipient_email": st.session_state.get(
+            "approval_recipient_email", ""
+        ),
+        "approval_recipient_role": st.session_state.get(
+            "approval_recipient_role", ""
+        ),
+        "approval_recipient_is_cover": st.session_state.get(
+            "approval_recipient_is_cover", False
+        ),
         "notes": st.session_state.get("quote_notes", ""),
         "additional_charge_description": st.session_state.get(
             "additional_charge_description", ""
         ),
         "additional_charge_amount": st.session_state.get(
-            "additional_charge_amount", 0.0
+            "additional_charge_amount", DEFAULT_TOOLING_CHARGE
         ),
         "additional_charge_foc": st.session_state.get(
-            "additional_charge_foc", True
+            "additional_charge_foc", False
         ),
     }
     if record["additional_charge_foc"]:
@@ -3069,6 +3157,10 @@ SAVED_REVISION_FIELDS = [
     "customer_email",
     "director_name",
     "director_email",
+    "approval_recipient_name",
+    "approval_recipient_email",
+    "approval_recipient_role",
+    "approval_recipient_is_cover",
     "notes",
     "additional_charge_description",
     "additional_charge_amount",
@@ -3248,9 +3340,34 @@ def render_esign_test(
     customer_name = str(saved.get("customer_contact") or saved.get("customer_name") or "").strip()
     customer_role = str(saved.get("customer_role", "") or "").strip()
     customer_email = str(saved.get("customer_email", "") or "").strip()
-    director_name = str(saved.get("director_name", "") or "").strip()
-    director_email = str(saved.get("director_email", "") or "").strip()
-    is_red = str(saved.get("traffic_light_status", "") or "").lower() == "red"
+    traffic_status = str(saved.get("traffic_light_status", "") or "").lower()
+    requires_internal_approval = traffic_status in {"amber", "red"}
+    try:
+        current_approval_recipient = commercial_approval_recipient(
+            settings, traffic_status
+        )
+    except ESignError as exc:
+        st.warning(str(exc))
+        return
+    approval_name = str(
+        current_approval_recipient.name
+        if current_approval_recipient
+        else saved.get("approval_recipient_name") or saved.get("director_name") or ""
+    ).strip()
+    approval_email = str(
+        current_approval_recipient.email
+        if current_approval_recipient
+        else saved.get("approval_recipient_email") or saved.get("director_email") or ""
+    ).strip()
+    approval_role = str(
+        current_approval_recipient.role
+        if current_approval_recipient
+        else saved.get("approval_recipient_role", "") or ""
+    ).strip()
+    if not approval_role and traffic_status == "red":
+        approval_role = "Sales Director or delegated individual"
+    elif not approval_role and traffic_status == "amber":
+        approval_role = "Amber commercial approver"
     has_sales_rep_signature = bool(saved.get("_sales_rep_signature_png"))
     record_owner = str(saved.get("created_by_username", "") or "").strip()
     if record_owner and record_owner.casefold() != user_username.casefold():
@@ -3309,26 +3426,26 @@ def render_esign_test(
         problems.append(
             "your saved signature (open My signature, then save a new quotation revision)"
         )
-    if is_red and not director_name:
-        problems.append("Sales Director or delegated individual name")
-    if is_red and not valid_email(director_email):
-        problems.append("Sales Director or delegated individual email")
+    if requires_internal_approval and not approval_name:
+        problems.append(f"{approval_role or 'commercial approver'} name")
+    if requires_internal_approval and not valid_email(approval_email):
+        problems.append(f"{approval_role or 'commercial approver'} email")
     if customer_email.casefold() == user_email.casefold() and customer_email:
         problems.append("different Sales Representative and Customer email addresses")
     if (
-        is_red
-        and customer_email.casefold() == director_email.casefold()
+        requires_internal_approval
+        and customer_email.casefold() == approval_email.casefold()
         and customer_email
     ):
-        problems.append("different Director and Customer email addresses")
+        problems.append("different commercial approver and Customer email addresses")
     if problems:
         st.warning("Save this revision with " + ", ".join(problems) + " before sending it.")
         return
 
-    if is_red:
+    if requires_internal_approval:
         st.caption(
-            f"Your saved signature is already on the quotation. {director_name} "
-            f"({director_email}) will sign first, followed by the Customer. A completed "
+            f"Your saved signature is already on the quotation. {approval_name} "
+            f"({approval_email}), {approval_role}, will sign first, followed by the Customer. A completed "
             f"copy will be emailed to {user_email}."
         )
     else:
@@ -3355,8 +3472,16 @@ def render_esign_test(
             "esign_approved_by_email": user_email,
             "esign_approved_at_utc": approved_at,
             "esign_internal_signer_role": (
-                "sales_director" if is_red else "sales_representative_presigned"
+                approval_role if requires_internal_approval else "sales_representative_presigned"
             ),
+            "approval_recipient_name": approval_name,
+            "approval_recipient_email": approval_email,
+            "approval_recipient_role": approval_role,
+            "approval_recipient_is_cover": bool(
+                current_approval_recipient and current_approval_recipient.is_cover
+            ),
+            "director_name": approval_name if requires_internal_approval else "",
+            "director_email": approval_email if requires_internal_approval else "",
         }
         try:
             approved_record = repository.update_costing_esign(
@@ -3367,24 +3492,49 @@ def render_esign_test(
             return
         try:
             approved_record = with_sales_rep_signature(repository, approved_record)
+            use_generic_approval_page = requires_internal_approval and (
+                traffic_status == "amber"
+                or bool(approved_record.get("approval_recipient_is_cover"))
+            )
+            signature_pdf = quote_pdf(
+                {
+                    **approved_record,
+                    "traffic_light_status": "amber",
+                }
+                if use_generic_approval_page
+                else approved_record,
+                esign_tags=not use_generic_approval_page,
+            )
+            if use_generic_approval_page:
+                signature_pdf = append_commercial_signature_page(
+                    signature_pdf,
+                    approval_role=approval_role,
+                    customer_role=customer_role,
+                )
             result = DropboxSignClient(api_key).send_test_request(
-                quote_pdf(approved_record, esign_tags=True),
+                signature_pdf,
                 title=f"Solidus quotation {saved.get('quote_reference') or saved.get('costing_id')}",
                 subject=f"Test signature request: Solidus quotation {saved.get('quote_reference') or ''}",
                 message=(
                     "This is a non-binding test of the Solidus quotation signing process. "
                     + (
-                        "The Sales Director or delegated individual is asked to sign first, "
+                        f"The {approval_role} is asked to sign first, "
                         "followed by the Customer."
-                        if is_red
+                        if requires_internal_approval
                         else "The Sales Representative has approved the quotation in the "
                         "costing tool; the Customer is asked to sign."
                     )
                 ),
                 director=(
-                    Signer(director_name, director_email, 0) if is_red else None
+                    Signer(approval_name, approval_email, 0)
+                    if requires_internal_approval
+                    else None
                 ),
-                customer=Signer(customer_name, customer_email, 1 if is_red else 0),
+                customer=Signer(
+                    customer_name,
+                    customer_email,
+                    1 if requires_internal_approval else 0,
+                ),
                 cc_email=user_email,
                 costing_id=str(saved.get("costing_id", "")),
                 quote_reference=str(saved.get("quote_reference", "")),
@@ -3409,8 +3559,8 @@ def render_esign_test(
             st.success(
                 "Test request sent. "
                 + (
-                    "The Sales Director or delegated individual should receive the first email."
-                    if is_red
+                    f"{approval_name} should receive the first email."
+                    if requires_internal_approval
                     else "The Customer should receive the signing email."
                 )
             )
@@ -3453,19 +3603,33 @@ def render_save(
     st.session_state.setdefault("customer_role", "")
     esign_settings = configured_esign()
     st.session_state.setdefault("customer_email", "")
-    # The Director is a centrally managed recipient, not a per-quotation choice.
-    st.session_state.director_name = str(
-        esign_settings.get("director_name", "") or ""
-    ).strip()
-    st.session_state.director_email = str(
-        esign_settings.get("director_email", "") or ""
-    ).strip()
     st.session_state.setdefault("quote_notes", "")
-    red_route = (
-        str((st.session_state.get("pricing") or {}).get("traffic_light_status", ""))
-        .lower()
-        == "red"
+    traffic_status = str(
+        (st.session_state.get("pricing") or {}).get("traffic_light_status", "")
+    ).lower()
+    approval_error = ""
+    try:
+        approval_recipient = commercial_approval_recipient(
+            esign_settings, traffic_status
+        )
+    except ESignError as exc:
+        approval_recipient = None
+        approval_error = str(exc)
+    st.session_state.approval_recipient_name = (
+        approval_recipient.name if approval_recipient else ""
     )
+    st.session_state.approval_recipient_email = (
+        approval_recipient.email if approval_recipient else ""
+    )
+    st.session_state.approval_recipient_role = (
+        approval_recipient.role if approval_recipient else ""
+    )
+    st.session_state.approval_recipient_is_cover = bool(
+        approval_recipient and approval_recipient.is_cover
+    )
+    # Retain the legacy fields while saved revisions transition to generic names.
+    st.session_state.director_name = st.session_state.approval_recipient_name
+    st.session_state.director_email = st.session_state.approval_recipient_email
 
     form_context = (
         st.form("external_quote_save", border=False)
@@ -3484,20 +3648,22 @@ def render_save(
         if str(esign_settings.get("api_key", "") or "").strip():
             st.caption("Test e-sign recipients")
             st.text_input("Customer email", key="customer_email")
-            if red_route:
-                if st.session_state.director_name and valid_email(
-                    st.session_state.director_email
+            if traffic_status in {"amber", "red"}:
+                if approval_error:
+                    st.warning(approval_error)
+                elif st.session_state.approval_recipient_name and valid_email(
+                    st.session_state.approval_recipient_email
                 ):
                     st.caption(
-                        f"RED route: {user_name}'s saved signature will be applied. "
-                        "Sales Director or delegated individual "
-                        f"{st.session_state.director_name} "
-                        f"({st.session_state.director_email}) will sign first."
+                        f"{traffic_status.upper()} route: {user_name}'s saved signature "
+                        f"will be applied. {st.session_state.approval_recipient_role} "
+                        f"{st.session_state.approval_recipient_name} "
+                        f"({st.session_state.approval_recipient_email}) will sign first."
                     )
                 else:
                     st.warning(
-                        "An administrator must set the Solidus signatory name and email "
-                        "in Streamlit Secrets before a RED quotation can be sent."
+                        "An administrator must set this route's commercial approver "
+                        "name and email in Streamlit Secrets before it can be sent."
                     )
             else:
                 st.caption(
@@ -3674,6 +3840,18 @@ def load_saved_costing(record: dict[str, Any]) -> None:
     st.session_state.customer_email = str(record.get("customer_email", "") or "")
     st.session_state.director_name = str(record.get("director_name", "") or "")
     st.session_state.director_email = str(record.get("director_email", "") or "")
+    st.session_state.approval_recipient_name = str(
+        record.get("approval_recipient_name", "") or ""
+    )
+    st.session_state.approval_recipient_email = str(
+        record.get("approval_recipient_email", "") or ""
+    )
+    st.session_state.approval_recipient_role = str(
+        record.get("approval_recipient_role", "") or ""
+    )
+    st.session_state.approval_recipient_is_cover = bool(
+        record.get("approval_recipient_is_cover", False)
+    )
     st.session_state.quote_notes = str(record.get("notes", "") or "")
     st.session_state.quote_reference = str(record.get("quote_reference", "") or "")
     st.session_state.quote_number = record.get("quote_number", "") or ""
@@ -3683,10 +3861,10 @@ def load_saved_costing(record: dict[str, Any]) -> None:
         or "Forme / Stereo"
     )
     st.session_state.additional_charge_amount = float(
-        record.get("additional_charge_amount", 0) or 0
+        record.get("additional_charge_amount", DEFAULT_TOOLING_CHARGE) or 0
     )
     st.session_state.additional_charge_foc = bool(
-        record.get("additional_charge_foc", True)
+        record.get("additional_charge_foc", False)
     )
     st.session_state.workflow_notice = (
         f"Loaded {record.get('costing_id', 'saved costing')} revision "
@@ -4854,7 +5032,7 @@ def render_multi_item_quote(
     )
     transport_service = "Next Day"
     transport_booking = "AM/PM"
-    vendor_preference = "Cheapest available"
+    vendor_preference = "Highest available"
     if not collected:
         transport_columns = delivery_tab.columns(3 if is_admin else 2)
         transport_service = transport_columns[0].selectbox(
@@ -4866,7 +5044,12 @@ def render_multi_item_quote(
         if is_admin:
             vendor_preference = transport_columns[2].selectbox(
                 "Haulier",
-                ["Cheapest available", "Joda", "McDowells"],
+                [
+                    "Highest available",
+                    "Cheapest available",
+                    "Joda",
+                    "McDowells",
+                ],
                 key="multi_vendor_preference",
             )
 
@@ -4902,6 +5085,36 @@ def render_multi_item_quote(
             rate_col.metric("Live rate · EUR per GBP", f"{eur_per_gbp:.4f}")
     else:
         rate_col.caption("Prices will be shown in GBP.")
+
+    symbol = currency_symbol(quote_currency)
+    st.session_state.setdefault("multi_charge_description", "Forme / Stereo")
+    st.session_state.setdefault(
+        "multi_charge_amount", DEFAULT_TOOLING_CHARGE * len(products)
+    )
+    st.session_state.setdefault("multi_charge_foc", False)
+    details_tab.markdown("#### Tooling")
+    details_tab.caption(
+        f"The default is {symbol}{DEFAULT_TOOLING_CHARGE:,.0f} per item "
+        f"({symbol}{DEFAULT_TOOLING_CHARGE * len(products):,.0f} for this quote). "
+        f"Each item's pricing base includes £{TOOLING_AMORTISATION_PER_1000:,.0f} "
+        f"per 1,000, or £{FOC_TOOLING_AMORTISATION_PER_1000:,.0f} when tooling is FOC."
+    )
+    charge_columns = details_tab.columns([2, 1, 1])
+    charge_description = charge_columns[0].text_input(
+        "One-off charge description", key="multi_charge_description"
+    )
+    charge_amount = float(
+        charge_columns[1].number_input(
+            f"One-off charge total ({symbol})",
+            min_value=0.0,
+            step=25.0,
+            key="multi_charge_amount",
+            disabled=bool(st.session_state.multi_charge_foc),
+        )
+    )
+    charge_foc = charge_columns[2].checkbox("FOC", key="multi_charge_foc")
+    if charge_foc:
+        charge_amount = 0.0
 
     details_tab.markdown("#### Items")
     line_inputs: list[dict[str, Any]] = []
@@ -4973,6 +5186,18 @@ def render_multi_item_quote(
                 }
             )
 
+    total_input_pallets = sum(int(line["pallet_count"]) for line in line_inputs)
+    large_multi_order_confirmed = True
+    if total_input_pallets > 26:
+        details_tab.warning(
+            f"This quotation is {total_input_pallets:,} pallets. Are you sure? "
+            "Please check that an extra zero has not been entered."
+        )
+        large_multi_order_confirmed = details_tab.checkbox(
+            f"Yes, I confirm the total order quantity is {total_input_pallets:,} pallets.",
+            key=f"multi_confirm_large_order_{total_input_pallets}",
+        )
+
     multi_input_basis = hashlib.sha256(
         json.dumps(
             {
@@ -4989,6 +5214,7 @@ def render_multi_item_quote(
                 "vendor_preference": vendor_preference,
                 "quote_currency": quote_currency,
                 "eur_per_gbp": eur_per_gbp,
+                "additional_charge_foc": charge_foc,
                 "customer_factors": {
                     key: bool(st.session_state.get(f"multi_{key}"))
                     for key in COMEX_FACTORS
@@ -5013,7 +5239,10 @@ def render_multi_item_quote(
         "Calculate item pricing",
         type="primary",
         width="stretch",
-        disabled=(quote_currency == "EUR" and eur_rate_source == ""),
+        disabled=(
+            (quote_currency == "EUR" and eur_rate_source == "")
+            or not large_multi_order_confirmed
+        ),
     )
     if calculate_multi:
         errors: list[str] = []
@@ -5081,6 +5310,7 @@ def render_multi_item_quote(
                         "eur_per_gbp": eur_per_gbp,
                         "eur_rate_date": eur_rate_date,
                         "eur_rate_source": eur_rate_source,
+                        "additional_charge_foc": charge_foc,
                         "comex_consistent_payer": bool(
                             st.session_state.get("multi_comex_consistent_payer")
                         ),
@@ -5157,7 +5387,6 @@ def render_multi_item_quote(
             "Internal haulier selection: " + ", ".join(transport["vendors"])
         )
 
-    symbol = currency_symbol(quote_currency)
     line_records: list[dict[str, Any]] = []
     statuses: list[str] = []
     pricing_tab.markdown("#### Price and traffic light by item")
@@ -5240,8 +5469,8 @@ def render_multi_item_quote(
     elif overall_status == "amber":
         pricing_tab.warning(
             "Overall route: AMBER. After the warning is acknowledged, the "
-            "salesperson's saved signature will be applied and only the Customer "
-            "will be asked to sign."
+            "salesperson's saved signature will be applied, then the configured "
+            "amber approver will sign before the Customer."
         )
     else:
         pricing_tab.success(
@@ -5264,25 +5493,6 @@ def render_multi_item_quote(
     customer_email = email_col.text_input("Customer email", key="multi_customer_email")
     customer_role = save_tab.text_input("Customer role", key="multi_customer_role")
     notes = save_tab.text_area("Quote notes", key="multi_quote_notes", height=90)
-    st.session_state.setdefault("multi_charge_description", "Forme / Stereo")
-    st.session_state.setdefault("multi_charge_amount", 0.0)
-    st.session_state.setdefault("multi_charge_foc", True)
-    charge_columns = save_tab.columns([2, 1, 1])
-    charge_description = charge_columns[0].text_input(
-        "One-off charge description", key="multi_charge_description"
-    )
-    charge_amount = float(
-        charge_columns[1].number_input(
-            f"One-off charge ({symbol})",
-            min_value=0.0,
-            step=25.0,
-            key="multi_charge_amount",
-            disabled=bool(st.session_state.multi_charge_foc),
-        )
-    )
-    charge_foc = charge_columns[2].checkbox("FOC", key="multi_charge_foc")
-    if charge_foc:
-        charge_amount = 0.0
 
     quoted_value = sum(
         float(line["selling_price_per_item"]) * float(line["order_quantity"])
@@ -5304,6 +5514,23 @@ def render_multi_item_quote(
 
     common = dict(st.session_state.get("multi_item_common", {}) or {})
     first = line_records[0]
+    multi_esign_settings = configured_esign()
+    approval_error = ""
+    try:
+        approval_recipient = commercial_approval_recipient(
+            multi_esign_settings, overall_status
+        )
+    except ESignError as exc:
+        approval_recipient = None
+        approval_error = str(exc)
+    if approval_error:
+        save_tab.warning(approval_error)
+    elif approval_recipient:
+        save_tab.caption(
+            f"{overall_status.upper()} route: {approval_recipient.role} "
+            f"{approval_recipient.name} ({approval_recipient.email}) will sign "
+            "before the Customer."
+        )
     current_multi_record = {
         **first,
         **common,
@@ -5332,8 +5559,20 @@ def render_multi_item_quote(
         "customer_contact": customer_contact.strip(),
         "customer_email": customer_email.strip(),
         "customer_role": customer_role.strip(),
-        "director_name": str(configured_esign().get("director_name", "") or "").strip(),
-        "director_email": str(configured_esign().get("director_email", "") or "").strip(),
+        "director_name": approval_recipient.name if approval_recipient else "",
+        "director_email": approval_recipient.email if approval_recipient else "",
+        "approval_recipient_name": (
+            approval_recipient.name if approval_recipient else ""
+        ),
+        "approval_recipient_email": (
+            approval_recipient.email if approval_recipient else ""
+        ),
+        "approval_recipient_role": (
+            approval_recipient.role if approval_recipient else ""
+        ),
+        "approval_recipient_is_cover": bool(
+            approval_recipient and approval_recipient.is_cover
+        ),
         "notes": notes,
         "additional_charge_description": charge_description,
         "additional_charge_amount": charge_amount,

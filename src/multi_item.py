@@ -35,9 +35,11 @@ def allocate_transport_by_pallets(
 def _chosen_quote(options: list[Any], vendor_preference: str) -> Any:
     if not options:
         raise TransportLookupError("No transport option is available.")
-    preference = str(vendor_preference or "Cheapest available").strip().casefold()
+    preference = str(vendor_preference or "Highest available").strip().casefold()
+    if preference == "highest available":
+        return max(options, key=lambda option: float(option.total_cost))
     if preference == "cheapest available":
-        return options[0]
+        return min(options, key=lambda option: float(option.total_cost))
     for option in options:
         if str(option.vendor).casefold() == preference:
             return option
@@ -56,7 +58,7 @@ def price_multi_item_transport(
     booking: str,
     fulfilment_type: str,
     pallets_per_delivery: int,
-    vendor_preference: str = "Cheapest available",
+    vendor_preference: str = "Highest available",
 ) -> dict[str, Any]:
     """Price combined or separate multi-item movements with 26-pallet loads."""
     counts = [max(0, int(value)) for value in pallet_counts]

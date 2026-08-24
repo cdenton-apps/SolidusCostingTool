@@ -38,4 +38,5 @@ def test_imported_material_and_haulier_rate_roll_into_pricing_base() -> None:
     assert quotes[0].total_cost == pytest.approx(133)
     assert result["material_base_per_1000"] == pytest.approx(488.2616)
     assert result["transport_cost_per_1000"] == pytest.approx(13.3)
-    assert result["pricing_base_per_1000"] == pytest.approx(501.5616)
+    assert result["tooling_amortisation_per_1000"] == pytest.approx(10)
+    assert result["pricing_base_per_1000"] == pytest.approx(511.5616)

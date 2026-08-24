@@ -213,11 +213,18 @@ api_key = "PASTE_THE_DROPBOX_SIGN_API_KEY_HERE"
 test_mode = true
 director_name = "Sales Director"
 director_email = "director@example.com"
+director_absent = false
+amber_approver_name = "Amber Commercial Approver"
+amber_approver_email = "amber.approver@example.com"
+amber_approver_absent = false
 ```
 
-The Director name and email are controlled centrally through Streamlit Secrets.
-Quotation users can see the configured recipient but cannot change it. Update
-these two settings once whenever the responsible Director changes.
+Both commercial approvers are controlled centrally through Streamlit Secrets.
+Quotation users can see the resolved recipient but cannot change it. Amber
+normally routes to the amber approver and red to the Director. During an
+absence, set that person's `*_absent` value to `true`; the other approver then
+covers automatically. Set it back to `false` on their return. If both are marked
+absent, the app blocks e-sign sending until the cover settings are corrected.
 
 Each salesperson manages their own signature under **Menu > My signature**.
 The signature is stored against that username in Neon and cannot be selected or
@@ -226,13 +233,12 @@ name, date and file digest used for that revision. Replacing or removing a
 signature therefore affects new revisions only; an older quotation continues to
 use the version that was recorded when it was saved.
 
-For a green or amber quotation, the salesperson's saved signature is already on
-the PDF and Dropbox Sign sends the document to the Customer only. For a red
-quotation, the saved salesperson approval is also on the PDF, but the Sales
-Director or delegated individual receives the first Dropbox Sign email and the
-Customer follows after that signature. Only the salesperson who owns the saved
-revision can send it. Their username, name, email and approval time remain in the
-Neon audit record.
+For a green quotation, the salesperson's saved signature is already on the PDF
+and Dropbox Sign sends the document to the Customer only. For amber, the
+configured amber approver signs first; for red, the Sales Director or delegated
+individual signs first. The Customer follows after that internal signature.
+Only the salesperson who owns the saved revision can send it. Their username,
+name, email and approval time remain in the Neon audit record.
 
 The app is hard-coded to send with Dropbox Sign `test_mode=1`, so test documents
 are watermarked and are not legally binding. Use **Refresh signing status** to
@@ -362,14 +368,24 @@ practical app-activity record rather than a formal HR monitoring system.
 ## Transport behaviour
 
 - Economy and Next Day use the postcode matrix in `haulier_rates.csv`.
-- `Cheapest available` compares Joda and McDowells wherever both have a rate.
+- `Highest available` is the default and selects the highest complete Joda or
+  McDowells quotation. Admin users can still explicitly select either haulier
+  or `Cheapest available`.
 - A delivery above 26 pallets is split into additional vehicle loads.
+- Entering more than 26 pallets requires an explicit “Are you sure?” confirmation.
 - An MTC agreement is split into the planned pallet call-offs before rates are
   added together.
 - AM/PM adds £7 per load; Timed adds £19 per load.
 - McDowells adds £40 for each complete 26-pallet load.
 - Missing rates are unavailable, never treated as zero.
 - A manual total remains available for exceptional or unlisted movements.
+
+## Tooling behaviour
+
+- Every item defaults to a £1,000 one-off forme / stereo charge.
+- The pricing base includes £10 tooling amortisation per 1,000 units.
+- If tooling is made FOC, the one-off charge is removed and the pricing-base
+  amortisation doubles to £20 per 1,000 units.
 
 The customer quotation uses the official Solidus brand artwork and includes a
 wrapping product description, key technical specifications, price, delivery

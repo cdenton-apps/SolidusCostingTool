@@ -37,6 +37,9 @@ ANNUAL_VOLUME_ADJUSTMENTS = {
 }
 
 DEFAULT_ANNUAL_VOLUME_BAND = "50,001 - 100,000"
+DEFAULT_TOOLING_CHARGE = 1_000.0
+TOOLING_AMORTISATION_PER_1000 = 10.0
+FOC_TOOLING_AMORTISATION_PER_1000 = 20.0
 
 
 def annual_volume_band_for_units(annual_volume_units: float) -> str:
@@ -170,7 +173,14 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         _number(values, "transport_total") if delivery_method == "Haulier" else 0.0
     )
     transport_cost_per_1000 = transport_total / order_in_thousands
-    pricing_base = material_base + transport_cost_per_1000
+    tooling_amortisation_per_1000 = (
+        FOC_TOOLING_AMORTISATION_PER_1000
+        if _flag(values, "additional_charge_foc")
+        else TOOLING_AMORTISATION_PER_1000
+    )
+    pricing_base = (
+        material_base + transport_cost_per_1000 + tooling_amortisation_per_1000
+    )
     machine_hours_per_1000 = _number(values, "machine_hours_per_1000")
     total_machine_hours = machine_hours_per_1000 * order_in_thousands
 
@@ -186,6 +196,9 @@ def calculate_cost(values: dict[str, Any]) -> dict[str, float]:
         "adjusted_materials_cost_per_1000": round(material_base, 4),
         "material_base_per_1000": round(material_base, 4),
         "transport_cost_per_1000": round(transport_cost_per_1000, 4),
+        "tooling_amortisation_per_1000": round(
+            tooling_amortisation_per_1000, 4
+        ),
         "pricing_base_per_1000": round(pricing_base, 4),
         "pricing_base_per_item": round(pricing_base / 1_000, 5),
         "machine_hours_per_1000": round(machine_hours_per_1000, 6),

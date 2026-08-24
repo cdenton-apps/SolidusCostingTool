@@ -88,3 +88,25 @@ def test_delivered_separately_starts_another_trailer_over_26_pallets(
     # The first item needs 26 + 1 pallets; the second item is its own trailer.
     assert priced["load_count"] == 3
     assert priced["delivery_count"] == 2
+
+
+def test_highest_complete_transport_is_the_default(
+    rate_table: HaulierRateTable,
+) -> None:
+    common = {
+        "rate_table": rate_table,
+        "pallet_counts": [10, 10],
+        "delivery_mode": "Delivered together",
+        "postcode": "BD20 0AA",
+        "service": "Next Day",
+        "booking": "AM/PM",
+        "fulfilment_type": "MTO",
+        "pallets_per_delivery": 0,
+    }
+    default = price_multi_item_transport(**common)
+    joda = price_multi_item_transport(**common, vendor_preference="Joda")
+    mcdowells = price_multi_item_transport(
+        **common, vendor_preference="McDowells"
+    )
+
+    assert default["total_cost"] == max(joda["total_cost"], mcdowells["total_cost"])

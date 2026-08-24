@@ -5,7 +5,15 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 from pypdf import PdfReader
 
-from src.esign import DropboxSignClient, Signer
+import pytest
+
+from src.esign import (
+    DropboxSignClient,
+    ESignError,
+    Signer,
+    append_commercial_signature_page,
+    commercial_approval_recipient,
+)
 from src.exports import quote_pdf
 
 
@@ -100,6 +108,37 @@ def test_customer_only_request_uses_signer_one_and_ccs_sales_rep(monkeypatch) ->
     assert captured["data"]["cc_email_addresses[0]"] == "sales.rep@example.com"
 
 
+def test_commercial_approval_routes_and_absence_cover() -> None:
+    settings = {
+        "director_name": "Director",
+        "director_email": "director@example.com",
+        "amber_approver_name": "Amber Approver",
+        "amber_approver_email": "amber@example.com",
+    }
+
+    assert commercial_approval_recipient(settings, "green") is None
+    assert commercial_approval_recipient(settings, "amber").email == "amber@example.com"
+    assert commercial_approval_recipient(settings, "red").email == "director@example.com"
+
+    settings["amber_approver_absent"] = True
+    amber_cover = commercial_approval_recipient(settings, "amber")
+    assert amber_cover.email == "director@example.com"
+    assert amber_cover.is_cover is True
+
+    settings["amber_approver_absent"] = False
+    settings["director_absent"] = True
+    red_cover = commercial_approval_recipient(settings, "red")
+    assert red_cover.email == "amber@example.com"
+    assert red_cover.is_cover is True
+
+
+def test_both_commercial_approvers_absent_blocks_sending() -> None:
+    with pytest.raises(ESignError, match="Both commercial approvers"):
+        commercial_approval_recipient(
+            {"amber_approver_absent": True, "director_absent": True}, "amber"
+        )
+
+
 def test_green_esign_pdf_contains_saved_rep_signature_and_customer_tags() -> None:
     pdf = quote_pdf(
         {
@@ -173,6 +212,43 @@ def test_red_esign_pdf_contains_director_and_customer_layout() -> None:
     assert "Customer" in text
     assert "[sig|req|signer1]" in text
     assert "[sig|req|signer2]" in text
+
+
+def test_amber_esign_pdf_contains_amber_approver_and_customer_layout() -> None:
+    quotation = quote_pdf(
+        {
+            "quote_reference": "Q-AMBER",
+            "customer_name": "Customer",
+            "customer_contact": "Buyer",
+            "item_code": "ITEM",
+            "description": "Description",
+            "fulfilment_type": "MTO",
+            "order_quantity": 1000,
+            "order_pallets": 1,
+            "selling_price_per_1000": 100,
+            "selling_price_per_item": 0.1,
+            "traffic_light_status": "amber",
+            "approval_recipient_role": "Amber commercial approver",
+            "sales_rep_signature_name": "Sales Rep",
+            "sales_rep_signature_applied_at_utc": "2026-08-11T10:00:00+00:00",
+            "_sales_rep_signature_png": _signature_png(),
+        },
+        esign_tags=False,
+    )
+    original_pages = len(PdfReader(BytesIO(quotation)).pages)
+    pdf = append_commercial_signature_page(
+        quotation,
+        approval_role="Amber commercial approver",
+        customer_role="Buyer",
+    )
+    text = "\n".join(
+        page.extract_text() or "" for page in PdfReader(BytesIO(pdf)).pages
+    )
+
+    assert "Amber commercial approver" in text
+    assert "[sig|req|signer1]" in text
+    assert "[sig|req|signer2]" in text
+    assert len(PdfReader(BytesIO(pdf)).pages) == original_pages + 1
 
 
 def test_green_pdf_without_saved_signature_keeps_legacy_two_signer_tags() -> None:

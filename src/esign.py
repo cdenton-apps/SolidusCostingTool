@@ -5,6 +5,11 @@ from io import BytesIO
 from typing import Any
 
 import requests
+from pypdf import PdfReader, PdfWriter
+from reportlab.lib.colors import HexColor, white
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
 
 
 API_BASE = "https://api.hellosign.com/v3"
@@ -19,6 +24,159 @@ class Signer:
     name: str
     email: str
     order: int
+
+
+@dataclass(frozen=True)
+class ApprovalRecipient:
+    name: str
+    email: str
+    role: str
+    is_cover: bool = False
+
+
+def _setting_flag(settings: dict[str, Any], key: str) -> bool:
+    value = settings.get(key, False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def commercial_approval_recipient(
+    settings: dict[str, Any], traffic_status: str
+) -> ApprovalRecipient | None:
+    """Resolve the internal signer, including explicit absence cover."""
+    status = str(traffic_status or "").strip().casefold()
+    if status not in {"amber", "red"}:
+        return None
+
+    amber_absent = _setting_flag(settings, "amber_approver_absent")
+    director_absent = _setting_flag(settings, "director_absent")
+    if amber_absent and director_absent:
+        raise ESignError(
+            "Both commercial approvers are marked absent in Streamlit Secrets. "
+            "Update the cover settings before sending this quotation."
+        )
+
+    if status == "amber" and not amber_absent:
+        return ApprovalRecipient(
+            str(settings.get("amber_approver_name", "") or "").strip(),
+            str(settings.get("amber_approver_email", "") or "").strip(),
+            "Amber commercial approver",
+        )
+    if status == "red" and not director_absent:
+        return ApprovalRecipient(
+            str(settings.get("director_name", "") or "").strip(),
+            str(settings.get("director_email", "") or "").strip(),
+            "Sales Director or delegated individual",
+        )
+    if status == "amber":
+        return ApprovalRecipient(
+            str(settings.get("director_name", "") or "").strip(),
+            str(settings.get("director_email", "") or "").strip(),
+            "Sales Director covering amber approval",
+            True,
+        )
+    return ApprovalRecipient(
+        str(settings.get("amber_approver_name", "") or "").strip(),
+        str(settings.get("amber_approver_email", "") or "").strip(),
+        "Amber approver covering Sales Director",
+        True,
+    )
+
+
+def append_commercial_signature_page(
+    pdf: bytes,
+    *,
+    approval_role: str,
+    customer_role: str = "",
+) -> bytes:
+    """Append generic signer-one and customer signer-two Dropbox Sign fields."""
+    if not pdf.startswith(b"%PDF"):
+        raise ESignError("The quotation PDF could not be prepared.")
+
+    page = BytesIO()
+    document = canvas.Canvas(page, pagesize=A4)
+    page_width, page_height = A4
+    yellow = HexColor("#FFDD00")
+    ink = HexColor("#1A1A1A")
+    grey = HexColor("#666666")
+
+    document.setFillColor(yellow)
+    document.rect(18 * mm, page_height - 38 * mm, page_width - 36 * mm, 16 * mm, fill=1, stroke=0)
+    document.setFillColor(ink)
+    document.setFont("Helvetica-Bold", 16)
+    document.drawString(24 * mm, page_height - 32 * mm, "Quotation approval and acceptance")
+    document.setFont("Helvetica", 9)
+    document.setFillColor(grey)
+    document.drawString(
+        18 * mm,
+        page_height - 49 * mm,
+        "The Solidus commercial approver signs first. The Customer follows after that approval.",
+    )
+
+    def signer_panel(top: float, heading: str, role: str, signer: int) -> None:
+        left = 18 * mm
+        width = page_width - 36 * mm
+        height = 55 * mm
+        document.setStrokeColor(HexColor("#A8A8A8"))
+        document.rect(left, top - height, width, height, fill=0, stroke=1)
+        document.setFillColor(yellow)
+        document.rect(left, top - 10 * mm, width, 10 * mm, fill=1, stroke=0)
+        document.setFillColor(ink)
+        document.setFont("Helvetica-Bold", 11)
+        document.drawString(left + 5 * mm, top - 6.5 * mm, heading)
+        document.setFont("Helvetica", 9)
+        document.drawString(left + 5 * mm, top - 18 * mm, f"Role: {role}")
+        document.drawString(left + 5 * mm, top - 29 * mm, "Name:")
+        document.drawString(left + 5 * mm, top - 41 * mm, "Signature:")
+        document.drawString(left + 105 * mm, top - 41 * mm, "Date:")
+        # Dropbox Sign recognises the white text tags and replaces them with fields.
+        document.setFillColor(white)
+        document.drawString(
+            left + 24 * mm,
+            top - 29 * mm,
+            f"[text|req|signer{signer}|Full name]",
+        )
+        document.drawString(
+            left + 24 * mm, top - 41 * mm, f"[sig|req|signer{signer}]"
+        )
+        document.drawString(
+            left + 119 * mm,
+            top - 41 * mm,
+            f"[date|req|signer{signer}|Signing date]",
+        )
+
+    signer_panel(
+        page_height - 61 * mm,
+        "Solidus commercial approval",
+        str(approval_role or "Commercial approver"),
+        1,
+    )
+    signer_panel(
+        page_height - 124 * mm,
+        "Customer acceptance",
+        str(customer_role or "Customer"),
+        2,
+    )
+    document.setFillColor(grey)
+    document.setFont("Helvetica", 8)
+    document.drawString(
+        18 * mm,
+        16 * mm,
+        "This signature page forms part of the attached Solidus quotation.",
+    )
+    document.save()
+    page.seek(0)
+
+    writer = PdfWriter()
+    for existing_page in PdfReader(BytesIO(pdf)).pages:
+        writer.add_page(existing_page)
+    writer.add_page(PdfReader(page).pages[0])
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
 
 
 def _request_error(response: requests.Response) -> ESignError:

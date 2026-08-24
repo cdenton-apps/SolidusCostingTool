@@ -50,9 +50,9 @@ def test_cost_breakdown(valid_costing: dict) -> None:
     assert result["net_weight_kg_per_1000"] == pytest.approx(80)
     assert result["pallet_count"] == 5
     assert result["transport_cost_per_1000"] == pytest.approx(25)
-    assert "tooling_cost_per_1000" not in result
+    assert result["tooling_amortisation_per_1000"] == pytest.approx(10)
     assert result["material_base_per_1000"] == pytest.approx(70.4)
-    assert result["pricing_base_per_1000"] == pytest.approx(95.4)
+    assert result["pricing_base_per_1000"] == pytest.approx(105.4)
     assert "manual_adjustment_per_1000" not in result
     assert result["machine_hours_per_1000"] == pytest.approx(0.4)
     assert result["total_machine_hours"] == pytest.approx(4)
@@ -93,7 +93,7 @@ def test_customer_and_volume_factors_are_additive_and_material_only(
     assert result["material_adjustment_value_per_1000"] == pytest.approx(22)
     assert result["material_base_per_1000"] == pytest.approx(122)
     assert result["transport_cost_per_1000"] == pytest.approx(25)
-    assert result["pricing_base_per_1000"] == pytest.approx(147)
+    assert result["pricing_base_per_1000"] == pytest.approx(157)
 
 
 def test_standard_volume_band_does_not_adjust_material(valid_costing: dict) -> None:
@@ -140,7 +140,19 @@ def test_customer_collection_has_no_transport_cost(valid_costing: dict) -> None:
     result = calculate_cost(valid_costing)
     assert result["transport_total"] == 0
     assert result["transport_cost_per_1000"] == 0
-    assert result["pricing_base_per_1000"] == pytest.approx(70.4)
+    assert result["pricing_base_per_1000"] == pytest.approx(80.4)
+
+
+def test_foc_tooling_doubles_amortisation_and_removes_one_off_charge(
+    valid_costing: dict,
+) -> None:
+    standard = calculate_cost(valid_costing)
+    valid_costing["additional_charge_foc"] = True
+    foc = calculate_cost(valid_costing)
+
+    assert standard["tooling_amortisation_per_1000"] == pytest.approx(10)
+    assert foc["tooling_amortisation_per_1000"] == pytest.approx(20)
+    assert foc["pricing_base_per_1000"] - standard["pricing_base_per_1000"] == pytest.approx(10)
 
 
 def test_spread_and_price_are_reversible() -> None:

@@ -30,6 +30,7 @@ def test_new_item_reaches_pricing_stage() -> None:
 
     assert app.session_state["draft"]["transport_service"] == "Next Day"
     assert app.session_state["draft"]["transport_booking"] == "AM/PM"
+    assert app.session_state["draft"]["transport_vendor_preference"] == "Highest available"
 
     _widget(app.text_input, "Customer *").set_value("App Test Customer")
     _widget(app.text_input, "Item code *").set_value("APP-TEST-001")
@@ -75,6 +76,47 @@ def test_new_item_reaches_pricing_stage() -> None:
     assert "Set spread or selling price" in [item.value for item in app.subheader]
     assert _widget(app.number_input, "Spread (%)")
     assert _widget(app.number_input, "Selling price per 1,000 (£)")
+    assert _widget(app.number_input, "Charge (£)").value == pytest.approx(1_000)
+    assert _widget(app.checkbox, "FOC").value is False
+    assert app.session_state["breakdown"][
+        "tooling_amortisation_per_1000"
+    ] == pytest.approx(10)
+    standard_base = app.session_state["breakdown"]["pricing_base_per_1000"]
+    _widget(app.checkbox, "FOC").check().run()
+    assert app.session_state["breakdown"][
+        "tooling_amortisation_per_1000"
+    ] == pytest.approx(20)
+    assert app.session_state["breakdown"]["pricing_base_per_1000"] == pytest.approx(
+        standard_base + 10
+    )
+
+
+def test_more_than_26_pallets_requires_confirmation() -> None:
+    app = _demo_app()
+    product = CsvRepository(PROJECT_DATA).load_current_items().iloc[0].to_dict()
+    product["source_item_code"] = product["item_code"]
+    app.session_state["step"] = 1
+    app.session_state["draft"] = product
+    app.run()
+    per_pallet = int(app.session_state["draft"]["pallet_quantity"])
+    _widget(app.text_input, "Customer *").set_value("Large order test")
+    _widget(app.text_input, "Delivery postcode *").set_value("BD20 0AA")
+    _widget(app.number_input, "Order quantity (units) *").set_value(
+        per_pallet * 27
+    )
+    _widget(app.number_input, "Expected annual volume (units) *").set_value(
+        per_pallet * 27
+    ).run()
+
+    assert any("Are you sure?" in item.value for item in app.warning)
+    assert _widget(app.button, "Save order details").disabled
+    confirmation = next(
+        item
+        for item in app.checkbox
+        if item.label.startswith("Yes, I confirm the order quantity is 27 pallets")
+    )
+    confirmation.check().run()
+    assert not _widget(app.button, "Save order details").disabled
 
 
 def test_start_again_is_visible_and_confirmed() -> None:
@@ -205,6 +247,7 @@ def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
         "materials_cost_per_1000": 90.0,
         "manual_adjustment_per_1000": 0.0,
         "transport_cost_per_1000": 10.0,
+        "tooling_amortisation_per_1000": 10.0,
         "machine_hours_per_1000": 0.5,
         "total_machine_hours": 5.0,
     }
@@ -273,6 +316,7 @@ def test_red_costing_routes_to_director_signature_without_admin_override() -> No
         "materials_cost_per_1000": 90.0,
         "material_base_per_1000": 90.0,
         "transport_cost_per_1000": 10.0,
+        "tooling_amortisation_per_1000": 10.0,
         "machine_hours_per_1000": 0.5,
         "total_machine_hours": 5.0,
     }
@@ -339,6 +383,7 @@ def test_red_costing_uses_director_route_for_non_admin(
         "materials_cost_per_1000": 90.0,
         "material_base_per_1000": 90.0,
         "transport_cost_per_1000": 10.0,
+        "tooling_amortisation_per_1000": 10.0,
         "machine_hours_per_1000": 0.5,
         "total_machine_hours": 5.0,
     }
@@ -386,6 +431,7 @@ def test_amber_warning_must_be_acknowledged() -> None:
         "materials_cost_per_1000": 90.0,
         "material_base_per_1000": 90.0,
         "transport_cost_per_1000": 10.0,
+        "tooling_amortisation_per_1000": 10.0,
         "machine_hours_per_1000": 0.05,
         "total_machine_hours": 0.5,
     }
@@ -441,6 +487,7 @@ def test_exports_require_an_exact_saved_revision(
         "pallet_count": 10.0,
         "transport_total": 0.0,
         "transport_cost_per_1000": 0.0,
+        "tooling_amortisation_per_1000": 10.0,
         "net_weight_kg_per_1000": 500.0,
     }
     app.session_state["pricing"] = {
