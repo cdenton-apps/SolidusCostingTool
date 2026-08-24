@@ -7,10 +7,38 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.repository import CsvRepository
+from src.repository import (
+    CsvRepository,
+    board_fit_layout,
+    board_material_spec,
+    flat_net_dimensions,
+)
 
 
 PROJECT_DATA = Path(__file__).resolve().parents[1] / "data"
+
+
+def test_board_fit_uses_the_complete_net_and_is_not_capped_at_two_up() -> None:
+    layout = board_fit_layout(200, 100, 470, 470)
+
+    assert layout["units"] == 8
+    assert layout["across"] * layout["down"] == 8
+    assert board_fit_layout(451, 100, 470, 470)["units"] == 0
+
+
+def test_flat_net_estimate_includes_every_side_wall() -> None:
+    assert flat_net_dimensions(574, 376, 149) == pytest.approx((872, 674))
+
+
+def test_board_material_is_derived_from_the_board_description() -> None:
+    assert (
+        board_material_spec("BOARD1360X876/1000GSM/KL/TKL.WPE")
+        == "KL/TKL.WPE"
+    )
+    assert (
+        board_material_spec("BOARD 1154 x 918/WHTSTWPE/BRTKLCPE/1050GSM")
+        == "WHTSTWPE/BRTKLCPE"
+    )
 
 
 class _FakeCursor:
@@ -453,6 +481,7 @@ def test_supplied_item_and_bom_feeds_reconcile() -> None:
     assert item["labour_cost_per_1000"] == 51.09
     assert item["imported_bom_total_per_1000"] == 606.27
     assert item["machine_hours_per_1000"] == pytest.approx(0.375958)
+    assert item["material"] == "BK/TKL.WPE"
 
 
 def test_board_code_lookup_returns_known_dimensions_and_price() -> None:
@@ -469,6 +498,18 @@ def test_board_code_lookup_returns_known_dimensions_and_price() -> None:
     assert board["board_price_per_tonne"] == pytest.approx(794)
 
 
+def test_unpriced_board_lookup_returns_material_and_keeps_entered_article() -> None:
+    repository = CsvRepository(PROJECT_DATA)
+
+    board = repository.find_board_by_code("4-17237/", manufacturing_site="101")
+
+    assert board is not None
+    assert board["board_item_code"] == "BRD001/102/YPL/1000G/WW(2)"
+    assert board["board_code"] == "4-17237"
+    assert board["board_material_spec"] == "WT/TKL.WPE"
+    assert board["board_price_per_tonne"] == 0
+
+
 def test_full_bom_export_adds_costing_for_newer_box_items() -> None:
     repository = CsvRepository(PROJECT_DATA)
     bom = repository.load_bom_lines()
@@ -483,12 +524,13 @@ def test_full_bom_export_adds_costing_for_newer_box_items() -> None:
     assert summary["board_article_code"] == "4-15953"
     assert summary["board_price_per_tonne"] == pytest.approx(793)
     assert summary["board_cost_per_1000"] == pytest.approx(396.5)
-    assert summary["other_components_cost_per_1000"] == pytest.approx(15.0376)
-    assert summary["materials_cost_per_1000"] == pytest.approx(411.5376)
+    assert "Plain board from printed BOM component" in summary["board_price_source"]
+    assert summary["board_material_spec"] == "WTL/TKL.WPE"
+    assert summary["other_components_cost_per_1000"] == pytest.approx(15.3468)
+    assert summary["materials_cost_per_1000"] == pytest.approx(411.8468)
     assert summary["machine_hours_per_1000"] == pytest.approx(0.853854)
-    assert item["materials_cost_per_1000"] == pytest.approx(
-        summary["materials_cost_per_1000"]
-    )
+    assert item["board_item_code"] == "BRD002/101/YPB/900G/WW"
+    assert item["material"] == "WTL/TKL.WPE"
 
 
 def test_materials_use_april_mill_price_and_bom_components() -> None:
@@ -506,20 +548,34 @@ def test_materials_use_april_mill_price_and_bom_components() -> None:
     assert summary["machine_time_source"] == "BOM operation speeds"
 
 
-def test_unmatched_board_falls_back_to_material_only_bom_value() -> None:
+def test_printed_board_resolves_to_plain_child_board_and_complete_bom() -> None:
     repository = CsvRepository(PROJECT_DATA)
     result = repository.material_breakdown("BOX001/101/NPL/D9999/04/1000G")
     summary = result["summary"]
 
-    assert "machine/labour removed" in summary["board_price_source"]
-    assert summary["board_cost_per_1000"] == pytest.approx(499.73886)
-    assert summary["board_cost_per_1000"] < 555.26122
+    assert summary["board_item_code"] == "BRD001/101/NPL/1000G/BB"
+    assert summary["board_material_spec"] == "BK/BK"
+    assert "Plain board from printed BOM component" in summary["board_price_source"]
+    assert summary["board_price_per_tonne"] == pytest.approx(780)
+    assert summary["board_cost_per_1000"] == pytest.approx(486.564)
+    assert summary["other_components_cost_per_1000"] == pytest.approx(20.0629)
+    print_components = result["lines"].loc[
+        lambda frame: frame["component_type"].eq("Print-route component")
+    ]
+    assert set(print_components["component_code"]) == {
+        "0-PALLETS/101/Std1000x1200",
+        "0-TOPSHEET/101/1400mmx50UMS",
+        "BLUE 295 U 8% HD",
+    }
     assert summary["machine_hours_per_1000"] == pytest.approx(0.478245)
     assert "rolled-child" in summary["machine_time_source"]
 
 
 def test_new_item_materials_are_derived_without_a_typed_cost() -> None:
     repository = CsvRepository(PROJECT_DATA)
+    template_lines = repository.material_breakdown(
+        "BOX001/101/LPB/1000G/1240P"
+    )["lines"]
     result = repository.new_item_material_breakdown(
         "BRD001/101/LPB/1000G/BW",
         units_out=2,
@@ -532,6 +588,62 @@ def test_new_item_materials_are_derived_without_a_typed_cost() -> None:
     assert summary["board_cost_per_1000"] == pytest.approx(473.352628)
     assert summary["other_components_cost_per_1000"] == pytest.approx(15.0376)
     assert summary["machine_hours_per_1000"] == pytest.approx(0.375958)
+    assert summary["board_material_spec"] == "BK/TKL.WPE"
+
+    expected_components = (
+        template_lines.loc[
+            template_lines["component_type"].eq("Other component"),
+            ["component_code", "quantity", "unit_of_measure", "cost_per_1000"],
+        ]
+        .sort_values("component_code")
+        .reset_index(drop=True)
+    )
+    actual_components = (
+        result["lines"].loc[
+            result["lines"]["component_type"].eq("Other component"),
+            ["component_code", "quantity", "unit_of_measure", "cost_per_1000"],
+        ]
+        .sort_values("component_code")
+        .reset_index(drop=True)
+    )
+    pd.testing.assert_frame_equal(actual_components, expected_components)
+
+
+def test_new_printed_item_uses_complete_print_route_bom_at_selected_x_up() -> None:
+    repository = CsvRepository(PROJECT_DATA)
+
+    with pytest.raises(ValueError, match="Enter a board price per tonne"):
+        repository.new_item_material_breakdown(
+            "BRD001/102/YPL/1000G/WW(2)",
+            units_out=2,
+            component_template_item_code="BOX001/101/YPL/M0115/02/1000G",
+            number_of_colours=901,
+        )
+
+    result = repository.new_item_material_breakdown(
+        "BRD001/102/YPL/1000G/WW(2)",
+        units_out=2,
+        component_template_item_code="BOX001/101/YPL/M0115/02/1000G",
+        board_price_per_tonne=763,
+        number_of_colours=901,
+    )
+    summary = result["summary"]
+    print_lines = result["lines"].loc[
+        lambda frame: frame["component_type"].eq("Print-route component")
+    ]
+
+    assert summary["print_operations_included"] == 1
+    assert summary["new_board_price_per_tonne"] == pytest.approx(763)
+    assert summary["other_components_cost_per_1000"] == pytest.approx(17.0883)
+    assert set(print_lines["component_code"]) == {
+        "0-FACTORY/102/STRETCHWRAP",
+        "PROCESS BLACK U",
+        "PROCESS CYAN U",
+        "PROCESS MAGENTA U",
+        "PROCESS YELLOW C",
+        "0-VARNISH-HD",
+    }
+    assert print_lines["source"].str.contains("2-up", regex=False).all()
 
 
 def test_runtime_sessions_can_be_seen_forced_out_and_ended(tmp_path: Path) -> None:

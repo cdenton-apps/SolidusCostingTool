@@ -38,7 +38,12 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.number_input, "Grade / GSM *").set_value(1000)
     _widget(app.number_input, "Length (mm) *").set_value(574)
     _widget(app.number_input, "Width (mm) *").set_value(376)
-    _widget(app.number_input, "Height (mm) *").set_value(149)
+    _widget(app.number_input, "Height (mm) *").set_value(149).run()
+    _widget(app.number_input, "Flat net length (mm) *").set_value(850)
+    _widget(app.number_input, "Flat net width (mm) *").set_value(650).run()
+    _widget(app.text_input, "Board code").set_value("4-15614/").run()
+    _widget(app.button, "Fill board details from code").click().run()
+    assert any("2-up fits" in item.value for item in app.success)
     _widget(app.number_input, "Order quantity (units) *").set_value(10000)
     _widget(app.number_input, "Expected annual volume (units) *").set_value(10_000)
     _widget(app.checkbox, "Consistent Payer").check()
@@ -57,8 +62,8 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.selectbox, "Board item *").set_value(
         "BRD001/101/LPB/1000G/BW"
     ).run()
-    _widget(app.selectbox, "Other-component template *").set_value(
-        "__NONE__"
+    _widget(app.selectbox, "Complete BOM template *").set_value(
+        "BOX001/101/LPB/1000G/1240P"
     ).run()
     _widget(app.button, "Calculate pricing base").click().run()
     assert app.session_state["breakdown"][
@@ -72,6 +77,19 @@ def test_new_item_reaches_pricing_stage() -> None:
     assert _widget(app.number_input, "Selling price per 1,000 (£)")
 
 
+def test_start_again_is_visible_and_confirmed() -> None:
+    app = _demo_app().run()
+    _widget(app.radio, "Costing route").set_value("New product").run()
+    _widget(app.button, "Create new product").click().run()
+
+    _widget(app.button, "↻ Start again").click().run()
+    assert _widget(app.button, "Yes, start again")
+    _widget(app.button, "Yes, start again").click().run()
+
+    assert app.session_state["step"] == 0
+    assert not app.exception
+
+
 def test_product_finder_beta_selects_a_usable_catalogue_product() -> None:
     app = _demo_app().run()
     _widget(app.selectbox, "Product type").set_value("Lid")
@@ -83,8 +101,10 @@ def test_product_finder_beta_selects_a_usable_catalogue_product() -> None:
     _widget(app.button, "Find closest matches").click().run()
 
     assert not app.exception
-    assert _widget(app.selectbox, "Choose from these matches").value
-    _widget(app.button, "Use this product").click().run()
+    matches = _widget(app.radio, "Select a matching product")
+    assert matches.options
+    matches.set_value(matches.options[0]).run()
+    _widget(app.button, "Use selected product").click().run()
 
     assert not app.exception
     assert _widget(app.selectbox, "Search existing products").value is not None
@@ -141,6 +161,21 @@ def test_new_item_can_fill_board_details_from_known_code() -> None:
         app.number_input, "Board length / chop (mm)"
     ).value == pytest.approx(878)
     assert app.session_state["draft"]["board_price_per_tonne"] == pytest.approx(794)
+    assert _widget(app.text_input, "Board material").value == "BK/TKL.WPE"
+
+
+def test_unpriced_board_shows_material_and_board_price_entry() -> None:
+    app = _demo_app().run()
+    _widget(app.radio, "Costing route").set_value("New product").run()
+    _widget(app.button, "Create new product").click().run()
+
+    _widget(app.text_input, "Board code").set_value("4-17237/").run()
+    _widget(app.button, "Fill board details from code").click().run()
+
+    assert _widget(app.text_input, "Board code").value == "4-17237"
+    assert _widget(app.text_input, "Board material").value == "WT/TKL.WPE"
+    assert _widget(app.number_input, "Board price (£ per tonne) *").value == 0
+    assert any("no current price" in item.value for item in app.warning)
 
 
 def test_spread_and_selling_price_inputs_stay_in_sync() -> None:
@@ -559,7 +594,11 @@ def test_mtc_can_be_entered_in_pallets() -> None:
     _widget(app.number_input, "Grade / GSM *").set_value(1000)
     _widget(app.number_input, "Length (mm) *").set_value(574)
     _widget(app.number_input, "Width (mm) *").set_value(376)
-    _widget(app.number_input, "Height (mm) *").set_value(149)
+    _widget(app.number_input, "Height (mm) *").set_value(149).run()
+    _widget(app.number_input, "Flat net length (mm) *").set_value(850)
+    _widget(app.number_input, "Flat net width (mm) *").set_value(650).run()
+    _widget(app.text_input, "Board code").set_value("4-15614/").run()
+    _widget(app.button, "Fill board details from code").click().run()
     _widget(app.radio, "Fulfilment type").set_value("MTC — Make to Contract").run()
     assert all(
         widget.label != "Stock holding target (%)" for widget in app.number_input

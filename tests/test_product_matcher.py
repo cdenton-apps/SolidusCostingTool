@@ -90,14 +90,17 @@ def test_matcher_filters_then_ranks_closest_usable_product(
     assert matches.iloc[0]["difference_board_gsm"] == pytest.approx(0)
 
 
-def test_matcher_requires_complete_target_specification(catalog: pd.DataFrame) -> None:
-    with pytest.raises(ValueError, match="three finished dimensions and GSM"):
-        rank_product_matches(
-            catalog,
-            requested_form="Any product",
-            requested_coating="Any coating",
-            length_mm=0,
-            width_mm=390,
-            height_mm=150,
-            gsm=1000,
-        )
+def test_matcher_accepts_a_partial_target_specification(catalog: pd.DataFrame) -> None:
+    matches = rank_product_matches(
+        catalog,
+        requested_form="Any product",
+        requested_coating="Any coating",
+        length_mm=0,
+        width_mm=390,
+        height_mm=150,
+        gsm=1000,
+    )
+
+    assert not matches.empty
+    assert matches.iloc[0]["difference_width_mm"] == pytest.approx(0)
+    assert pd.isna(matches.iloc[0]["difference_length_mm"])

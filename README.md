@@ -44,10 +44,23 @@ change is needed.
   adhesive come from the BOM.
 - If board cannot be matched safely, the app uses the BOM material value after
   explicitly removing rolled machine and labour values.
-- New items use a selected priced board, units out per sheet and an optional
-  comparable BOM for the other components. There is no normal free-typed
-  material-cost field. If the board code is already known, **Fill board details
-  from code** brings across its GSM, size and matched mill price.
+- Printed-board BOM components are resolved through their child BOM to the
+  underlying plain sheet. Its board grade and price drive the board cost, while
+  print-route consumables remain visible as standard-quantity BOM components.
+- New items record the complete flat net/blank separately from the finished
+  product size. Board fit uses that complete net with a 10 mm edge and
+  separation margin, checks both orientations, and automatically costs the
+  highest verified x-up. A 1-up result remains visibly inefficient because
+  2-up or more is the goal.
+- A complete comparable BOM is required for a new item. The selected plain
+  board replaces the template board; every other non-board material component
+  is retained at its standard BOM quantity. Machine and labour remain outside
+  the material pricing base.
+- Board material is derived from the board description after the GSM, for
+  example `KL/TKL.WPE`; users do not choose a generic material category. If a
+  selected or new board has no price, its plain-board price is entered with the
+  product details. **Fill board details from code** brings across its GSM, size,
+  material and matched mill price where available.
 - Delivery is quoted from the Joda and McDowells rate matrix. For MTC, each
   planned pallet call-off is costed, so ten one-pallet deliveries cost
   differently from one ten-pallet delivery.

@@ -40,46 +40,127 @@ BOARD_CODE_PATTERN = re.compile(r"(?:SHT\d+(?:/[A-Z])?|[234]-\d+)", re.IGNORECAS
 BOARD_FIT_MARGIN_MM = 10.0
 
 
-def board_fit_units(
+def board_material_spec(board_description: Any, fallback: Any = "") -> str:
+    """Return the board grade/material layers embedded in its description.
+
+    Stock descriptions normally use ``BOARD1360X876/1000GSM/KL/TKL.WPE``.
+    A smaller number put the GSM at the end, so both layouts are supported.
+    Article numbers and short Sage item codes are deliberately not treated as
+    material descriptions.
+    """
+
+    text = str(board_description or "").strip().strip("/")
+    if not text:
+        return str(fallback or "").strip()
+    parts = [part.strip() for part in text.split("/") if part.strip()]
+    gsm_index = next(
+        (
+            index
+            for index, part in enumerate(parts)
+            if re.fullmatch(r"\d+(?:\.\d+)?\s*G(?:SM)?", part, re.IGNORECASE)
+        ),
+        None,
+    )
+    if gsm_index is None:
+        return str(fallback or "").strip()
+
+    after_gsm = parts[gsm_index + 1 :]
+    if after_gsm:
+        return "/".join(after_gsm)
+
+    # Some legacy descriptions are BOARD<dimensions>/<material>/<material>/<gsm>.
+    dimension_index = next(
+        (
+            index
+            for index, part in enumerate(parts[:gsm_index])
+            if re.search(r"\d+\s*[Xx]\s*\d+", part)
+        ),
+        -1,
+    )
+    before_gsm = parts[dimension_index + 1 : gsm_index]
+    return "/".join(before_gsm) or str(fallback or "").strip()
+
+
+def flat_net_dimensions(
     finished_length_mm: Any,
     finished_width_mm: Any,
+    finished_height_mm: Any,
+) -> tuple[float, float]:
+    """Return a tray-style starting estimate for the complete flat net.
+
+    The estimate adds both side walls to both finished-plan dimensions.  The
+    UI exposes the result as editable net/blank dimensions because the final
+    CAD or forme footprint remains authoritative for non-standard structures.
+    """
+
+    try:
+        length = float(finished_length_mm)
+        width = float(finished_width_mm)
+        height = float(finished_height_mm)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    values = (length, width, height)
+    if any(not math.isfinite(value) or value <= 0 for value in values):
+        return 0.0, 0.0
+    return length + (2 * height), width + (2 * height)
+
+
+def board_fit_layout(
+    net_length_mm: Any,
+    net_width_mm: Any,
+    board_length_mm: Any,
+    board_width_mm: Any,
+    *,
+    margin_mm: float = BOARD_FIT_MARGIN_MM,
+) -> dict[str, int]:
+    """Return the best same-orientation rectangular x-up layout for a flat net.
+
+    A margin is retained at every outside edge and between adjacent nets.  Both
+    the net and sheet orientations are evaluated.  Unlike the earlier helper,
+    this is not capped at 2-up.
+    """
+
+    try:
+        net = (float(net_length_mm), float(net_width_mm))
+        sheet = (float(board_length_mm), float(board_width_mm))
+        margin = max(0.0, float(margin_mm))
+    except (TypeError, ValueError):
+        return {"units": 0, "across": 0, "down": 0}
+    if any(not math.isfinite(value) or value <= 0 for value in (*net, *sheet)):
+        return {"units": 0, "across": 0, "down": 0}
+
+    best = {"units": 0, "across": 0, "down": 0}
+    for net_length, net_width in (net, (net[1], net[0])):
+        for sheet_length, sheet_width in (sheet, (sheet[1], sheet[0])):
+            usable_length = sheet_length - (2 * margin)
+            usable_width = sheet_width - (2 * margin)
+            if usable_length <= 0 or usable_width <= 0:
+                continue
+            down = max(0, math.floor((usable_length + margin) / (net_length + margin)))
+            across = max(0, math.floor((usable_width + margin) / (net_width + margin)))
+            units = across * down
+            if units > best["units"]:
+                best = {"units": units, "across": across, "down": down}
+    return best
+
+
+def board_fit_units(
+    net_length_mm: Any,
+    net_width_mm: Any,
     board_length_mm: Any,
     board_width_mm: Any,
     *,
     margin_mm: float = BOARD_FIT_MARGIN_MM,
 ) -> int:
-    """Return whether one or two finished pieces fit on a board sheet.
+    """Return the maximum x-up count for the complete flat net."""
 
-    Length and width are deliberately interchangeable.  A margin is left at
-    each outer edge and between two pieces, so the result is conservative and
-    easy to explain to a user checking a proposed new item.
-    """
-
-    try:
-        piece = (float(finished_length_mm), float(finished_width_mm))
-        sheet = (float(board_length_mm), float(board_width_mm))
-        margin = max(0.0, float(margin_mm))
-    except (TypeError, ValueError):
-        return 0
-    if any(not math.isfinite(value) or value <= 0 for value in (*piece, *sheet)):
-        return 0
-
-    best = 0
-    for piece_length, piece_width in {piece, (piece[1], piece[0])}:
-        for sheet_length, sheet_width in {sheet, (sheet[1], sheet[0])}:
-            usable_length = sheet_length - (2 * margin)
-            usable_width = sheet_width - (2 * margin)
-            if piece_length <= usable_length and piece_width <= usable_width:
-                best = max(best, 1)
-            if (
-                (2 * piece_length) + margin <= usable_length
-                and piece_width <= usable_width
-            ) or (
-                piece_length <= usable_length
-                and (2 * piece_width) + margin <= usable_width
-            ):
-                best = max(best, 2)
-    return best
+    return board_fit_layout(
+        net_length_mm,
+        net_width_mm,
+        board_length_mm,
+        board_width_mm,
+        margin_mm=margin_mm,
+    )["units"]
 
 
 SPECIFICATION_COLUMNS = [
@@ -98,6 +179,8 @@ SPECIFICATION_COLUMNS = [
     "length_mm",
     "width_mm",
     "height_mm",
+    "net_length_mm",
+    "net_width_mm",
     "board_gsm",
     "board_width_mm",
     "board_length_mm",
@@ -149,6 +232,7 @@ COST_INPUT_COLUMNS = [
     "board_price_per_tonne",
     "board_price_period",
     "board_price_source",
+    "board_material_spec",
     "board_tonnes_per_1000",
     "board_cost_per_1000",
     "other_components_cost_per_1000",
@@ -1046,13 +1130,26 @@ class CsvRepository:
         matches["_priced"] = pd.to_numeric(
             matches.get("price_per_tonne"), errors="coerce"
         ).fillna(0).gt(0)
+        matches["_plain"] = matches.apply(self._is_plain_board, axis=1)
         matches = matches.sort_values(
-            ["_priced", "board_item_code"], ascending=[False, True]
+            ["_plain", "_priced", "board_item_code"],
+            ascending=[False, False, True],
         )
         row = matches.iloc[0]
+        article_value = row.get("resolved_article_no", "")
+        article = (
+            target
+            if pd.isna(article_value)
+            or str(article_value or "").strip().lower() in {"", "nan"}
+            else str(article_value).strip().rstrip("/")
+        )
+        period_value = row.get("price_period", "")
+        period = "" if pd.isna(period_value) else str(period_value or "")
+        source_value = row.get("price_source", "")
+        source = "" if pd.isna(source_value) else str(source_value or "")
         return {
             "board_item_code": str(row.get("board_item_code", "") or ""),
-            "board_code": str(row.get("resolved_article_no", "") or target).rstrip("/"),
+            "board_code": article,
             "board_gsm": self._positive_number(row.get("resolved_gsm"))
             or self._positive_number(row.get("board_gsm"))
             or 0.0,
@@ -1064,9 +1161,13 @@ class CsvRepository:
             or 0.0,
             "fsc": str(row.get("fsc", "") or ""),
             "board_price_per_tonne": self._positive_number(row.get("price_per_tonne")) or 0.0,
-            "board_price_period": str(row.get("price_period", "") or ""),
-            "board_price_source": str(row.get("price_source", "") or ""),
+            "board_price_period": period,
+            "board_price_source": source,
             "board_item_name": str(row.get("board_item_name", "") or ""),
+            "board_material_spec": board_material_spec(
+                row.get("board_item_name", "")
+            ),
+            "material": board_material_spec(row.get("board_item_name", "")),
             "match_count": int(len(matches)),
         }
 
@@ -1322,6 +1423,115 @@ class CsvRepository:
                     source += f" ({gsm:,.0f} GSM)"
         return float(candidates["_price"].mean()), source
 
+    @staticmethod
+    def _is_plain_board(board: pd.Series | None) -> bool:
+        """Return whether a stock row describes the unprinted board material."""
+
+        if board is None:
+            return False
+        description = " ".join(
+            str(board.get(field, "") or "")
+            for field in ["board_item_name", "product_group", "product_state"]
+        ).lower()
+        return bool(board_material_spec(board.get("board_item_name", ""))) and not re.search(
+            r"\bprint(?:ed|ing|er)?\b", description
+        )
+
+    @classmethod
+    def _resolve_costing_board(
+        cls,
+        component_code: str,
+        bom: pd.DataFrame,
+        boards: pd.DataFrame,
+        board_lookup: pd.DataFrame,
+    ) -> tuple[pd.Series | None, str, pd.DataFrame]:
+        """Resolve a printed-board BOM component to its underlying plain board."""
+
+        def lookup(code: str) -> pd.Series | None:
+            if board_lookup.empty or code not in board_lookup.index:
+                return None
+            row = board_lookup.loc[code]
+            return row.iloc[0] if isinstance(row, pd.DataFrame) else row
+
+        direct = lookup(component_code)
+        if cls._is_plain_board(direct):
+            return direct, component_code, pd.DataFrame()
+
+        informational = pd.to_numeric(
+            bom.get("is_informational_row", 0), errors="coerce"
+        ).fillna(0)
+        child_lines = bom[
+            bom["bom_code"].astype(str).eq(str(component_code))
+            & bom["cost_type"].astype(str).eq("Material")
+            & informational.eq(0)
+        ].copy()
+        child_board_lines = child_lines[
+            child_lines["cost_code"].astype(str).str.upper().str.startswith("BRD")
+        ]
+        for _, child_line in child_board_lines.iterrows():
+            child_code = str(child_line.get("cost_code", ""))
+            child = lookup(child_code)
+            if cls._is_plain_board(child):
+                return child, child_code, child_lines
+
+        # Some printed stock rows carry the same article number as the plain
+        # board even when their child-BOM link is incomplete.
+        if direct is not None and not boards.empty:
+            article = str(direct.get("resolved_article_no", "") or "").strip().rstrip("/")
+            if article:
+                same_article = boards[
+                    boards.get("resolved_article_no", "")
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .str.rstrip("/")
+                    .eq(article)
+                ]
+                plain_matches = same_article[
+                    same_article.apply(cls._is_plain_board, axis=1)
+                ]
+                if not plain_matches.empty:
+                    plain_matches = plain_matches.copy()
+                    plain_matches["_priced"] = pd.to_numeric(
+                        plain_matches.get("price_per_tonne"), errors="coerce"
+                    ).fillna(0).gt(0)
+                    plain_matches = plain_matches.sort_values(
+                        ["_priced", "board_item_code"], ascending=[False, True]
+                    )
+                    row = plain_matches.iloc[0]
+                    return row, str(row.get("board_item_code", "")), child_lines
+
+        return direct, component_code, child_lines
+
+    @classmethod
+    def _printed_board_usage_factor(
+        cls,
+        parent_line: pd.Series,
+        child_lines: pd.DataFrame,
+        costing_board: pd.Series | None,
+        costing_board_code: str,
+    ) -> float:
+        """Return child-BOM batches required per 1,000 finished products."""
+
+        parent_quantity = cls._positive_number(parent_line.get("quantity")) or 0.0
+        if parent_quantity <= 0:
+            return 0.0
+        if "tonne" not in str(parent_line.get("unit_of_measure", "")).lower():
+            return parent_quantity
+        if child_lines.empty:
+            return 0.0
+        child_board = child_lines[
+            child_lines["cost_code"].astype(str).eq(str(costing_board_code))
+        ]
+        if child_board.empty:
+            return 0.0
+        tonnes_per_child_batch = cls._board_tonnes_per_1000(
+            child_board.iloc[0], costing_board
+        )
+        if not tonnes_per_child_batch:
+            return 0.0
+        return parent_quantity / tonnes_per_child_batch
+
     @classmethod
     def _material_breakdown_from_frames(
         cls,
@@ -1340,6 +1550,7 @@ class CsvRepository:
                     "board_price_per_tonne": 0.0,
                     "board_price_period": "",
                     "board_price_source": "No BOM board component",
+                    "board_material_spec": "",
                     "board_tonnes_per_1000": 0.0,
                     "board_cost_per_1000": 0.0,
                     "other_components_cost_per_1000": 0.0,
@@ -1367,6 +1578,7 @@ class CsvRepository:
         board_tonnes = 0.0
         other_total = 0.0
         board_items: list[str] = []
+        board_materials: list[str] = []
         articles: list[str] = []
         sources: list[str] = []
         periods: list[str] = []
@@ -1391,22 +1603,30 @@ class CsvRepository:
                 )
                 continue
 
-            board = None
-            if not board_lookup.empty and component_code in board_lookup.index:
-                board = board_lookup.loc[component_code]
-                if isinstance(board, pd.DataFrame):
-                    board = board.iloc[0]
+            board, costing_component_code, child_lines = cls._resolve_costing_board(
+                component_code, bom, boards, board_lookup
+            )
+            resolved_plain_board = costing_component_code != component_code
             tonnes = cls._board_tonnes_per_1000(line, board)
             rate = cls._positive_number(board.get("price_per_tonne")) if board is not None else None
             source = str(board.get("price_source", "")) if board is not None else ""
             article = str(board.get("resolved_article_no", "")) if board is not None else ""
             period = str(board.get("price_period", "")) if board is not None else ""
+            material_spec = (
+                board_material_spec(board.get("board_item_name", ""))
+                if board is not None
+                else board_material_spec(line.get("cost_description", ""))
+            )
 
             if rate is None and board is not None:
                 rate, average_source = cls._average_board_price(boards, board)
                 if rate is not None:
                     source = average_source
                     period = "Current supplied board-price list"
+
+            if resolved_plain_board:
+                resolution_source = f"Plain board from printed BOM component {component_code}"
+                source = f"{resolution_source}; {source}" if source else resolution_source
 
             if rate is not None and tonnes is not None:
                 cost = rate * tonnes
@@ -1430,8 +1650,10 @@ class CsvRepository:
             board_total += cost
             if tonnes:
                 board_tonnes += tonnes
-            if component_code not in board_items:
-                board_items.append(component_code)
+            if costing_component_code not in board_items:
+                board_items.append(costing_component_code)
+            if material_spec and material_spec not in board_materials:
+                board_materials.append(material_spec)
             if article and article != "nan" and article not in articles:
                 articles.append(article)
             if source and source not in sources:
@@ -1441,17 +1663,68 @@ class CsvRepository:
             detail_rows.append(
                 {
                     "component_type": "Board",
-                    "component_code": component_code,
-                    "description": line.get("cost_description", ""),
+                    "component_code": costing_component_code,
+                    "description": (
+                        board.get("board_item_name", "")
+                        if board is not None
+                        else line.get("cost_description", "")
+                    ),
                     "quantity": line.get("quantity", 0),
                     "unit_of_measure": line.get("unit_of_measure", ""),
                     "rate": rate,
                     "tonnes_per_1000": tonnes,
                     "cost_per_1000": cost,
                     "article_no": article,
+                    "material_spec": material_spec,
+                    "printed_component_code": component_code if resolved_plain_board else "",
                     "source": source,
                 }
             )
+
+            if resolved_plain_board and not child_lines.empty:
+                usage_factor = cls._printed_board_usage_factor(
+                    line, child_lines, board, costing_component_code
+                )
+                child_materials = child_lines[
+                    ~child_lines["cost_code"]
+                    .astype(str)
+                    .str.upper()
+                    .str.startswith("BRD")
+                ]
+                for _, child_line in child_materials.iterrows():
+                    child_quantity = pd.to_numeric(
+                        child_line.get("quantity"), errors="coerce"
+                    )
+                    child_extended = pd.to_numeric(
+                        child_line.get("extended_cost"), errors="coerce"
+                    )
+                    standard_quantity = (
+                        float(child_quantity) if pd.notna(child_quantity) else 0.0
+                    )
+                    standard_cost = (
+                        float(child_extended) if pd.notna(child_extended) else 0.0
+                    )
+                    scaled_cost = standard_cost * usage_factor
+                    other_total += scaled_cost
+                    detail_rows.append(
+                        {
+                            "component_type": "Print-route component",
+                            "component_code": str(child_line.get("cost_code", "")),
+                            "description": child_line.get("cost_description", ""),
+                            "quantity": standard_quantity * usage_factor,
+                            "unit_of_measure": child_line.get("unit_of_measure", ""),
+                            "rate": child_line.get("unit_cost", 0),
+                            "cost_per_1000": scaled_cost,
+                            "standard_quantity_per_1000_boards": standard_quantity,
+                            "standard_cost_per_1000_boards": standard_cost,
+                            "quantity_basis": "Per 1,000 printed board sheets",
+                            "printed_component_code": component_code,
+                            "source": (
+                                f"Standard BOM component from {component_code} "
+                                f"× {usage_factor:.6g}"
+                            ),
+                        }
+                    )
 
         materials_total = board_total + other_total
         weighted_rate = board_total / board_tonnes if board_tonnes else 0.0
@@ -1462,6 +1735,7 @@ class CsvRepository:
             "board_price_per_tonne": round(weighted_rate, 4),
             "board_price_period": " | ".join(periods),
             "board_price_source": " | ".join(sources) or "No BOM board component",
+            "board_material_spec": " | ".join(board_materials),
             "board_tonnes_per_1000": round(board_tonnes, 6),
             "board_cost_per_1000": round(board_total, 4),
             "other_components_cost_per_1000": round(other_total, 4),
@@ -1539,6 +1813,10 @@ class CsvRepository:
         boards["effective_width_mm"] = width
         boards["effective_length_mm"] = length
         boards["effective_gsm"] = gsm
+        boards["material_spec"] = boards["board_item_name"].map(
+            board_material_spec
+        )
+        boards["is_plain_board"] = boards.apply(self._is_plain_board, axis=1)
         return boards[width.gt(0) & length.gt(0) & gsm.gt(0)].copy()
 
     def load_priced_board_catalog(self) -> pd.DataFrame:
@@ -1546,26 +1824,29 @@ class CsvRepository:
         if boards.empty:
             return boards
         price = pd.to_numeric(boards["price_per_tonne"], errors="coerce")
-        return boards[price.gt(0)].copy()
+        return boards[boards["is_plain_board"].eq(True) & price.gt(0)].copy()
 
     def fitting_boards(
         self,
         *,
-        finished_length_mm: float,
-        finished_width_mm: float,
+        net_length_mm: float,
+        net_width_mm: float,
         board_gsm: float = 0.0,
         manufacturing_site: str = "",
         limit: int = 12,
     ) -> pd.DataFrame:
-        """Return the closest dimensioned boards that fit one or two pieces."""
+        """Return efficient boards ranked by maximum complete-net x-up."""
 
         boards = self.load_board_catalog().copy()
         if boards.empty:
             return boards
+        boards = boards[boards["is_plain_board"].eq(True)].copy()
+        if boards.empty:
+            return boards
         boards["fit_units"] = boards.apply(
             lambda row: board_fit_units(
-                finished_length_mm,
-                finished_width_mm,
+                net_length_mm,
+                net_width_mm,
                 row["effective_length_mm"],
                 row["effective_width_mm"],
             ),
@@ -1593,7 +1874,7 @@ class CsvRepository:
             if not same_site.empty:
                 boards = same_site
 
-        piece_area = float(finished_length_mm) * float(finished_width_mm)
+        piece_area = float(net_length_mm) * float(net_width_mm)
         board_area = (
             pd.to_numeric(boards["effective_length_mm"], errors="coerce")
             * pd.to_numeric(boards["effective_width_mm"], errors="coerce")
@@ -1625,7 +1906,7 @@ class CsvRepository:
         number_of_colours: int = 0,
     ) -> dict[str, Any]:
         if units_out <= 0:
-            raise ValueError("Units out per board sheet must be greater than zero.")
+            raise ValueError("The verified board fit must be at least 1-up.")
         if manual_board:
             board = pd.Series(
                 {
@@ -1664,6 +1945,13 @@ class CsvRepository:
         rate = self._positive_number(board_price_per_tonne) or self._positive_number(
             board.get("price_per_tonne")
         )
+        entered_board_price = bool(
+            self._positive_number(board_price_per_tonne) is not None
+            and (
+                manual_board
+                or self._positive_number(board.get("price_per_tonne")) is None
+            )
+        )
         if rate is None:
             raise ValueError(
                 "This board has no price. Enter a board price per tonne to continue."
@@ -1682,6 +1970,10 @@ class CsvRepository:
         board_period = "" if pd.isna(period_value) else str(period_value or "")
         source_value = board.get("price_source", "")
         board_source = "" if pd.isna(source_value) else str(source_value or "")
+        material_spec = board_material_spec(
+            board.get("board_item_name", ""),
+            manual_board.get("material_spec", "") if manual_board else "",
+        )
 
         other_lines = pd.DataFrame()
         printed_routing_line = pd.DataFrame()
@@ -1690,28 +1982,40 @@ class CsvRepository:
             template = self.material_breakdown(component_template_item_code)
             template_lines = template["lines"]
             if not template_lines.empty:
-                other_lines = template_lines[
-                    template_lines["component_type"].eq("Other component")
-                ].copy()
-                if not include_print and not other_lines.empty:
-                    print_text = (
-                        other_lines.get("component_code", "").astype(str)
-                        + " "
-                        + other_lines.get("description", "").astype(str)
-                    )
-                    other_lines = other_lines[
-                        ~print_text.str.contains(
-                            "print|printer ink", case=False, regex=True
-                        )
-                    ].copy()
+                component_types = ["Other component"]
                 if include_print:
+                    component_types.append("Print-route component")
+                other_lines = template_lines[
+                    template_lines["component_type"].isin(component_types)
+                ].copy()
+                print_route = other_lines[
+                    other_lines["component_type"].eq("Print-route component")
+                ].copy()
+                if not print_route.empty:
+                    print_route["quantity"] = pd.to_numeric(
+                        print_route.get("standard_quantity_per_1000_boards", 0),
+                        errors="coerce",
+                    ).fillna(0) / units_out
+                    print_route["cost_per_1000"] = pd.to_numeric(
+                        print_route.get("standard_cost_per_1000_boards", 0),
+                        errors="coerce",
+                    ).fillna(0) / units_out
+                    print_route["source"] = (
+                        "Complete print-route BOM standard quantity ÷ "
+                        f"{units_out:g}-up"
+                    )
+                    other_lines.loc[print_route.index, print_route.columns] = print_route
+                if include_print:
+                    printed_components = (
+                        template_lines["printed_component_code"].fillna("").astype(str)
+                        if "printed_component_code" in template_lines
+                        else pd.Series("", index=template_lines.index, dtype="object")
+                    )
                     printed_rows = template_lines[
-                        template_lines.get("description", "")
-                        .astype(str)
-                        .str.contains("printed board", case=False, regex=False)
+                        printed_components.str.strip().ne("")
                     ]
                     printed_code = (
-                        str(printed_rows.iloc[0].get("component_code", ""))
+                        str(printed_rows.iloc[0].get("printed_component_code", ""))
                         if not printed_rows.empty
                         else ""
                     )
@@ -1758,6 +2062,7 @@ class CsvRepository:
                     "tonnes_per_1000": tonnes,
                     "cost_per_1000": board_cost,
                     "article_no": board_article,
+                    "material_spec": material_spec,
                     "source": board_source,
                 }
             ]
@@ -1769,6 +2074,7 @@ class CsvRepository:
             "board_price_per_tonne": round(rate, 4),
             "board_price_period": board_period,
             "board_price_source": board_source,
+            "board_material_spec": material_spec,
             "board_tonnes_per_1000": round(tonnes, 6),
             "board_cost_per_1000": round(board_cost, 4),
             "other_components_cost_per_1000": round(other_total, 4),
@@ -1779,9 +2085,11 @@ class CsvRepository:
             "new_board_material_spec": (
                 str(manual_board.get("material_spec", "")) if manual_board else ""
             ),
-            "new_board_price_per_tonne": round(rate, 4) if manual_board else 0.0,
+            "new_board_price_per_tonne": round(rate, 4) if entered_board_price else 0.0,
             "print_operations_included": int(include_print),
-            "material_cost_source": "Selected board plus automatic component template",
+            "material_cost_source": (
+                "Selected plain board plus complete standard-quantity BOM template"
+            ),
             **machine_time,
         }
         return {
@@ -1805,7 +2113,9 @@ class CsvRepository:
         items = items.merge(self.load_material_summary(), on="item_code", how="left")
         defaults: dict[str, Any] = {
             "customer_name": "",
-            "material": "BOM-defined materials",
+            "material": "",
+            "net_length_mm": 0.0,
+            "net_width_mm": 0.0,
             "fulfilment_type": "MTO",
             "quantity_input_mode": "Units",
             "order_quantity": 0,
@@ -1839,6 +2149,53 @@ class CsvRepository:
             items[column] = pd.to_numeric(items[column], errors="coerce").fillna(0)
         for column in set(COST_INPUT_COLUMNS) - set(NUMERIC_COST_INPUT_COLUMNS):
             items[column] = items[column].fillna("")
+
+        # The material grade is embedded in the board description.  It is not a
+        # selectable product category, and older summary CSVs do not contain it.
+        raw_boards = self.load_board_items()
+        bom = self.load_bom_lines()
+        board_lookup = (
+            raw_boards.set_index("board_item_code", drop=False)
+            if not raw_boards.empty and "board_item_code" in raw_boards
+            else pd.DataFrame()
+        )
+        resolved_components: dict[str, tuple[str, str]] = {}
+
+        def resolve_component(code: str) -> tuple[str, str]:
+            if code in resolved_components:
+                return resolved_components[code]
+            board, resolved_code, _ = self._resolve_costing_board(
+                code, bom, raw_boards, board_lookup
+            )
+            material_value = (
+                board_material_spec(board.get("board_item_name", ""))
+                if board is not None
+                else ""
+            )
+            resolved_components[code] = (resolved_code, material_value)
+            return resolved_components[code]
+
+        def board_values(value: Any) -> tuple[str, str]:
+            codes: list[str] = []
+            materials: list[str] = []
+            for raw_code in str(value or "").split("|"):
+                code = raw_code.strip()
+                if not code:
+                    continue
+                resolved_code, material_value = resolve_component(code)
+                if resolved_code and resolved_code not in codes:
+                    codes.append(resolved_code)
+                if material_value and material_value not in materials:
+                    materials.append(material_value)
+            return " | ".join(codes), " | ".join(materials)
+
+        board_value_pairs = items["board_item_code"].map(board_values)
+        items["board_item_code"] = board_value_pairs.map(lambda value: value[0])
+        derived_material = board_value_pairs.map(lambda value: value[1])
+        items["board_material_spec"] = derived_material
+        items["material"] = derived_material.where(
+            derived_material.astype(str).str.strip().ne(""), items["material"]
+        )
         self._derived_frames["current_items"] = (signature, items)
         return items.copy()
 
