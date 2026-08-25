@@ -421,7 +421,7 @@ def default_draft() -> dict[str, Any]:
         "pallet_size": "1000x1200",
         "pallet_quantity": 1_000,
         "fulfilment_type": "MTO",
-        "quantity_input_mode": "Units",
+        "quantity_input_mode": "Pallets",
         "order_quantity": 0,
         "order_pallets": 0,
         "agreement_term_months": 12,
@@ -868,6 +868,7 @@ def start_from_selected_product(
         draft["spread_percent"] = selected["spread_percent"]
     draft["source_item_code"] = selected.get("item_code", "")
     draft["based_on_existing_new_product"] = as_new_product
+    draft["quantity_input_mode"] = "Pallets"
     if as_new_product:
         draft["bom_available"] = 0
         draft["component_template_item_code"] = selected.get("item_code", "")
@@ -901,12 +902,12 @@ def render_select(
     )
     st.caption("Search by product code or description.")
 
-    routes = ["Existing product", "Multiple existing products"]
+    routes = ["Existing product(s)"]
     if can_create_new:
         routes.append("New product")
     mode = st.radio("Costing route", routes, horizontal=True)
 
-    if mode == "Existing product":
+    if mode == "Existing product(s)":
         catalog = cached_product_catalog(
             repository, repository.reference_data_version()
         )
@@ -1033,160 +1034,183 @@ def render_select(
                 )
                 suggested_code = suggestion_codes.get(selected_label)
                 if st.button(
-                    "Use selected product",
+                    "Add selected product",
                     width="stretch",
                     disabled=suggested_code is None,
                 ):
-                    selected_rows = catalog.index[
-                        catalog["item_code"].astype(str).eq(suggested_code)
-                    ].tolist()
-                    if selected_rows:
-                        st.session_state.existing_product_index = selected_rows[0]
+                    if suggested_code:
+                        chosen = list(
+                            st.session_state.get("existing_product_codes", []) or []
+                        )
+                        if suggested_code not in chosen:
+                            chosen.append(suggested_code)
+                        st.session_state.existing_product_codes = chosen
                         st.rerun()
             elif find_matches:
                 st.warning(
                     "No usable products match those details. Try fewer filters."
                 )
         labels = {
-            index: (
-                f"{row['item_code']} — "
-                f"{str(row.get('description', ''))[:100]}"
-            )
-            for index, row in catalog.iterrows()
-        }
-        selected_index = st.selectbox(
-            "Search existing products",
-            options=list(labels),
-            format_func=labels.get,
-            index=None,
-            placeholder="Search by item code or description",
-            key="existing_product_index",
-        )
-        if selected_index is None:
-            st.info("Search for the item you need above.")
-            return
-        selected = clean_record(catalog.loc[selected_index].to_dict())
-        selected_material_total = float(
-            selected.get("materials_cost_per_1000", 0) or 0
-        )
-        with st.container(border=True):
-            st.markdown(f"### {selected.get('item_code', '')}")
-            st.write(str(selected.get("description", "")))
-            product_cards = [
-                ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
-                (
-                    "Pallet quantity",
-                    f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
-                ),
-                (
-                    "Size",
-                    f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
-                    f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
-                    f"{float(selected.get('height_mm', 0) or 0):,.0f} mm",
-                ),
-            ]
-            if is_admin:
-                product_cards.insert(
-                    2, ("Material / 1,000", f"£{selected_material_total:,.2f}")
-                )
-            show_detail_cards(product_cards)
-
-        with st.expander("Product and material details" if is_admin else "Product details"):
-            detail_cards = [
-                ("Product group", selected.get("product_group", "—")),
-                ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
-                (
-                    "Pallet quantity",
-                    f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
-                ),
-                ("From", selected.get("source_type", "Stock list")),
-            ]
-            if is_admin:
-                detail_cards.insert(
-                    3,
-                    ("Calculated material / 1,000", f"£{selected_material_total:,.2f}"),
-                )
-            show_detail_cards(detail_cards)
-            st.caption(
-                f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
-                f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
-                f"{float(selected.get('height_mm', 0) or 0):,.0f} mm · "
-                f"Net mass {float(selected.get('net_mass_kg', 0) or 0):,.4f} kg"
-            )
-            material_result = repository.material_breakdown(
-                str(selected.get("item_code", ""))
-            )
-            material_lines = material_result["lines"]
-            if is_admin and not material_lines.empty:
-                st.caption(
-                    f"Board price source: {selected.get('board_price_source', '—')}. "
-                    "Machine and labour are excluded from every value shown here."
-                )
-                visible = [
-                    "component_type",
-                    "component_code",
-                    "description",
-                    "unit_of_measure",
-                    "quantity",
-                    "tonnes_per_1000",
-                    "rate",
-                    "cost_per_1000",
-                    "source",
-                ]
-                st.dataframe(
-                    material_lines[
-                        [column for column in visible if column in material_lines]
-                    ],
-                    hide_index=True,
-                    width="stretch",
-                    column_config={
-                        "rate": st.column_config.NumberColumn(format="£%.2f"),
-                        "cost_per_1000": st.column_config.NumberColumn(format="£%.2f"),
-                        "tonnes_per_1000": st.column_config.NumberColumn(format="%.4f"),
-                    },
-                )
-        has_material_cost = bool(
-            float(selected.get("bom_available", 0) or 0)
-            or selected_material_total > 0
-        )
-        if not has_material_cost:
-            st.warning(
-                "No costing BOM is available for this item, so it cannot be costed yet."
-            )
-        if st.button(
-            "Start costing",
-            type="primary",
-            width="stretch",
-            disabled=not has_material_cost,
-        ):
-            start_from_selected_product(selected, as_new_product=False)
-    elif mode == "Multiple existing products":
-        catalog = cached_product_catalog(
-            repository, repository.reference_data_version()
-        )
-        if catalog.empty:
-            st.info("There are no usable products in the stock list yet.")
-            return
-        catalog = catalog.sort_values("item_code").reset_index(drop=True)
-        labels = {
             str(row["item_code"]): (
                 f"{row['item_code']} — {str(row.get('description', ''))[:100]}"
             )
             for _, row in catalog.iterrows()
         }
+        valid_codes = set(labels)
+        retained_codes = [
+            str(code)
+            for code in (st.session_state.get("existing_product_codes", []) or [])
+            if str(code) in valid_codes
+        ]
+        if retained_codes != list(
+            st.session_state.get("existing_product_codes", []) or []
+        ):
+            st.session_state.existing_product_codes = retained_codes
+
+        search_query = st.text_input(
+            "Search existing products",
+            key="existing_product_search",
+            placeholder="Enter an item code, name or description",
+        )
+        searchable = (
+            catalog.get("item_code", pd.Series("", index=catalog.index))
+            .fillna("")
+            .astype(str)
+            + " "
+            + catalog.get("item_name", pd.Series("", index=catalog.index))
+            .fillna("")
+            .astype(str)
+            + " "
+            + catalog.get("description", pd.Series("", index=catalog.index))
+            .fillna("")
+            .astype(str)
+        ).str.casefold()
+        matches = pd.Series(True, index=catalog.index)
+        for term in str(search_query or "").casefold().split():
+            matches &= searchable.str.contains(term, regex=False)
+        matched_codes = catalog.loc[matches, "item_code"].astype(str).tolist()
+        available_codes = retained_codes + [
+            code for code in matched_codes if code not in retained_codes
+        ]
         selected_codes = st.multiselect(
-            "Add products to this quotation",
-            options=list(labels),
+            "Select one or more products",
+            options=available_codes,
             format_func=labels.get,
-            placeholder="Search by item code or description",
+            placeholder="Choose from the search results",
+            key="existing_product_codes",
         )
+        if search_query:
+            st.caption(
+                f"{len(matched_codes):,} matching product(s). Your search stays in "
+                "place while you select more than one."
+            )
         st.caption(
-            "Each item will have its own quantity, annual volume, selling price "
-            "and traffic light. New products must still be costed one at a time."
+            "Choose one product for a single costing, or two or more for a multi-item "
+            "quotation. Each selected item keeps its own quantity, annual volume, "
+            "selling price and traffic light."
         )
-        if selected_codes:
-            selected_preview = catalog.loc[
-                catalog["item_code"].astype(str).isin(selected_codes),
+        if not selected_codes:
+            st.info("Search and select at least one product to continue.")
+            return
+
+        selected_records = [
+            clean_record(
+                catalog.loc[catalog["item_code"].astype(str).eq(code)].iloc[0].to_dict()
+            )
+            for code in selected_codes
+        ]
+        if len(selected_records) == 1:
+            selected = selected_records[0]
+            selected_material_total = float(
+                selected.get("materials_cost_per_1000", 0) or 0
+            )
+            with st.container(border=True):
+                st.markdown(f"### {selected.get('item_code', '')}")
+                st.write(str(selected.get("description", "")))
+                product_cards = [
+                    ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
+                    (
+                        "Pallet quantity",
+                        f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
+                    ),
+                    (
+                        "Size",
+                        f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
+                        f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
+                        f"{float(selected.get('height_mm', 0) or 0):,.0f} mm",
+                    ),
+                ]
+                if is_admin:
+                    product_cards.insert(
+                        2, ("Material / 1,000", f"£{selected_material_total:,.2f}")
+                    )
+                show_detail_cards(product_cards)
+
+            with st.expander(
+                "Product and material details" if is_admin else "Product details"
+            ):
+                detail_cards = [
+                    ("Product group", selected.get("product_group", "—")),
+                    ("GSM", f"{float(selected.get('board_gsm', 0) or 0):,.0f}"),
+                    (
+                        "Pallet quantity",
+                        f"{float(selected.get('pallet_quantity', 0) or 0):,.0f}",
+                    ),
+                    ("From", selected.get("source_type", "Stock list")),
+                ]
+                if is_admin:
+                    detail_cards.insert(
+                        3,
+                        (
+                            "Calculated material / 1,000",
+                            f"£{selected_material_total:,.2f}",
+                        ),
+                    )
+                show_detail_cards(detail_cards)
+                st.caption(
+                    f"{float(selected.get('length_mm', 0) or 0):,.0f} × "
+                    f"{float(selected.get('width_mm', 0) or 0):,.0f} × "
+                    f"{float(selected.get('height_mm', 0) or 0):,.0f} mm · "
+                    f"Net mass {float(selected.get('net_mass_kg', 0) or 0):,.4f} kg"
+                )
+                material_result = repository.material_breakdown(
+                    str(selected.get("item_code", ""))
+                )
+                material_lines = material_result["lines"]
+                if is_admin and not material_lines.empty:
+                    st.caption(
+                        f"Board price source: {selected.get('board_price_source', '—')}. "
+                        "Machine and labour are excluded from every value shown here."
+                    )
+                    visible = [
+                        "component_type",
+                        "component_code",
+                        "description",
+                        "unit_of_measure",
+                        "quantity",
+                        "tonnes_per_1000",
+                        "rate",
+                        "cost_per_1000",
+                        "source",
+                    ]
+                    st.dataframe(
+                        material_lines[
+                            [column for column in visible if column in material_lines]
+                        ],
+                        hide_index=True,
+                        width="stretch",
+                        column_config={
+                            "rate": st.column_config.NumberColumn(format="£%.2f"),
+                            "cost_per_1000": st.column_config.NumberColumn(
+                                format="£%.2f"
+                            ),
+                            "tonnes_per_1000": st.column_config.NumberColumn(
+                                format="%.4f"
+                            ),
+                        },
+                    )
+        else:
+            selected_preview = pd.DataFrame(selected_records)[
                 [
                     "item_code",
                     "description",
@@ -1195,7 +1219,7 @@ def render_select(
                     "height_mm",
                     "board_gsm",
                     "pallet_quantity",
-                ],
+                ]
             ].copy()
             st.dataframe(
                 selected_preview,
@@ -1215,27 +1239,28 @@ def render_select(
                     ),
                 },
             )
+        start_label = (
+            "Start costing"
+            if len(selected_records) == 1
+            else f"Start {len(selected_records)}-item quotation"
+        )
         if st.button(
-            "Start multi-item quotation",
+            start_label,
             type="primary",
             width="stretch",
-            disabled=len(selected_codes) < 2,
         ):
-            products = [
-                clean_record(
-                    catalog.loc[
-                        catalog["item_code"].astype(str).eq(code)
-                    ].iloc[0].to_dict()
+            if len(selected_records) == 1:
+                start_from_selected_product(
+                    selected_records[0], as_new_product=False
                 )
-                for code in selected_codes
-            ]
-            st.session_state.multi_item_mode = True
-            st.session_state.multi_item_products = products
-            st.session_state.multi_item_breakdowns = []
-            st.session_state.multi_item_pricing = []
-            st.session_state.step = 1
-            reset_downstream()
-            st.rerun()
+            else:
+                st.session_state.multi_item_mode = True
+                st.session_state.multi_item_products = selected_records
+                st.session_state.multi_item_breakdowns = []
+                st.session_state.multi_item_pricing = []
+                st.session_state.step = 1
+                reset_downstream()
+                st.rerun()
     else:
         starting_point = st.radio(
             "How do you want to start?",
@@ -1841,10 +1866,10 @@ def render_specification(
     fulfilment_type = fulfilment_label[:3]
 
     quantity_modes = ["Units", "Pallets"]
-    current_mode = str(draft.get("quantity_input_mode", "Units"))
+    current_mode = str(draft.get("quantity_input_mode", "Pallets"))
     st.session_state.setdefault(
         "quantity_input_mode_input",
-        current_mode if current_mode in quantity_modes else "Units",
+        current_mode if current_mode in quantity_modes else "Pallets",
     )
     quantity_input_mode = st.radio(
         "Enter order quantity as",
@@ -5122,7 +5147,7 @@ def render_multi_item_quote(
         st.session_state.setdefault(
             f"multi_description_{index}", str(product.get("description", ""))
         )
-        st.session_state.setdefault(f"multi_quantity_mode_{index}", "Units")
+        st.session_state.setdefault(f"multi_quantity_mode_{index}", "Pallets")
         st.session_state.setdefault(f"multi_quantity_units_{index}", 0.0)
         st.session_state.setdefault(f"multi_quantity_pallets_{index}", 0)
         st.session_state.setdefault(f"multi_annual_{index}", 0.0)

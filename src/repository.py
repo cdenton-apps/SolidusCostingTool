@@ -2122,7 +2122,7 @@ class CsvRepository:
             "net_length_mm": 0.0,
             "net_width_mm": 0.0,
             "fulfilment_type": "MTO",
-            "quantity_input_mode": "Units",
+            "quantity_input_mode": "Pallets",
             "order_quantity": 0,
             "order_pallets": 0,
             "agreement_term_months": 12,
@@ -2561,6 +2561,22 @@ class CsvRepository:
         created_by = history["created_by"].fillna("").astype(str).str.strip().str.casefold()
         return history.loc[created_by.eq(owner)].copy()
 
+    @staticmethod
+    def _without_obsolete_products(products: pd.DataFrame) -> pd.DataFrame:
+        """Remove products explicitly marked obsolete in their display text."""
+        if products.empty:
+            return products.copy()
+        obsolete = pd.Series(False, index=products.index)
+        for column in ("item_name", "description"):
+            if column in products:
+                obsolete |= (
+                    products[column]
+                    .fillna("")
+                    .astype(str)
+                    .str.contains("OBSOLETE", case=False, regex=False)
+                )
+        return products.loc[~obsolete].copy()
+
     def load_catalog(self) -> pd.DataFrame:
         """Return master feed items plus products deliberately added to the catalogue.
 
@@ -2578,6 +2594,7 @@ class CsvRepository:
             feed_bom_values, errors="coerce"
         ).fillna(0)
         feed = feed.loc[feed_bom_available.gt(0)].copy()
+        feed = self._without_obsolete_products(feed)
         feed["source_type"] = "Stock list"
         feed_item_codes = set(feed["item_code"].fillna("").astype(str))
 
@@ -2641,6 +2658,7 @@ class CsvRepository:
         latest = latest.loc[
             latest_bom_available.gt(0) | latest_material_cost.gt(0)
         ].copy()
+        latest = self._without_obsolete_products(latest)
         # The stock/BOM feed remains authoritative even if an old or malformed
         # saved record was incorrectly marked as a catalogue product.
         latest = latest.loc[~latest["item_code"].isin(feed_item_codes)].copy()

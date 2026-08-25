@@ -45,7 +45,8 @@ def test_new_item_reaches_pricing_stage() -> None:
     _widget(app.text_input, "Board code").set_value("4-15614/").run()
     _widget(app.button, "Fill board details from code").click().run()
     assert any("2-up fits" in item.value for item in app.success)
-    _widget(app.number_input, "Order quantity (units) *").set_value(10000)
+    assert _widget(app.radio, "Enter order quantity as").value == "Pallets"
+    _widget(app.number_input, "Order quantity (pallets) *").set_value(10)
     _widget(app.number_input, "Expected annual volume (units) *").set_value(10_000)
     _widget(app.checkbox, "Consistent Payer").check()
     _widget(app.button, "Save order details").click().run()
@@ -101,9 +102,8 @@ def test_more_than_26_pallets_requires_confirmation() -> None:
     per_pallet = int(app.session_state["draft"]["pallet_quantity"])
     _widget(app.text_input, "Customer *").set_value("Large order test")
     _widget(app.text_input, "Delivery postcode *").set_value("BD20 0AA")
-    _widget(app.number_input, "Order quantity (units) *").set_value(
-        per_pallet * 27
-    )
+    assert _widget(app.radio, "Enter order quantity as").value == "Pallets"
+    _widget(app.number_input, "Order quantity (pallets) *").set_value(27)
     _widget(app.number_input, "Expected annual volume (units) *").set_value(
         per_pallet * 27
     ).run()
@@ -146,27 +146,33 @@ def test_product_finder_beta_selects_a_usable_catalogue_product() -> None:
     matches = _widget(app.radio, "Select a matching product")
     assert matches.options
     matches.set_value(matches.options[0]).run()
-    _widget(app.button, "Use selected product").click().run()
+    _widget(app.button, "Add selected product").click().run()
 
     assert not app.exception
-    assert _widget(app.selectbox, "Search existing products").value is not None
+    assert _widget(app.multiselect, "Select one or more products").value
     assert _widget(app.button, "Start costing")
 
 
 def test_multi_item_route_calculates_each_selected_product() -> None:
     app = _demo_app().run()
-    _widget(app.radio, "Costing route").set_value("Multiple existing products").run()
-    selector = _widget(app.multiselect, "Add products to this quotation")
-    selected_codes = [label.split(" — ", 1)[0] for label in selector.options[:2]]
+    selector = _widget(app.multiselect, "Select one or more products")
+    selected_codes = (
+        CsvRepository(PROJECT_DATA)
+        .load_catalog()
+        .sort_values("item_code")["item_code"]
+        .astype(str)
+        .head(2)
+        .tolist()
+    )
     selector.set_value(selected_codes).run()
-    _widget(app.button, "Start multi-item quotation").click().run()
+    _widget(app.button, "Start 2-item quotation").click().run()
 
     _widget(app.text_input, "Customer *").set_value("Multi-item test")
     _widget(app.text_input, "Delivery postcode *").set_value("BD20 0AA")
     for widget in [
-        item for item in app.number_input if item.label == "Order quantity (units)"
+        item for item in app.number_input if item.label == "Order quantity (pallets)"
     ]:
-        widget.set_value(10_000)
+        widget.set_value(10)
     for widget in [
         item for item in app.number_input if item.label == "Annual volume (units)"
     ]:
@@ -184,6 +190,39 @@ def test_multi_item_route_calculates_each_selected_product() -> None:
     ) == 2
     assert any("trailer load" in message.value for message in app.info)
     assert _widget(app.button, "Save multi-item quotation")
+
+
+def test_existing_product_search_persists_while_selecting_several_items() -> None:
+    app = _demo_app().run()
+    _widget(app.text_input, "Search existing products").set_value("D9999").run()
+    catalog = CsvRepository(PROJECT_DATA).load_catalog()
+    search_text = (
+        catalog["item_code"].fillna("").astype(str)
+        + " "
+        + catalog["item_name"].fillna("").astype(str)
+        + " "
+        + catalog["description"].fillna("").astype(str)
+    )
+    selected_codes = (
+        catalog.loc[
+            search_text.str.contains("D9999", case=False, regex=False),
+            "item_code",
+        ]
+        .astype(str)
+        .head(3)
+        .tolist()
+    )
+    assert len(selected_codes) == 3
+
+    selector = _widget(app.multiselect, "Select one or more products")
+    selector.set_value(selected_codes[:1]).run()
+    assert _widget(app.text_input, "Search existing products").value == "D9999"
+
+    _widget(app.multiselect, "Select one or more products").set_value(
+        selected_codes
+    ).run()
+    assert _widget(app.text_input, "Search existing products").value == "D9999"
+    assert _widget(app.button, "Start 3-item quotation")
 
 
 def test_new_item_can_fill_board_details_from_known_code() -> None:
@@ -525,7 +564,13 @@ def test_exports_require_an_exact_saved_revision(
 
 def test_existing_item_specification_is_collapsed() -> None:
     app = _demo_app().run()
-    _widget(app.selectbox, "Search existing products").set_value(0).run()
+    code = str(
+        CsvRepository(PROJECT_DATA)
+        .load_catalog()
+        .sort_values("item_code")
+        .iloc[0]["item_code"]
+    )
+    _widget(app.multiselect, "Select one or more products").set_value([code]).run()
     _widget(app.button, "Start costing").click().run()
 
     specification = next(
@@ -557,13 +602,8 @@ def test_creator_can_base_a_new_product_on_an_existing_product() -> None:
 
 def test_external_user_can_amend_print_customer_code_and_description() -> None:
     catalog = CsvRepository(PROJECT_DATA).load_catalog().sort_values("item_code").reset_index(drop=True)
-    selected_index = int(
-        catalog.index[
-            catalog["item_code"].astype(str).eq(
-                "BOX001/101/YPL/M0115/02/1000G"
-            )
-        ][0]
-    )
+    selected_code = "BOX001/101/YPL/M0115/02/1000G"
+    assert catalog["item_code"].astype(str).eq(selected_code).any()
     app = AppTest.from_file(APP_PATH, default_timeout=10)
     app.secrets["app_auth"] = {"mode": "password"}
     app.session_state["authenticated_user"] = {
@@ -574,7 +614,9 @@ def test_external_user_can_amend_print_customer_code_and_description() -> None:
         "can_view_history": False,
     }
     app.run()
-    _widget(app.selectbox, "Search existing products").set_value(selected_index).run()
+    _widget(app.multiselect, "Select one or more products").set_value(
+        [selected_code]
+    ).run()
     _widget(app.button, "Start costing").click().run()
 
     assert _widget(app.text_input, "Item code *").disabled
@@ -584,6 +626,7 @@ def test_external_user_can_amend_print_customer_code_and_description() -> None:
     _widget(app.text_input, "Print number *").set_value("07")
     _widget(app.text_input, "Customer *").set_value("Customer A")
     _widget(app.text_input, "Delivery postcode *").set_value("BD20 0AA")
+    _widget(app.radio, "Enter order quantity as").set_value("Units").run()
     _widget(app.number_input, "Order quantity (units) *").set_value(10_000)
     _widget(app.number_input, "Expected annual volume (units) *").set_value(10_000)
     _widget(app.button, "Continue to delivery").click().run()

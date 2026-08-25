@@ -9,10 +9,12 @@ the other figure update. Machine and labour are not added to the price.
 
 ## What a user does
 
-1. Choose an existing BOM-costed item or, if your login allows it, start a new
-   one. Products without a costing BOM are not shown in the picker.
-2. Enter the customer, delivery postcode and order quantity. Quantity can be
-   entered as units or pallets.
+1. Search once and choose one or more existing BOM-costed items, or, if your
+   login allows it, start a new one. One selection opens a single costing and
+   two or more open a multi-item quotation. Products without a costing BOM and
+   products marked `OBSOLETE` in their name or description are not shown.
+2. Enter the customer, delivery postcode and order quantity. Pallets are the
+   default entry method; users can switch to units.
 3. Choose the fulfilment type:
    - **MTO (Make to Order):** the order is treated as one delivery event.
    - **MTC (Make to Contract):** enter the agreement term and minimum pallets per delivery

@@ -428,8 +428,14 @@ def test_catalog_hides_stock_items_without_a_costing_bom() -> None:
     catalog = repository.load_catalog()
     stock_items = catalog[catalog["source_type"] == "Stock list"]
 
-    assert len(stock_items) == 594
+    assert len(stock_items) == 574
     assert pd.to_numeric(stock_items["bom_available"]).gt(0).all()
+    display_text = (
+        stock_items["item_name"].fillna("").astype(str)
+        + " "
+        + stock_items["description"].fillna("").astype(str)
+    )
+    assert not display_text.str.contains("OBSOLETE", case=False, regex=False).any()
     assert "BOX001/103/YPL/B0070/01/950G" not in set(stock_items["item_code"])
 
 
